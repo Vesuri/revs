@@ -1810,6 +1810,43 @@ makes `draw_road`'s scattered stores sequential.  ⚠ It needs a written RESULTS
 `copy_dash_data`'s stow, `plot_view_src_line` and every expansion circuit's hook read those
 blocks — and a `make determinism` re-record.
 
+### ⛔ `fill_dash_edge_columns`' GAP FILL IS LOAD-BEARING — but it prices at −13 ms
+
+`make EDGESTART=1` keeps the routine's boundary tables and drops its 136-cell source gap fill, on
+the argument that `view_consume`'s RLE carries the surface colour across a zero source by itself.
+**Measured −13.0 ms** (phase 18 10.12 → 0.68, phase 24 −1.75, phase 33 −2.83, frame 182 → 169,
+`draw_road` control −0.12%) — and **`make viewdiff` fails on all five circuits, 353-403 bytes of
+the gated road view.**
+
+⭐⭐⭐ **The diff names the error exactly, and that is why `viewdiff` is the only gate that could
+have caught it:** the differing cells are **27..34 (carrying to 39) on the right and 4..6 on the
+left** — byte for byte the columns pass A writes (`$1B..$22`, `$04..$06`). The carry into them does
+not come from the run's entry composite; it comes from whatever `draw_road` last wrote to their
+LEFT, which is a *road* colour, and those cells sit beyond the last road edge where the right
+answer is the off-road surface. **The routine's own header states this in one sentence** ("there is
+no cell to the left, so the gap has to be filled with the colour of whatever surface the road
+actually has at that point") and I designed around it without refuting it.
+⇒ **When a routine's header states its own reason for existing, refute THAT sentence first.**
+
+⭐⭐ **And the oracle lesson is sharper than the perf one: a routine with TWO outputs needs TWO
+gates.** `EDGESTARTCHECK=1` compares the boundary tables against the real routine's own output and
+reads **0 mismatch of 327 424 bytes**, sabotaged four ways with four distinct counts (61 / 2 / 279 /
+510). It is a genuinely valid in-process differential — it compares a *computation* against an
+*output*, not two consumers of one input — and it proves nothing whatever about pass A. A green
+oracle on one output stood in, for an hour, for the routine.
+
+⇒ **THE SALVAGE, AND IT IS THE BETTER TRADE:** pass A stays and gets cheap. 136 cells at ~490
+cycles each is 9.4 of the 10.4 ms, spent in a four-deep 6502-shaped call chain (two `movem`
+frames, `plot_ptr` marshals, three `walk_stores_are_private` tests, a 7-field `SlotExit` per
+level); a direct native fill is ~100 cyc/cell ⇒ **−7.5 ms with `mem[]` byte-identical**, so
+`determinism` gates it for free. The −1.75/−2.83 ms EDGESTART also took from phases 24 and 33 is
+**not** available — it came from deleting 136 real events.
+
+⭐ The exact-and-kept half: `view_edge_start_only` computes both boundary tables in two short
+loops, because **pass B does real work only in the FIRST iteration of each run** — pass A's exit
+line is `dash_block_starts[column + 1]`, which is precisely where the next iteration's pass B is
+told to stop, so every later pass B walks zero cells. Twenty lines a side, not 136.
+
 ### ⛔ `surface_colour_at_core`'s STRUCT RETURN IS FREE — packing it cost +2.3 ms
 
 Phase 18 is 490 cycles to fill ONE source byte, and the classifier's objdump is overwhelming:

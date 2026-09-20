@@ -694,6 +694,17 @@ endif
 # (64K, 300 and 1500 frames), so the PICTURE is identical by construction — this path writes
 # mem[] and the decode still paints it.  Phases 2+3 26 -> 18 ms, frame 188 -> 185 bracketed.
 # `make TERRAINLOW=0` is the A/B control.
+# ⚠⚠ `make EDGESTART=1` — PICTURE WRONG BY CONSTRUCTION (353-403 bytes of the gated road view on
+# every circuit).  Kept because it PRICES pass A of `fill_dash_edge_columns` at -13 ms.  See
+# src/gen/revs_native.c §what fill_dash_edge_columns actually delivers.
+ifeq ($(EDGESTART),1)
+EXTRA_DEFINES += -DREVS_EDGE_START
+ifeq ($(EDGESTARTCHECK),1)
+EXTRA_DEFINES += -DREVS_EDGE_START_CHECK
+PROBE_SYMS_EDGESTART = g_edgeStartChecks g_edgeStartMismatch g_edgeStartMismatchAt
+endif
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_LOW
@@ -1060,7 +1071,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW)
+PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

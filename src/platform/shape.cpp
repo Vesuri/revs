@@ -704,6 +704,15 @@ volatile unsigned long g_shapeMarkOver     = 0;
 volatile unsigned long g_shapeMarkPerUnmarked[128];
 }
 
+/* ⭐⭐⭐ THE TWO NUMBERS THAT DECIDE WHETHER A PRODUCER-EMITTED EVENT LIST CAN BEAT THE
+   TRANSPOSED SCAN (CLAUDE.md §price a skip scheme with TWO numbers).  The scan's cost is a
+   fixed ~800 longword tests a sweep plus one body per EVENT; a producer-emitted list pays one
+   body per STORE.  So the whole question is the ratio of producer STORES to real EVENTS, and
+   nothing in the project had ever counted the first one.  Host only, SHAPE only. */
+volatile unsigned long g_shapeSrcStores  = 0;   /* source-block bytes a producer WROTE  */
+volatile unsigned long g_shapeSrcEvents  = 0;   /* ...bytes that actually CHANGED       */
+volatile unsigned long g_shapeSrcSweeps  = 0;
+
 static unsigned char s_lineMarked[128];                 /* set by the writer hooks       */
 static unsigned char s_srcShadow[DASH_COLUMNS][128];    /* the rectangle after last sweep */
 static unsigned char s_srcShadowSeen;
@@ -721,6 +730,7 @@ void shape_mark_source(unsigned addr)
     line = off & (DASH_BLOCK_STRIDE - 1u);
     if (line < DASH_LINE_LO || line > DASH_LINE_HI) return;
     s_lineMarked[line] = 1;
+    g_shapeSrcStores++;
 }
 
 /* The ground truth: which lines changed between the end of the last sweep and the start of this
@@ -736,6 +746,27 @@ static void mark_census(void)
             if (mem[base + x] != s_srcShadow[k][x]) written[x] = 1;
     }
     if (s_srcShadowSeen) {
+        /* the changed-BYTE count is exactly the event population the scan must find */
+        unsigned changed = 0;
+        for (k = 0; k < DASH_COLUMNS; k++) {
+            const unsigned base = DASH_BLOCK_BASE + k * DASH_BLOCK_STRIDE;
+            for (x = DASH_LINE_LO; x <= DASH_LINE_HI; x++)
+                if (mem[base + x] != s_srcShadow[k][x]) changed++;
+        }
+        g_shapeSrcEvents += changed;
+        g_shapeSrcSweeps++;
+        if ((g_shapeSrcSweeps % 256u) == 0u) {
+            const unsigned long n = g_shapeSrcSweeps;
+            printf("SRCSTORES  %lu sweeps: producer stores %lu.%02lu/sweep, real events "
+                   "%lu.%02lu/sweep, ratio %lu.%02lu:1  (the scan pays ~800 longword tests "
+                   "+ 1 body per EVENT; a producer list pays 1 body per STORE)\n",
+                   n,
+                   g_shapeSrcStores / n, (g_shapeSrcStores * 100 / n) % 100,
+                   g_shapeSrcEvents / n, (g_shapeSrcEvents * 100 / n) % 100,
+                   g_shapeSrcEvents ? g_shapeSrcStores / g_shapeSrcEvents : 0u,
+                   g_shapeSrcEvents ? (g_shapeSrcStores * 100 / g_shapeSrcEvents) % 100 : 0u);
+            fflush(stdout);
+        }
         for (x = DASH_LINE_LO; x <= DASH_LINE_HI; x++) {
             if (written[x]) {
                 g_shapeMarkWritten++;

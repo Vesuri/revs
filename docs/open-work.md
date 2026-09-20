@@ -57,6 +57,19 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
+### 0. ⭐⭐⭐ `fill_dash_edge_columns`' PASS A, MADE CHEAP — **−7.5 ms, and `determinism` gates it**
+`docs/perf-method.md` §the gap fill is load-bearing. 136 cells a frame at **~490 cycles each** —
+the most expensive per-item cost anywhere in the frame — spent in a four-deep 6502-shaped chain
+(`fill_edge_column_run` → `fill_column_gaps` → `column_gap_walk` → `gap_walk_body`), each level
+with its own `movem` frame, `plot_ptr` marshals and a 7-field `SlotExit`. A direct native fill of
+the game's one arm is ~100 cyc/cell and leaves **`mem[]` byte-identical**, so this is the rare
+big-ms item whose gate is free.
+⚠ Two traps, both paid for already: the fill itself is **load-bearing** (dropping it is −13 ms and
+353-403 bytes of wrong road view — `make EDGESTART=1` prices it), and `column_gap_walk_core` is a
+**fragile local optimum** (three separate edits have regressed it; the ⛔ list below has two).
+⭐ The boundary-table half is already done and proven exact: `view_edge_start_only`, 0 of 327 424
+bytes, four sabotages at four distinct counts.
+
 ### 1. ⭐⭐⭐ The TRANSPOSED SCAN — **10.00 ms**, measured with `SCANDOUBLE=1`, and the fix is a PRODUCER change
 `docs/perf-method.md` §the view sweep, fully split.  The scan reads all 3200 source bytes back to
 find the ~446 non-zero ones, because `draw_road` scattered them into forty 128-byte-apart blocks
@@ -331,6 +344,8 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+
+- ⛔ **Dropping `fill_dash_edge_columns`' source gap fill** (`EDGESTART=1`): −13 ms and **353-403 bytes of the gated road view wrong on all five circuits**. The carry into cells 4..6 / 27..34 comes from a *road* colour to their left, not from the run's entry composite. Keep the fill, make it cheap (entry 0). `docs/perf-method.md`.
 
 - ⛔ **Packing `surface_colour_at_core`'s `SlotExit` return** (phase 18, 2026-09-19): `column_gap_walk_core` 1176→620 instructions and `fill_edge_column_run_core` 540→61, twins byte-exact, and phase 18 went **10.4 → 12.8 ms**. An `always_inline` struct return is already free (SRA + DCE); the pack is real hot-path work on a machine with no byte-insert. `docs/perf-method.md`.
 - ⛔ **`TERRAINCARVE=3` as an instrument** with `TERRAINLOW=1`: it deletes the scan the low block's painter depends on, so the arm measures a collapsed trajectory (phase 33 = 883 ms/frame), not a scan-less frame. Use `SCANDOUBLE=1`. `amiga/Makefile`.

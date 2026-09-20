@@ -737,6 +737,13 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
    bracket), so the 6502's byte-pair carry idiom computes nothing a `uint16_t` add does not.
    ⚠ A, N, V, Z and C all escape (the fixture compares LIVE_FLAGS), so the exit state is
    replayed once from the operands of the last add — four cpu writes instead of fifteen. */
+#if defined(REVS_EDGE_START) || defined(REVS_EDGE_START_CHECK)
+static void view_edge_start_only(unsigned char* dst);   /* see §what fill_dash_edge_columns delivers */
+#endif
+#ifdef REVS_EDGE_START_CHECK
+static void view_edge_start_check(void);
+#endif
+
 static unsigned step_scanline(int* carry_out)
 {
     unsigned next = (plot_ptr_v + 1) & 0xFF;
@@ -3357,7 +3364,18 @@ uint8_t race_main_loop_core(RestartDepth depth)
             draw_track_object_core(0x17u, 0x17u, 0u, 0u);
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
             PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars_core();
-            PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
+            PROBE_PHASE(18); PROBE_SHAPE_PHASE(18);
+#if defined(REVS_EDGE_START) && !defined(REVS_EDGE_START_CHECK)
+            /* ⭐ `make EDGESTART=1` — the boundary tables WITHOUT the 136-cell gap fill (§what
+               fill_dash_edge_columns actually delivers).  ⚠ The gate is `make viewdiff` against a
+               real BBC, not `determinism`: pass A's source bytes really do change. */
+            view_edge_start_only(mem);
+#else
+            fill_dash_edge_columns();
+#ifdef REVS_EDGE_START_CHECK
+            view_edge_start_check();
+#endif
+#endif
             PROBE_PHASE(19); PROBE_SHAPE_PHASE(19); mirrors_update_native();
             PROBE_PHASE(20); PROBE_SHAPE_PHASE(20); engine_sound_update();
             PROBE_PHASE(21); PROBE_SHAPE_PHASE(21); update_horizon_band();
@@ -7954,7 +7972,7 @@ static SlotExit surf_exit(uint8_t colour, uint8_t x, uint8_t line, uint8_t entry
    CALL against an unpack the caller needed anyway is the losing ratio; the span plotters won
    because one pack at entry served a 232-step DDA loop.  ⭐ And the transferable half is about
    the instrument: AN INSTRUCTION COUNT CANNOT SEE DEAD-CODE ELIMINATION INSIDE AN INLINED
-   CALLEE, so a struct return that is always_inline'd is already free and its size is cold arms.
+   CALLEE, so a struct return that is always_inline'd is already free and its size is cold arms. */
 
 /* ⚠⚠ `REVS_FLAG_OP` (always_inline) IS LOAD-BEARING HERE, NOT A HINT.  Every empty cell of the
    dash-edge walk calls this — 151 a frame, the most expensive per-item cost in the whole frame —
@@ -8507,6 +8525,158 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
        compare leaves N=0, Z=1, C=1.  A, Y and V are the second walk's, untouched by the CPX. */
     { SlotExit e = { e2.a, (uint8_t)column, y, 0u, 1u, e2.v, 1u }; return e; }
 }
+
+/* ⭐⭐⭐ WHAT `fill_dash_edge_columns` ACTUALLY DELIVERS — AND IT IS ~8% OF WHAT IT COSTS
+   ============================================================================================
+   Phase 18 is 10.4 ms to write 136 source bytes (490 cycles each, the most expensive per-item
+   cost in the frame) and it has TWO outputs, of very different value to the renderer:
+
+     pass A  fills each end column's EMPTY source bytes with the scan line's surface colour,
+             so the 6502's per-cell chain paints something sensible there;
+     pass B  writes the per-scan-line boundary tables `view_left_start_src` ($0504) and
+             `view_right_start_src` ($4400), which the low block's painter composes each run's
+             ENTRY cell out of.  It is their only producer.
+
+   ⛔⛔⛔ PASS A IS **NOT** REDUNDANT UNDER THE RLE PAINTER — I ARGUED IT WAS, AND `make viewdiff`
+   REFUTED IT ON ALL FIVE CIRCUITS.  The argument was: `view_consume` reads a ZERO source as "the
+   same byte as the cell to my left", and the painter enters each run at `a0`/`b0` with the composed
+   boundary value, so a gap carries the surface colour across by itself.  `make EDGESTART=1` builds
+   exactly that, it is worth **−13 ms**, and the picture is wrong by **353-403 bytes on the gated
+   road view** per circuit.
+   ⭐⭐⭐ AND THE DIFF NAMES THE ERROR PRECISELY, which is why viewdiff is the gate and no
+   in-process oracle could have been: the differing cells are **27..34 (plus carry to 39) on the
+   right and 4..6 on the left** — byte for byte the columns pass A writes ($1B..$22 and $04..$06).
+   The carry into those cells does NOT come from the run's entry composite; it comes from whatever
+   `draw_road` last wrote to their LEFT, which is a ROAD colour, and the cells lie beyond the last
+   road edge where the correct colour is the off-road surface.  This routine's own header says so
+   in one sentence — "there is no cell to the left, so the gap has to be filled with the colour of
+   whatever surface the road actually has at that point" — and I reasoned past a statement that was
+   already correct.  ⇒ **when a routine's header states its own reason for existing, refute THAT
+   sentence before designing around it.**
+
+   ⇒ THE SALVAGE, AND IT IS THE BETTER TRADE ANYWAY: pass A stays and gets CHEAP.  Its 136 cells
+   cost ~490 cycles each (9.4 of the 10.4 ms) in a four-deep 6502-shaped call chain; a direct fill
+   is ~100, i.e. **−7.5 ms with `mem[]` BYTE-IDENTICAL**, so `make determinism` gates it for free
+   instead of `viewdiff` gating it by eye.  ⚠ It does not collect the −1.75/−2.83 ms EDGESTART also
+   took out of phases 24 and 33 — those came from deleting 136 EVENTS, and the events are real.
+
+   ⭐⭐⭐ AND PASS B DOES REAL WORK IN ONLY THE FIRST ITERATION OF EACH RUN, which is the fact that
+   makes this cheap and which reading the loop is the only way to see.  `fill_edge_column_run_core`
+   walks pass B on `column` and pass A on `column + 1`, then takes the next iteration's start line
+   from pass A's EXIT — which is `dash_block_starts[column + 1]`, i.e. exactly where the next
+   iteration's pass B is told to STOP.  So every pass B after the first walks zero cells.
+   ⇒ the whole boundary-table output is TWO SHORT LOOPS: column $03 from line $1B, and column $1A
+   from line $2B, each down to its own block start — about twenty lines each.
+
+   ⇒ `make EDGESTART=1` keeps pass B and DROPS PASS A.  ⚠⚠ **PICTURE WRONG BY CONSTRUCTION** — it
+   is kept only because it PRICES pass A at −13 ms (phase 18 10.12 → 0.68, ph24 −1.75, ph33 −2.83,
+   frame 182 → 169), the budget any cheap replacement must beat.
+   `make EDGESTART=1 EDGESTARTCHECK=1` is the oracle for the half that IS exact: the real routine runs, then this computes the same two tables into a scratch and
+   requires every byte to match.  ⚠ That is a VALID in-process differential and not the
+   shared-input trap, because it compares a COMPUTATION against the routine's own OUTPUT rather
+   than two consumers of one input — and pass A provably cannot disturb its inputs: pass A runs on
+   columns $04..$06 and $1B..$22, never on the $03 and $1A that pass B reads.
+   ⭐⭐ IT READS **0 MISMATCH OF 327 424 BYTES**, and it is sabotaged: a wrong start line fires at
+   61, a wrong column at 2, dropping the classifier at 279, walking one line too far at 510 — four
+   DISTINCT counts, so no stale object.  ⚠⚠ BUT NOTE ITS SCOPE, because this is the session's
+   sharpest lesson: it proves the TABLES are byte-exact and says NOTHING about pass A, and I let a
+   green oracle on one of a routine's two outputs stand in for the routine.  Two outputs needed two
+   gates. */
+#if defined(REVS_EDGE_START) || defined(REVS_EDGE_START_CHECK)
+
+#define EDGE_START_LEFT_COL    0x03u
+#define EDGE_START_LEFT_LINE   0x1Bu
+#define EDGE_START_RIGHT_COL   0x1Au
+#define EDGE_START_RIGHT_LINE  0x2Bu
+
+/* One end's boundary table.  `dst` is where the bytes go — `mem` for the live arm, a scratch for
+   the oracle — and the walk is the 6502's: from `firstLine` DOWN to (not including) the column's
+   block start, testing the cursor after the decrement so the start byte is a sentinel. */
+static void edge_start_side(unsigned char* dst, unsigned table,
+                            unsigned column, unsigned firstLine)
+{
+    const unsigned                 end = mem[MEM_dash_block_starts + column];
+    MEM_QUAL const unsigned char*  src = mem + MEM_view_src_blocks + (column << 7);
+    unsigned                       line = firstLine;
+
+    while (line != end) {
+        const unsigned s = src[line];
+        unsigned       v;
+
+        /* ⚠ KEPT THOUGH IT PROVABLY CANNOT FIRE, and the argument is why rather than a guess:
+           $55 is `SRC_CELL_BLANK`, the value pass A writes as ITS fallback, and pass A runs only
+           on columns $04..$06 and $1B..$22 — never on the $03 and $1A that pass B reads.  So no
+           source byte this loop sees can hold it.  Sabotaging the mapping survives 65 280 bytes
+           for exactly that reason (explanation two of CLAUDE.md's three), while the four other
+           sabotages fire at 61/2/279/510.  One compare is cheaper than the next reader having to
+           re-derive this. */
+        if (s) v = (s == 0x55u) ? 0u : s;        /* $1DC5 — CMP #$55 / LDA #0, else keep it */
+        else {
+            /* $1DD6 — an empty cell takes the surface's colour; this pass's fallback is $00,
+               which is what a colourless surface leaves anyway. */
+            v = surface_colour_at_core((uint8_t)line, (uint8_t)column, 0u, 0u).a;
+        }
+        dst[table + line] = (unsigned char)v;
+        line = (unsigned char)(line - 1u);
+    }
+}
+
+static void view_edge_start_only(unsigned char* dst)
+{
+    edge_start_side(dst, MEM_view_left_start_src,  EDGE_START_LEFT_COL,  EDGE_START_LEFT_LINE);
+    edge_start_side(dst, MEM_view_right_start_src, EDGE_START_RIGHT_COL, EDGE_START_RIGHT_LINE);
+}
+#endif
+
+#ifdef REVS_EDGE_START_CHECK
+/* ⭐⭐ THE ORACLE (`make EDGESTART=1 EDGESTARTCHECK=1`).  `g_edgeStartMismatch` must be 0. */
+volatile unsigned long  g_edgeStartChecks      = 0;
+volatile unsigned long  g_edgeStartMismatch    = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned short g_edgeStartMismatchAt  = 0;   /* (side << 12) | line */
+volatile unsigned char  g_edgeStartWant = 0, g_edgeStartGot = 0;
+
+static unsigned char s_edgeStartScratch[0x10000];
+static unsigned long s_edgeStartCalls;
+
+static void view_edge_start_check(void)
+{
+    unsigned i;
+    /* seed the scratch with what the real routine left, so only the bytes this computes differ */
+    for (i = 0; i < 128u; i++) {
+        s_edgeStartScratch[MEM_view_left_start_src  + i] = mem[MEM_view_left_start_src  + i];
+        s_edgeStartScratch[MEM_view_right_start_src + i] = mem[MEM_view_right_start_src + i];
+    }
+    view_edge_start_only(s_edgeStartScratch);
+#ifndef REVS_PLATFORM_AMIGA
+    /* the A/B switch printing its own state (CLAUDE.md §instruments) */
+    if ((++s_edgeStartCalls % 256u) == 0u) {
+        extern int printf(const char*, ...);
+        printf("EDGESTART  %lu calls: %lu bytes checked, %lu MISMATCH", s_edgeStartCalls,
+               g_edgeStartChecks, g_edgeStartMismatch);
+        if (g_edgeStartMismatch)
+            printf(" — first side %u line $%02X: want %02X, routine wrote %02X",
+                   g_edgeStartMismatchAt >> 12, g_edgeStartMismatchAt & 0xFFu,
+                   g_edgeStartWant, g_edgeStartGot);
+        printf("\n");
+    }
+#endif
+    for (i = 0; i < 128u; i++) {
+        unsigned side;
+        for (side = 0; side < 2u; side++) {
+            const unsigned t = side ? MEM_view_right_start_src : MEM_view_left_start_src;
+            g_edgeStartChecks++;
+            if (s_edgeStartScratch[t + i] != mem[t + i]) {
+                if (!g_edgeStartMismatch) {
+                    g_edgeStartMismatchAt = (unsigned short)((side << 12) | i);
+                    g_edgeStartWant = s_edgeStartScratch[t + i];
+                    g_edgeStartGot  = mem[t + i];
+                }
+                g_edgeStartMismatch++;
+            }
+        }
+    }
+}
+#endif
 
 /* TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
    The first group of apply_driving_model's callee tree, and the one place in this project

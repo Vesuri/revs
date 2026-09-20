@@ -161,6 +161,21 @@ endif
 # (64K, 300 and 1500 frames), so the PICTURE is identical by construction — this path writes
 # mem[] and the decode still paints it.  Phases 2+3 26 -> 18 ms, frame 188 -> 185 bracketed.
 # `make TERRAINLOW=0` is the A/B control.
+# ⚠⚠ `make EDGESTART=1` — PICTURE WRONG BY CONSTRUCTION, and kept because it PRICES pass A of
+# `fill_dash_edge_columns` at -13 ms (phase 18 10.12 -> 0.68, ph24 -1.75, ph33 -2.83, frame
+# 182 -> 169).  Dropping the 136-cell source gap fill costs 353-403 bytes of the GATED road view
+# on every circuit (`make viewdiff`) — the fill is load-bearing; see revs_native.c §what
+# fill_dash_edge_columns actually delivers.  `EDGESTARTCHECK=1` nests and is the ORACLE for the
+# half that is exact: the boundary tables, 0 of 327 424 bytes.
+ifeq ($(EDGESTART),1)
+CFLAGS   += -DREVS_EDGE_START
+CXXFLAGS += -DREVS_EDGE_START
+ifeq ($(EDGESTARTCHECK),1)
+CFLAGS   += -DREVS_EDGE_START_CHECK
+CXXFLAGS += -DREVS_EDGE_START_CHECK
+endif
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 CFLAGS   += -DREVS_TERRAIN_LOW
