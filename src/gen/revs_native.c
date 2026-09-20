@@ -740,6 +740,11 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
 #if defined(REVS_EDGE_START) || defined(REVS_EDGE_START_CHECK)
 static void view_edge_start_only(unsigned char* dst);   /* see §what fill_dash_edge_columns delivers */
 #endif
+#ifdef REVS_EDGE_FLAT
+static int      edge_flat_ok(unsigned startSrc, unsigned firstColumn, unsigned stopColumn);
+static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned stopColumn,
+                              unsigned firstLine);      /* §fill_dash_edge_columns as one loop */
+#endif
 #ifdef REVS_EDGE_START_CHECK
 static void view_edge_start_check(void);
 #endif
@@ -5855,6 +5860,14 @@ static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t
 SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc)
 {
     PROBE_SHAPE_EDGE_CALL();
+#ifdef REVS_EDGE_FLAT
+    /* ⭐ ONE test per CALL selects the flattened driver for both runs, or the faithful chain for
+       both — never a mix, so the two can never interleave their `mem[]` bookkeeping. */
+    if (edge_flat_ok(leftStartSrc, 0x03, 0x06) && edge_flat_ok(rightStartSrc, 0x1A, 0x22)) {
+        (void)edge_run_flat(leftStartSrc,  0x03, 0x06, 0x1B);
+        return edge_run_flat(rightStartSrc, 0x1A, 0x22, 0x2B);
+    }
+#endif
     edge_column_pass(leftStartSrc,  0x03, 0x06, 0x1B);
     /* the second pass's exit is the routine's — the first's is overwritten by it. */
     return edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
@@ -8809,6 +8822,143 @@ static void view_edge_start_check(void)
     }
 }
 #endif
+
+/* ⭐⭐⭐ `fill_dash_edge_columns` AS ONE LOOP (`make EDGEFLAT=1`) — THE PER-WALK SETUP DELETED
+   ============================================================================================
+   Phase 18 is ~2000 of its ~3255 cycles a walk in SETUP, over 22 walks, and only ~6 cells a walk
+   (docs/perf-method.md §phase 18 is per-walk, not per-cell — and the three per-cell attempts that
+   measured +2.3 / 0.0 / +1.0 ms).  The setup is the 6502's own factoring, four levels deep:
+   `edge_column_pass` → `fill_edge_column_run` → `fill_column_gaps` → `column_gap_walk` →
+   `gap_walk_body`, each level with a call frame, and per walk a `plot_ptr2` marshal-in, a
+   `zp_pointer` reassembly of a base this driver already knows, three `walk_stores_are_private`
+   tests, an `adc_overflow`, a `column >= $28` test and two 7-field `SlotExit` returns.
+
+   ⭐⭐ READING THE CHAIN IS WHAT MAKES THIS SMALL: THREE OF THE FOUR VALUES THREADED BETWEEN ITS
+   LEVELS ARE DEAD ON THE GAME PATH, and that is not obvious from any one level.
+     * `entryY` is `fill_column_gaps`' branch offset, and `column_gap_walk` overwrites it with
+       `span_line_cursor` before reading it — live only on the `column >= $28` early return.
+     * `entryV` is overwritten the same way, by `adc_overflow(column, $60, 0)`.
+     * `entryX` is the store pointer's zero-page NUMBER, and it reaches only
+       `surface_colour_at`'s `entryX`, which no arm lets influence the COLOUR — and the walk's
+       exit X is discarded anyway (`fill_edge_column_run` returns `column` in its place).  So the
+       whole X thread cannot change one `mem[]` byte; it is passed as 0 here.
+   ⇒ what actually crosses a walk boundary is `y` alone.
+
+   ⚠⚠ AND ONE PIECE OF THE ORIGINAL'S SHAPE IS LOAD-BEARING AND LOOKS LIKE A BUG, so it is spelled
+   out rather than tidied: `mem[EDGE_BLOCK_START]` is written ONCE PER ITERATION, ABOVE BOTH
+   PASSES, so pass A on `column + 1` stops at `dash_block_starts[column]` — its own block start is
+   never consulted.  Reproducing that is why `end` is read once and used twice below.  Assuming
+   otherwise is what produced this session's retracted claim.
+
+   ⚠ THE PRECONDITION IS TESTED ONCE PER RUN, NOT PER WALK, and a failure hands the whole routine
+   to the faithful chain — the dead-arm-by-its-own-precondition move (CLAUDE.md).  Pass A's bases
+   are `$3000 + column*$80`, provably private for every column below $28; pass B's is the caller's
+   boundary-table pointer, which the randomised fixture aims at the zero-page pointer cells on
+   purpose, so it is really tested.
+   ⚠ `seam_write` with a compile-time `ram = 1`, never a bare `mem[]` store: the range test folds
+   and the source-marking and ink-watch hooks keep firing (revs_native_seam.h records that trap). */
+#ifdef REVS_EDGE_FLAT
+static int edge_flat_ok(unsigned startSrc, unsigned firstColumn, unsigned stopColumn)
+{
+    if (stopColumn >= 0x28u || firstColumn >= stopColumn)          return 0;
+    if (!walk_stores_are_private(startSrc))                        return 0;
+    if (!walk_stores_are_private(0x3000u + (firstColumn << 7)))    return 0;
+    if (!walk_stores_are_private(0x3000u + (stopColumn  << 7)))    return 0;
+    return 1;
+}
+
+/* One end of the viewport, as the 6502 leaves it but in one frame. */
+static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned stopColumn,
+                              unsigned firstLine)
+{
+    unsigned column = firstColumn;
+    unsigned y      = firstLine;
+    uint8_t  a      = 0;
+
+    plot_ptr2_v = (uint16_t)startSrc;          /* $1DEF's seed, as edge_column_pass makes it */
+    plot_ptr2_marshal_out();
+    mem[EDGE_RUN_LIMIT] = (unsigned char)stopColumn;
+
+    do {
+        /* ⚠ ONE `end` FOR BOTH PASSES — see the banner; this is the original's own shape. */
+        const unsigned end = mem[MEM_dash_block_starts + column];
+        unsigned       line;
+#ifdef REVS_SHAPE
+        unsigned       cells;
+#endif
+
+        mem[EDGE_COLUMN]      = (unsigned char)column;
+        span_line_cursor      = (unsigned char)y;
+        mem[EDGE_BLOCK_START] = (unsigned char)end;
+
+        /* ── pass B ($1DFA): this column into the per-line boundary table, $55 read as empty ── */
+        mem[MEM_gap_ptr_operand]             = MEM_plot_ptr2_lo;
+        mem[GAP_BRANCH_OPERAND]              = 0xEFu;
+        mem[MEM_gap_colour_fallback_operand] = 0x00u;
+        plot_ptr_v = (uint16_t)(0x3000u + (column << 7));
+        plot_ptr_marshal_out();
+        a = (uint8_t)(plot_ptr_v >> 8);        /* the no-iteration path's exit A */
+#ifdef REVS_SHAPE
+        cells = 0;
+#endif
+        for (line = y; line != end; line = (unsigned char)(line - 1u)) {
+            const uint8_t s = seam_read(plot_ptr_v + line, 1);
+#ifdef REVS_SHAPE
+            cells++;
+#endif
+            a = s;
+            if (s) {
+                PROBE_SHAPE_EDGE_CELL(1);
+                seam_write(startSrc + line, 1, (s == 0x55u) ? 0u : s);
+            } else {
+                a = surface_colour_at_core((uint8_t)line, (uint8_t)column, 0u, 0u).a;
+                PROBE_SHAPE_EDGE_CELL(a ? 2u : 3u);
+                seam_write(startSrc + line, 1, a);   /* this pass's fallback IS $00 */
+            }
+        }
+#ifdef REVS_SHAPE
+        PROBE_SHAPE_EDGE_WALK(cells);
+#endif
+
+        /* ── pass A ($1E03): the NEXT column fills its own block; non-zero bytes kept ── */
+        column++;
+        mem[EDGE_COLUMN]                     = (unsigned char)column;
+        mem[MEM_gap_ptr_operand]             = MEM_plot_ptr_lo;
+        mem[GAP_BRANCH_OPERAND]              = 0x09u;
+        mem[MEM_gap_colour_fallback_operand] = 0x55u;
+        plot_ptr_v = (uint16_t)(0x3000u + (column << 7));
+        plot_ptr_marshal_out();
+        a = (uint8_t)(plot_ptr_v >> 8);
+#ifdef REVS_SHAPE
+        cells = 0;
+#endif
+        for (line = y; line != end; line = (unsigned char)(line - 1u)) {
+            const uint8_t s = seam_read(plot_ptr_v + line, 1);
+#ifdef REVS_SHAPE
+            cells++;
+#endif
+            a = s;
+            if (s) {
+                PROBE_SHAPE_EDGE_CELL(0);      /* $1DDF — the $09 skip */
+            } else {
+                const uint8_t c = surface_colour_at_core((uint8_t)line, (uint8_t)column, 0u, 0u).a;
+                PROBE_SHAPE_EDGE_CELL(c ? 2u : 3u);
+                a = c ? c : 0x55u;
+                seam_write(plot_ptr_v + line, 1, a);
+            }
+        }
+#ifdef REVS_SHAPE
+        PROBE_SHAPE_EDGE_WALK(cells);
+#endif
+        y = end;                               /* pass A's exit line threads to the next column */
+    } while (column != stopColumn);
+
+    /* $1E0E's CPX: X = column (now stopColumn), N = 0, Z = 1, C = 1; A, Y and V are pass A's. */
+    { SlotExit e = { a, (uint8_t)column, (uint8_t)y, 0u, 1u,
+                     adc_overflow((uint8_t)column, 0x60u, 0), 1u };
+      return e; }
+}
+#endif /* REVS_EDGE_FLAT */
 
 /* TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
    The first group of apply_driving_model's callee tree, and the one place in this project

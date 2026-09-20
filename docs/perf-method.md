@@ -1810,6 +1810,36 @@ makes `draw_road`'s scattered stores sequential.  ⚠ It needs a written RESULTS
 `copy_dash_data`'s stow, `plot_view_src_line` and every expansion circuit's hook read those
 blocks — and a `make determinism` re-record.
 
+### ✅ FIXED — `fill_dash_edge_columns` flattened: phase 18 **10.12 → 5.92 ms**, frame 182 → 174
+
+`make EDGEFLAT=1` (now the default) replaces the four-level 6502-shaped chain with one loop for
+this routine's own 22 walks, keeping the generic `column_gap_walk` for `plot_view_src_line`'s
+caller and for every oracle. **−4.20 ms on phase 18**, controls flat (`draw_road` +0.06%, sweep
++0.04%, low block 0%), and **`mem[]` is byte-identical** — all four `determinism` trajectories
+pass, the five twins in the tree read 0 mismatch, and `viewdiff` is clean on all five circuits.
+⚠ The frame reads −8 ms because phase 28 (the vblank pad, −2.93) and phase 26 (the body drain,
+−0.43) *follow* a faster frame; compute is 169.4 → 164.3. Quote **−4.20**.
+
+⭐⭐ **What made it small was reading the chain rather than the loop: three of the four values
+threaded between its levels are dead on the game path**, and no single level shows that.
+`entryY` (the branch offset) and `entryV` are both overwritten by `column_gap_walk` before
+anything reads them — live only on its `column >= $28` early return. `entryX` is the store
+pointer's zero-page *number*, and it reaches only `surface_colour_at`'s `entryX`, which no arm
+lets influence the colour; the walk's exit X is then discarded, `fill_edge_column_run` returning
+`column` in its place. **So only `y` actually crosses a walk boundary**, and the rest of the
+per-walk marshalling existed to carry values nothing reads.
+
+⚠⚠ **One piece of the original's shape is load-bearing and looks like a bug**, and reproducing it
+is the whole difference between this working and not: `mem[EDGE_BLOCK_START]` is written once per
+iteration, **above both passes**, so pass A on `column + 1` stops at `dash_block_starts[column]` —
+its own block start is never consulted. Sabotaging exactly that fires at **599 of 600**. Five
+sabotages, five distinct counts (599 / 447 / 7 / 600 / 600), so the arm is covered by
+`fill_dash_edge_columns`' own fixture and no stale object is in play.
+
+⭐ What remains in phase 18 is mostly the classifier: ~136 calls a frame at ~150 cycles is ~2.9 of
+the 5.92 ms. That is the next thing there, and it is small — the routine has gone from the frame's
+most expensive per-item cost to a 3.4% row.
+
 ### ⭐⭐⭐ PHASE 18 IS PER-WALK, NOT PER-CELL — and "490 cycles a cell" was the wrong denominator
 
 This is the correction that matters, because three separate optimisations have now been priced

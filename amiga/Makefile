@@ -711,6 +711,18 @@ ifeq ($(EDGEDOUBLE),1)
 EXTRA_DEFINES += -DREVS_EDGE_DOUBLE
 endif
 
+# ⭐⭐⭐ `make EDGEFLAT=1` — `fill_dash_edge_columns` as ONE loop instead of a four-level
+# 6502-shaped chain, deleting ~2000 cycles of setup on each of its 22 walks
+# (src/gen/revs_native.c §fill_dash_edge_columns as one loop).  `mem[]` stays
+# byte-identical, so all four `make determinism` trajectories are the gate.
+# ⭐⭐⭐ ON BY DEFAULT: phase 18 10.12 -> 5.92 ms, frame 182 -> 174, all four determinism
+# trajectories byte-identical and the five twins in the tree 0-mismatch.
+# `make EDGEFLAT=0` is the A/B control.
+EDGEFLAT ?= 1
+ifeq ($(EDGEFLAT),1)
+EXTRA_DEFINES += -DREVS_EDGE_FLAT
+endif
+
 # ⭐⭐ `make EDGEFILL=1` — `fill_dash_edge_columns`' pass A specialised on its own
 # precondition (src/gen/revs_native.c §pass A, specialised).  Its 136 cells a frame cost
 # ~490 cycles each; the fill is load-bearing so it cannot be deleted, only made cheap.

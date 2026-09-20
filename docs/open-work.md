@@ -57,31 +57,6 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 0. ⭐⭐⭐ `fill_dash_edge_columns` — FLATTEN THE CALL CHAIN, **~6 ms**, `determinism` gates it
-`docs/perf-method.md` §phase 18 is per-walk, not per-cell. **22 walks and ~136 cells a frame, and
-~2000 of the ~3255 cycles a walk are SETUP** (`EDGEDOUBLE=1` priced a walk at 3490; `EDGECOUNT=1`
-counted the population). The setup is four levels of 6502-shaped chain per walk: two `movem`
-frames, `plot_ptr`/`plot_ptr2` byte-lane marshals, three `walk_stores_are_private` tests, a
-`zp_pointer` reassembly, an `adc_overflow`, three patch-byte stores, four `mem[EDGE_*]` stores and
-two 7-field `SlotExit` returns. Collapse it to one loop for this routine's own use and keep the
-generic chain for `plot_view_src_line`'s caller and the oracles. `mem[]` stays byte-identical.
-⛔⛔ **Do NOT price anything here per CELL — three attempts have, and measured +2.3 / 0.0 / +1.0 ms.**
-⚠ And `view_edge_start_only` is INCOMPLETE (it computes 2 of 11 pass-B walks); its oracle had a
-vacuous region. Fix or delete it before reusing it.
-
-### 0b. `fill_dash_edge_columns`' PASS A, MADE CHEAP — **superseded by 0; see the ⛔ list**
-`docs/perf-method.md` §the gap fill is load-bearing. 136 cells a frame at **~490 cycles each** —
-the most expensive per-item cost anywhere in the frame — spent in a four-deep 6502-shaped chain
-(`fill_edge_column_run` → `fill_column_gaps` → `column_gap_walk` → `gap_walk_body`), each level
-with its own `movem` frame, `plot_ptr` marshals and a 7-field `SlotExit`. A direct native fill of
-the game's one arm is ~100 cyc/cell and leaves **`mem[]` byte-identical**, so this is the rare
-big-ms item whose gate is free.
-⚠ Two traps, both paid for already: the fill itself is **load-bearing** (dropping it is −13 ms and
-353-403 bytes of wrong road view — `make EDGESTART=1` prices it), and `column_gap_walk_core` is a
-**fragile local optimum** (three separate edits have regressed it; the ⛔ list below has two).
-⭐ The boundary-table half is already done and proven exact: `view_edge_start_only`, 0 of 327 424
-bytes, four sabotages at four distinct counts.
-
 ### 1. ⭐⭐⭐ The TRANSPOSED SCAN — **10.00 ms**, measured with `SCANDOUBLE=1`, and the fix is a PRODUCER change
 `docs/perf-method.md` §the view sweep, fully split.  The scan reads all 3200 source bytes back to
 find the ~446 non-zero ones, because `draw_road` scattered them into forty 128-byte-apart blocks
@@ -356,6 +331,8 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+
+- ✅ **`fill_dash_edge_columns` flattened** (`EDGEFLAT=1`, default): phase 18 **10.12 → 5.92 ms**, `mem[]` byte-identical, all four determinism trajectories + viewdiff clean. Its remaining 5.92 is ~2.9 of classifier calls. ⛔ Do not price anything there per CELL — the cost was always per WALK.
 
 - ⛔ **`EDGEFILL=1`, pass A's per-cell re-reads hoisted into a precondition-selected sibling**: byte-exact (6 twins, 4 determinism trajectories) and measured **0.0** — the cost is per-walk, not per-cell.
 - ⛔ **Skipping "empty" pass-B walks**: **+1.0 ms and it never fired** — 0 of 11 000 pass-B walks are empty (`EDGECOUNT=1`). The premise came from a partly vacuous oracle; see `docs/perf-method.md`.
