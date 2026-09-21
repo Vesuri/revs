@@ -57,6 +57,7 @@ public:
        only defines the typedefs pre-C++11.  Same type on this target either way. */
     unsigned convertRace(unsigned char* dst, unsigned char* shadow, unsigned char* shadowMode);
 
+
     /* VBI context only.  Turns the band record the game just wrote (bbc_hw.cpp) into the
        copper's palette bands and per-row mode table, then presents the finished back
        buffer by swapping the bitplane pointers. */
@@ -125,6 +126,13 @@ private:
        whole run (PlatformAmiga::run has the full write-up). */
     unsigned char m_built;
     Bitmap*     m_bitmap[2];
+#ifdef REVS_DUAL_PLAYFIELD
+    /* ⚠ SINGLE buffered on purpose — that is the point of the layer.  The cockpit is the same
+       pixels every frame apart from the mirrors and the gear readout, so there is nothing for a
+       second buffer to hide, and a second buffer is exactly what made the car flicker when the
+       view sweep claimed these rows: one copy had the body and the other never did. */
+    Bitmap*     m_cockpit;
+#endif
     CopperList* m_copper;
     /* MODE 7's own pair.  ⚠ SINGLE-buffered, deliberately: the page is static between
        keypresses, so it is redrawn ROW BY ROW only where it CHANGES (g_ttRowDirty, teletext.h),

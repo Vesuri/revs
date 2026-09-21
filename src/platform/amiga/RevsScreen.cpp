@@ -17,9 +17,7 @@
 #ifdef REVS_TYRE_SPRITES
 #include "RevsTyres.h"
 #endif
-#ifdef REVS_DECODE_SPLIT
-#include "../probe.h"              /* DECODESPLIT: the three spare phase ids carve decode() */
-#endif
+#include "../probe.h"              /* phase brackets: DECODESPLIT's carve, and the cockpit's */
 #ifdef REVS_PLOT_ONLY
 extern "C" volatile unsigned char g_plotLineLo, g_plotLineHi;
 #endif
@@ -40,6 +38,18 @@ typedef char revs_screen_height_group_check[(BBC_SCREEN_HEIGHT % 4) == 0 ? 1 : -
 static const uint8_t  kBP         = 2;
 static const uint16_t kDisplayTop = 0x2C;
 static const uint16_t kRowBytes   = (kW / 8) * kBP;          /* 80: interleaved */
+static const uint16_t kPlaneGap   = (kW / 8);                /* 40: plane stride within a row */
+#ifdef REVS_DUAL_PLAYFIELD
+/* ⭐ FOUR planes on the display, still TWO per bitmap.  PF1 is planes 1,3 (the terrain's
+   double-buffered pair) and PF2 is planes 2,4 (the cockpit's single one), so each bitmap keeps
+   the 2-plane interleaved layout every painter in the port already writes — kRowBytes and
+   kPlaneGap are unchanged and RevsPlot.cpp needs no edit at all.  The Amiga applies BPL1MOD to
+   the ODD planes and BPL2MOD to the EVEN ones, which IS the dual-playfield division, so one
+   modulo each covers a bitmap whose two planes are 40 bytes apart.  Makefile §DUALPF. */
+static const uint8_t  kDisplayBP  = 4;
+#else
+static const uint8_t  kDisplayBP  = kBP;
+#endif
 
 /* ---- fixed copper-list layout (indices in 32-bit MOVE/WAIT words) -------------
    d[0] is the CopperList ctor's copperWait(16,0) and d[LEN-1] its park.  Unused band
@@ -53,20 +63,30 @@ static const uint16_t kRowBytes   = (kW / 8) * kBP;          /* 80: interleaved 
    later in the frame.  (docs/amiga-lessons.md: SPRxPT is stricter than BPLxPT.) */
 #define IDX_SPRITES     1                       /* 8 channels x SPRxPTH/L       (16) */
 #define IDX_PLAYFIELD   (IDX_SPRITES + 16)      /* BPLCON0 + BPL1MOD + BPL2MOD   (3) */
-#define IDX_BPL         (IDX_PLAYFIELD + 3)     /* 2 interleaved planes          (4) */
-#define IDX_TOPPAL      (IDX_BPL + 4)           /* COLOR00..03 for display line 0 (4) */
+#ifdef REVS_DUAL_PLAYFIELD
+#define IDX_BPL_WORDS   8                       /* BPL1/3PT (terrain) + BPL2/4PT (cockpit) */
+/* COLOR00..03 for PF1, then COLOR09/10/11 for PF2.  COLOR08 is PF2's pen 0, which dual
+   playfield never displays (it is the transparency that lets PF1 through), so it is not
+   written at all. */
+#define PAL_WORDS       7
+#else
+#define IDX_BPL_WORDS   4                       /* 2 interleaved planes */
+#define PAL_WORDS       4                       /* COLOR00..03 */
+#endif
+#define IDX_BPL         (IDX_PLAYFIELD + 3)
+#define IDX_TOPPAL      (IDX_BPL + IDX_BPL_WORDS)  /* the palette for display line 0 */
 #ifdef REVS_TYRE_SPRITES
 /* ⭐ COLOR17..19 — the tyre sprites' three pens (sprite pair 0/1 shares 17..19).  Written at the
    TOP of the frame rather than inside a band, because the patch (display lines 130..140) sits
    wholly inside raster band 3 and nothing else on screen uses a sprite: one set of values covers
    every line a sprite is visible on.  Filled in buildBands() from band 3's own palette record, so
    the sprite's colours track the game's palette instead of being baked in. */
-#define IDX_SPRPAL      (IDX_TOPPAL + 4)        /* COLOR17..19                    (3) */
+#define IDX_SPRPAL      (IDX_TOPPAL + PAL_WORDS)  /* COLOR17..19                  (3) */
 #define IDX_BANDS       (IDX_SPRPAL + 3)
 #else
-#define IDX_BANDS       (IDX_TOPPAL + 4)
+#define IDX_BANDS       (IDX_TOPPAL + PAL_WORDS)
 #endif
-#define BAND_WORDS      5                       /* WAIT + COLOR00..03                */
+#define BAND_WORDS      (1 + PAL_WORDS)         /* WAIT + the band's palette         */
 #define MAX_BANDS       8
 #define LIST_LENGTH     (IDX_BANDS + MAX_BANDS * BAND_WORDS + 1)
 
@@ -228,6 +248,25 @@ volatile uint16_t g_decodeOwnLines = 0;
 volatile unsigned long g_decodeDirtyChecks   = 0;
 volatile unsigned long g_decodeDirtyMismatch = 0;
 volatile uint16_t      g_decodeDirtyMismatchOff = 0xFFFFu;
+/* ⭐ THE COCKPIT LAYER'S OWN STATE PRINT (`make DUALPF=1`).  Declared always so a .gdb script
+   reads a zero rather than instruction bytes in a build without it. */
+volatile uint16_t      g_cockpitCells      = 0;  /* cells converted into PF2 last decode (/240) */
+volatile unsigned long g_cockpitCellsTotal = 0;
+volatile unsigned long g_cockpitRuns       = 0;  /* decodes that rebuilt the silhouette table   */
+volatile unsigned long g_cockpitFulls      = 0;  /* decodes that had to re-expand all 240 cells */
+/* ⚠⚠ THE ONE ASSUMPTION THIS LAYER MAKES, AS A TRIPWIRE.  PF2 has three opaque pens and the
+   car was measured to use exactly three (Makefile §DUALPF), so a car pixel at BBC pen 3 is
+   stored TRANSPARENT and falls through to PF1.  That is still the right colour today, because
+   PF1 holds the same art — it stops being right the moment the terrain painter ignores the
+   silhouette, which is the next step.  Must read 0. */
+volatile unsigned long g_cockpitPen3       = 0;
+/* A silhouette table entry that did not decode to a chain slot: the layer degrades to "no car
+   on this line" (PF1 shows, i.e. today's picture) rather than masking the wrong cells. */
+volatile unsigned long g_cockpitBadSlot    = 0;
+/* `make DUALPFCHECK=1` only, but declared always so a .gdb script reads a zero. */
+volatile unsigned long g_cockpitChecks     = 0;
+volatile unsigned long g_cockpitMismatch   = 0;
+volatile uint16_t      g_cockpitMismatchAt = 0xFFFFu;   /* (line << 8) | cell of the first */
 }
 
 /* The shadow of the frame-buffer bytes that produced each bitplane buffer's current content, in
@@ -254,6 +293,13 @@ static uint8_t  s_shadowMode[2][BBC_SCREEN_HEIGHT] __attribute__((aligned(4)));
    unreferenced global and gdb then prints instruction bytes as a value. */
 extern "C" {
 volatile uint32_t g_screenFrontAddr  = 0;   /* the displayed interleaved bitplane block */
+/* PF2's block (`make DUALPF=1`); 0 in a single-playfield build, so a dump script can tell the
+   two configurations apart from the target rather than from the flags it thinks it used. */
+volatile uint32_t g_screenCockpitAddr = 0;
+/* ⭐ The buffer the LAST decode filled — which is the only one that can be compared against the
+   current mem[].  g_screenFrontAddr is what the copper is showing, i.e. one decode older, and a
+   check that used it read 114 stale pixels and looked like a defect in the layer under test. */
+volatile uint32_t g_screenBackAddr    = 0;
 volatile uint32_t g_screenCopperAddr = 0;   /* the copper list, incl. the palette bands */
 volatile uint16_t g_screenBytes      = 0;   /* size of the bitplane block               */
 volatile uint16_t g_screenCopperWords = 0;  /* LIST_LENGTH — so the dump can't go stale  */
@@ -493,17 +539,27 @@ void RevsScreen::setConstantRegisters()
        table upside down (there is no "group 4"), so the value that was supposed to keep the
        unpointed channels off the picture was doing the opposite — harmless only because the null
        sprites are disarmed, which is what actually fixed that artefact. */
+    /* ⭐⭐ AND BIT 6, PF2PRI, IS THE DUAL-PLAYFIELD HALF OF THE SAME REGISTER: set = playfield 2
+       in front of playfield 1.  PF2 is the COCKPIT and PF1 the terrain, so it must be set — the
+       car has to occlude the road, never the other way round.  It is inert in a single-playfield
+       build and in MODE 7, which is why it can live here with the other constants. */
+#ifdef REVS_DUAL_PLAYFIELD
+#define REVS_BPLCON2_PF2PRI 0x0040u
+#else
+#define REVS_BPLCON2_PF2PRI 0x0000u
+#endif
+
 #ifdef REVS_TYRE_SPRITES
     /* ⭐ SPRITES IN FRONT (PF1P = PF2P = 4).  The tyre patch IS a sprite layer and must win the
        priority fight — the whole split (playfield = outline, sprite = pattern) depends on the
        sprite's pixels landing over the playfield's, not under them.  The other six channels
        still point at the 8-byte null sprite, whose VSTART == VSTOP == 0 means they are never
        armed on any line, so nothing else can appear. */
-    *bplcon2Pointer = 0x0024;
+    *bplcon2Pointer = (uint16_t)(0x0024u | REVS_BPLCON2_PF2PRI);
 #else
     /* PLAYFIELD IN FRONT OF EVERY SPRITE GROUP — the BBC has no sprite layer, so nothing may
        ever appear over the game.  Belt and braces with the null sprites. */
-    *bplcon2Pointer = 0x0000;
+    *bplcon2Pointer = (uint16_t)(0x0000u | REVS_BPLCON2_PF2PRI);
 #endif
 
     /* ECS Denise border blanking: the area outside the display window renders BLACK instead
@@ -521,6 +577,10 @@ void RevsScreen::setConstantRegisters()
 }
 
 /* --------------------------------------------------------------------------- */
+#ifdef REVS_DUAL_PLAYFIELD
+static void revs_cockpit_slot_tables(void);   /* the cockpit layer — defined with the rest of it */
+#endif
+
 void RevsScreen::initialize()
 {
     for (unsigned b = 0; b < 256; b++) {
@@ -530,12 +590,23 @@ void RevsScreen::initialize()
     /* Until the first band record arrives, decode everything as MODE 5 — that is four of
        the five bands, and the fifth covers blank rows. */
     for (unsigned y = 0; y < kH; y++) m_lineMode[y] = 5;
+#ifdef REVS_DUAL_PLAYFIELD
+    revs_cockpit_slot_tables();
+#endif
 
     m_bitmap[0]   = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
     m_bitmap[1]   = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
     m_copper      = CopperList::allocate(LIST_LENGTH);
     m_nullSprite  = Sprite::allocate(0);
     if (!m_bitmap[0] || !m_bitmap[1] || !m_copper || !m_nullSprite) return;
+#ifdef REVS_DUAL_PLAYFIELD
+    /* ⚠ MEMF_CLEAR is what makes the layer correct before its first conversion: an all-zero PF2
+       is transparent everywhere, so the display is exactly the DUALPF=0 picture until the
+       cockpit has something to say.  Bitmap::allocate clears. */
+    m_cockpit = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
+    if (!m_cockpit) return;
+    g_screenCockpitAddr = (uint32_t)m_cockpit->data;
+#endif
 
     /* ⭐ BOTH plane buffers to the plot module, once — the glyph domain's delta painter keeps a
        few bytes a frame on rows nothing else repaints, so it must reach both (revs_plot.h).
@@ -593,8 +664,26 @@ void RevsScreen::initialize()
     /* Per-frame / per-band playfield state: BPLCON0 (plane count + ECSENA) and the
        interleave modulos.  These are the only playfield registers the copper touches —
        everything constant is in setConstantRegisters() above. */
+#ifdef REVS_DUAL_PLAYFIELD
+    /* ⭐ WRITTEN OUT RATHER THAN setPlayfield()'d, because the geometry is genuinely not the one
+       that helper derives: it would compute the modulo for ONE four-plane interleaved bitmap
+       (4*40 - 40 = 120), and this display is TWO two-plane ones (2*40 - 40 = 40 each).  The
+       bitplane count and DBLPF are the only other difference. */
+    {
+        uint32_t* const d0 = m_copper->data();
+        d0[IDX_PLAYFIELD + 0] = copperMove(bplcon0,
+            (uint16_t)((kDisplayBP << PLNCNTSHFT) | DBLPF | USE_BPLCON3));
+        d0[IDX_PLAYFIELD + 1] = copperMove(bpl1mod, kPlaneGap);   /* odd planes  = PF1 */
+        d0[IDX_PLAYFIELD + 2] = copperMove(bpl2mod, kPlaneGap);   /* even planes = PF2 */
+    }
+    /* firstBitplane / delta = 2: BPL1PT+BPL3PT off the terrain bitmap, BPL2PT+BPL4PT off the
+       cockpit's.  The cockpit's pointers are written ONCE — present() re-points only PF1. */
+    m_copper->showBitmap(IDX_BPL,     *m_bitmap[0], 1, 2, 0, 0, kBP);
+    m_copper->showBitmap(IDX_BPL + 4, *m_cockpit,   2, 2, 0, 0, kBP);
+#else
     m_copper->setPlayfield(IDX_PLAYFIELD, kW, kH, kBP, /*interleaved*/true);
     m_copper->showBitmap(IDX_BPL, *m_bitmap[0], 1, 1, 0, 0, kBP);
+#endif
 
     /* MODE 7's list is fixed, so it is built once here.  ⚠ The RACE list stays the one
        installed at start-up (Revs::initialize) even though the machine boots in MODE 7: the
@@ -613,6 +702,10 @@ void RevsScreen::initialize()
     uint32_t* d = m_copper->data();
     for (unsigned pen = 0; pen < 4; pen++)
         d[IDX_TOPPAL + pen] = copperMove(color00 + (pen << 1), 0x000);
+#ifdef REVS_DUAL_PLAYFIELD
+    for (unsigned pen = 1; pen < 4; pen++)
+        d[IDX_TOPPAL + 3 + pen] = copperMove(color00 + ((8u + pen) << 1), 0x000);
+#endif
 
     /* ⭐ LAST LINE OF THE FUNCTION, deliberately: this is what opens the scene to the VERTB
        handler (see m_built in the header, and PlatformAmiga::run for the black screen it
@@ -799,7 +892,7 @@ int RevsScreen::applyMode()
         g_screenCopperWords = LIST_LENGTH;
         g_screenFrontAddr   = (uint32_t)m_bitmap[m_back ^ 1u]->data;
         g_screenBytes       = (uint16_t)revs_mulu16(kH, kRowBytes);
-        g_screenPlanes      = kBP;
+        g_screenPlanes      = kDisplayBP;
         g_screenHeight      = kH;
         g_screenMode7       = 0;
         AmigaHardware::setCopperList(*m_copper, /*immediate*/true);
@@ -953,6 +1046,23 @@ void RevsScreen::buildBands()
         for (unsigned pen = 0; pen < 4; pen++)
             d[at + pen] = copperMove(color00 + (pen << 1),
                                      bbcColour(s.palette[rec][kLogicalForPen[pen]]));
+#ifdef REVS_DUAL_PLAYFIELD
+        /* ⭐⭐ PF2's THREE OPAQUE PENS, AND THE PERMUTATION IS IN THE REGISTER NUMBERS.  The
+           cockpit layer stores BBC pen 0 as PF2 pen 3 and leaves BBC pen 3 transparent, so:
+             COLOR09 (PF2 pen 1) = the band's colour for BBC pen 1
+             COLOR10 (PF2 pen 2) = the band's colour for BBC pen 2
+             COLOR11 (PF2 pen 3) = the band's colour for BBC pen 0
+           Written from the SAME band record as COLOR00..03 above, which is what keeps an
+           opaque cockpit pixel the exact colour of the PF1 pixel it hides — the property this
+           whole step has to preserve (Makefile §DUALPF).  COLOR08 is PF2's transparency and is
+           never displayed, so it is never written. */
+        d[at + 4] = copperMove(color00 + (9u << 1),
+                               bbcColour(s.palette[rec][kLogicalForPen[1]]));
+        d[at + 5] = copperMove(color00 + (10u << 1),
+                               bbcColour(s.palette[rec][kLogicalForPen[2]]));
+        d[at + 6] = copperMove(color00 + (11u << 1),
+                               bbcColour(s.palette[rec][kLogicalForPen[0]]));
+#endif
 #ifdef REVS_TYRE_SPRITES
         /* ⭐ The tyre patch lives at display lines 130..140, so whichever band covers line 130 is
            the one whose pens the sprites must use.  Taken from the same record as the playfield's
@@ -989,7 +1099,13 @@ void RevsScreen::present()
     if (!m_ready) return;
     /* ⚠ THE ONLY PLACE BITPLANE POINTERS ARE WRITTEN, and it is inside the VBI.  A torn
        pointer garbages the whole viewport for a frame (docs/amiga-lessons.md). */
+#ifdef REVS_DUAL_PLAYFIELD
+    /* PF1 ONLY.  The cockpit is single buffered, so BPL2PT/BPL4PT were written once in
+       initialize() and must not be touched again. */
+    m_copper->showBitmap(IDX_BPL, *m_bitmap[m_back], 1, 2, 0, 0, kBP);
+#else
     m_copper->showBitmap(IDX_BPL, *m_bitmap[m_back], 1, 1, 0, 0, kBP);
+#endif
     g_screenFrontAddr = (uint32_t)m_bitmap[m_back]->data;
     m_back  ^= 1u;
     m_ready  = false;
@@ -1237,6 +1353,242 @@ REVS_DECODE_INLINE unsigned revs_full_row(const uint8_t* s, uint8_t* p, uint32_t
     return BBC_SCREEN_CELLS;
 }
 
+#ifdef REVS_DUAL_PLAYFIELD
+/* ═══ THE COCKPIT LAYER ══════════════════════════════════════════════════════════════════════
+   Display lines 117..157 — the car body, the top of the dashboard and the wing mirrors' upper
+   half — expanded out of the SAME mem[] bytes the terrain decode reads, into PF2.
+
+   ⭐ WHAT DEFINES "THE CAR": the complement of the game's own two terrain runs.  view_paint_lines
+   paints every line of the viewport as a LEFT run and a RIGHT run of cells and leaves the gap
+   between them alone, and what splits them is the dashboard silhouette, not the road — so the
+   run tables are STATIC DATA in the binary and the cells outside the runs are, by construction,
+   exactly the furniture the rasteriser refuses to touch (disasm/symbols.csv, view_run_*).
+   Phase 2's lines (117..132) tabulate only the left run's END and mirror it; phase 3's (133..157)
+   tabulate three of the four bounds and derive the fourth.  Both are decoded below.
+
+   ⭐ THE RUNS' OWN FIRST AND LAST CELLS STAY ON PF1.  They are COMPOSITES — the rasteriser masks
+   the view's pixels and ORs the dashboard's into one byte — so PF1 already holds the finished
+   mixture and PF2 has nothing to add.  That is why a CELL-granularity mask is enough here; it
+   stops being enough when the terrain stops being clipped, which is when the boundary cell's
+   sub-byte phase (view_edge_phase + the four mask/fill tables) has to move to PF2 with it.
+
+   ⭐⭐ AND THE PIXEL REMAP IS TWO COMPLEMENTS.  A MODE 5 byte holds each pixel's low bit in the
+   low nibble and its high bit in the high nibble, so s_expandLo[b] IS plane 1 and s_expandHi[b]
+   IS plane 2.  The permutation the layer needs — BBC pen 0 -> PF2 pen 3, 1 -> 1, 2 -> 2,
+   3 -> transparent — is exactly "new low bit = NOT old high bit, new high bit = NOT old low
+   bit", because pen = 2*hi + lo:
+        pen 0 (hi0 lo0) -> 3 (hi1 lo1)      pen 2 (hi1 lo0) -> 2 (hi1 lo0)
+        pen 1 (hi0 lo1) -> 1 (hi0 lo1)      pen 3 (hi1 lo1) -> 0 (hi0 lo0)
+   so the whole conversion is `lo = ~expandHi[b]; hi = ~expandLo[b]` — no third table, no branch
+   and no per-pixel work.
+   ═══════════════════════════════════════════════════════════════════════════════════════════ */
+#define COCK_Y0    117u
+#define COCK_Y1    157u
+#define COCK_ROW0  (COCK_Y0 / BBC_SCREEN_LINES)                 /* 14: display lines 112..119 */
+#define COCK_ROW1  (COCK_Y1 / BBC_SCREEN_LINES)                 /* 19: display lines 152..159 */
+#define COCK_ROWS  (COCK_ROW1 - COCK_ROW0 + 1u)
+#define COCK_LINES (COCK_Y1 - COCK_Y0 + 1u)
+/* Phase 2's lines mirror a single tabulated bound; phase 3's have their own three. */
+#define COCK_PHASE3_Y0  133u
+
+/* The rasteriser's stop/start tables hold the LOW BYTE OF A CHAIN SLOT, not a cell — chain A's
+   unit k is at $0F + $11*k and chain B's entry point at $05 + $11*k.  Inverted once into two
+   lookups so the per-line decode costs a table read: the 68000 has no 32-bit divide and this
+   must not reach __udivsi3 (make muldiv-audit). */
+static uint8_t s_slotCellA[256];        /* $0F + $11*k -> k, 0xFF if not a slot */
+static uint8_t s_slotCellB[256];        /* $05 + $11*k -> k, 0xFF if not a slot */
+static uint8_t s_cockRun[COCK_LINES][4];    /* a0, a1, b0, b1 — the two runs, in CELLS */
+/* ⚠ uint32_t, and the ⭐ is that it is COMPARED four bytes at a time.  As 48 byte compares
+   against m_lineMode this cost 0.8 ms a frame — see revs_cockpit_paint for the whole 2.84 ms
+   that "has anything changed?" used to cost.  m_lineMode is aligned(4) and line 112 is a
+   multiple of four, so both sides are legal `move.l`s.  ENDIAN-OK: an equality compare of two
+   identically-laid-out longwords, never an interpretation of lanes. */
+static uint32_t s_cockMode[(COCK_ROWS * BBC_SCREEN_LINES) / 4u];
+static unsigned s_cockCells = 0;        /* cells this decode expanded into PF2 */
+
+static void revs_cockpit_slot_tables(void)
+{
+    unsigned i, k;
+    for (i = 0; i < 256u; i++) { s_slotCellA[i] = 0xFFu; s_slotCellB[i] = 0xFFu; }
+    /* Chain A carries cells 0..15 and chain B cells 26..39, i.e. fourteen entries; sixteen
+       covers both with room to spare and no wrapped value collides inside that range. */
+    for (k = 0; k < 16u; k++) {
+        s_slotCellA[(0x0Fu + 0x11u * k) & 0xFFu] = (uint8_t)k;
+        s_slotCellB[(0x05u + 0x11u * k) & 0xFFu] = (uint8_t)k;
+    }
+}
+
+/* Rebuild the per-line silhouette from the game's tables.  Returns non-zero if anything moved —
+   they are static data, so that is the FIRST call and nothing else, but reading them every
+   decode is a handful of table lookups and it removes the question of when they became live
+   (they sit in the view blocks' tails, which are other things out of a race). */
+static int revs_cockpit_runs(void)
+{
+    int changed = 0;
+    unsigned y;
+    for (y = COCK_Y0; y <= COCK_Y1; y++) {
+        /* X = $4F..$03 indexes the tables, top line first, and display line = 160 - X. */
+        const unsigned X  = 160u - y;
+        const unsigned le = s_slotCellA[mem[0x3150u + X]];
+        uint8_t* const r  = s_cockRun[y - COCK_Y0];
+        uint8_t a0, a1, b0, b1;
+        if (le == 0xFFu) {
+            g_cockpitBadSlot++;
+            a0 = 0; a1 = BBC_SCREEN_CELLS - 1u; b0 = 1; b1 = 0;   /* no car: PF1 keeps the line */
+        } else if (y < COCK_PHASE3_Y0) {
+            /* Phase 2: the left run starts at cell 0 and the right run is its mirror about
+               cell 19.5 (symbols.csv: 5+34 = 6+33 = 39). */
+            a0 = 0; a1 = (uint8_t)le;
+            b0 = (uint8_t)(BBC_SCREEN_CELLS - 1u - le); b1 = BBC_SCREEN_CELLS - 1u;
+        } else {
+            const unsigned re = s_slotCellA[mem[0x3080u + X]];
+            const unsigned rs = s_slotCellB[mem[0x30D0u + X]];
+            if (re == 0xFFu || rs == 0xFFu) {
+                g_cockpitBadSlot++;
+                a0 = 0; a1 = BBC_SCREEN_CELLS - 1u; b0 = 1; b1 = 0;
+            } else {
+                a1 = (uint8_t)le;
+                b1 = (uint8_t)(26u + re);
+                b0 = (uint8_t)(26u + rs);
+                a0 = (uint8_t)(BBC_SCREEN_CELLS - 1u - b1);       /* the mirror, not a table */
+            }
+        }
+        if (r[0] != a0 || r[1] != a1 || r[2] != b0 || r[3] != b1) {
+            r[0] = a0; r[1] = a1; r[2] = b0; r[3] = b1;
+            changed = 1;
+        }
+    }
+    return changed;
+}
+
+/* ⭐⭐ WHICH CELLS OF THE LAYER CAN MOVE AT ALL — and the answer is the two EDGE STRIPS.
+   Everything between them is the car's body and the top of the dashboard: static art, drawn
+   once when the race view is built and never touched again.  What moves inside 117..157 is
+   the two WING MIRRORS (their own six-segment tables put them in cells 0..2 and 37..39) and the
+   front-wheel DITHER that `tick_wheel_spin` EORs at 50 Hz (cells 0..1 and 38..39, display lines
+   133..140, and a sprite once REVS_TYRE_SPRITES is on).  Both live in the same four cells at
+   each edge, so the per-frame refresh is eight cells of a line and nothing else.
+
+   ⭐⭐⭐ AND THAT IS THE WHOLE POINT OF THE EXERCISE, NOT A SHORTCUT (user, §12: "the mirrors
+   have limited content in them and the gear indicator changes but those are the only, very
+   limited, changes that this part of the screen ever should have").  THREE dirty-scan designs
+   were built and measured against it first, and every one of them lost to the SCAN, exactly as
+   §12c said they would:
+       a separate six-row scan                      +11.23 ms of phase 27
+       fused into convertRace's scan, one pass      +14.82
+       fused, two-pass, car cells only              + 9.81
+   convertRace walks 26 rows for 16.7 ms — 0.64 ms a row — so ANY second opinion about which
+   cells changed costs more than re-expanding the handful that can.  ⇒ don't detect; know.
+
+   ⚠ THE COMPLETENESS OF THAT CLAIM IS WHAT `make DUALPFCHECK=1` CHECKS, every painted frame,
+   over all 41 lines x 40 cells: a car cell that moves and is not refreshed shows up as a
+   mismatch on the frame it moves.  Widen the strip if it ever fires; do not assume it. */
+/* ⭐⭐⭐ WHAT MOVES INSIDE 117..157, AND WHY IT IS *EXCLUDED* FROM THE LAYER RATHER THAN
+   REFRESHED INTO IT.
+   Three things in these rows are not static art: the rev-counter / steering mark that
+   `plot_line_octant` and `undraw_plot_lines` draw (display lines 129..180 x cells 16..23,
+   `make fbwrites`), the front-wheel dither `tick_wheel_spin` EORs at 50 Hz (133..140 x cells
+   0..1 and 38..39), and the two WING MIRRORS (154..178 x cells 0..2 and 37..39, from the game's
+   own six-segment tables — a practice session never draws one, so no census can see them).
+
+   ⭐⭐⭐ THEY ARE LEFT TRANSPARENT, AND PF1 — WHICH STILL DECODES EVERY CELL — SHOWS THEM.  That
+   is EXACTLY RIGHT today and it costs the layer NOTHING per frame, which is the only price this
+   step can afford: a small-region re-expansion costs ~143 cycles A BYTE (§12c; the decode's 13.6
+   is a WHOLESALE, longword-batched, dirty-skipping rate and does not transfer).  Four designs
+   that tried to keep the layer live were built and measured first, and each lost:
+       its own six-row dirty scan                      +11.23 ms of phase 27
+       fused into convertRace's scan, one pass         +14.82
+       fused, two-pass, car cells only                 + 9.81
+       no scan, refreshing the two EDGE STRIPS         +20.35   (48 cells = 768 bytes)
+   The first three lose to §12c's "the decode is ~99% SCAN" — convertRace walks 26 rows for
+   16.7 ms, 0.64 ms a row, so ANY second opinion about which cells changed costs more than
+   re-expanding the few that can.  The fourth loses to the byte rate.  ⇒ deliver ZERO bytes a
+   frame: paint the static car once and let the dynamic strips come from the layer underneath.
+
+   ⚠⚠ AND THAT IS A STAGING DECISION WITH A NAMED DEBT, not the end state.  It works because PF1
+   still holds the whole picture; the moment the terrain painter stops clipping to the silhouette
+   (§2a, `LOWOWN=1`) PF1 holds ROAD there instead, and each of these three must become a PF2
+   painter — which is what `NEEDLE=1` (§12d, geometry), `TYRESPRITE=1` (sprites) and a mirror
+   painter already are, retargeted.  The oracle below is what will say so: it compares the
+   COMPOSITE, so it stays green through that change only if the strips keep arriving.
+
+   ⚠ `make DUALPFCHECK=1` IS THE COMPLETENESS GATE, every painted frame over all 41 lines x 40
+   cells.  It found this list: the first cut refreshed edge strips only and read 203 mismatches
+   at display line 157 cell 17 — the steering mark, which is nowhere near an edge. */
+static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
+    { 129, 157, 16, 23 },                         /* the rev-counter / steering mark column   */
+    { 133, 140,  0,  1 }, { 133, 140, 38, 39 },   /* the front-wheel dither                   */
+    { 154, 157,  0,  2 }, { 154, 157, 37, 39 },   /* the wing mirrors, where they reach here  */
+};
+#define COCK_DYNS (sizeof s_cockDyn / sizeof s_cockDyn[0])
+
+/* ⭐ ONE DISPLAY LINE, ALL 40 CELLS.  LINE-major: the silhouette bounds and the mode are per
+   LINE, so a cell-major walk would reload four run bytes and a mode byte for each of a cell's
+   eight lines — and under display DMA a chip-RAM access is not cheap (the decode measures ~212
+   cycles for a two-longword compare). */
+static void revs_cock_line(const uint8_t* base, uint8_t* cock, unsigned char mode, unsigned y)
+{
+    const uint8_t* const src = base + revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+    uint8_t* const q = cock + revs_mulu16((uint16_t)y, kRowBytes);
+    const uint8_t* const r = s_cockRun[y - COCK_Y0];
+    const unsigned a0 = r[0], a1 = r[1], b0 = r[2], b1 = r[3];
+    const int live = (mode == 5u);
+    unsigned c, i;
+    for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+        uint8_t lo = 0, hi = 0;                        /* transparent: PF1 shows through */
+        if (live && !((c >= a0 && c <= a1) || (c >= b0 && c <= b1))) {
+            int dyn = 0;
+            for (i = 0; i < COCK_DYNS; i++)
+                if (y >= s_cockDyn[i].y0 && y <= s_cockDyn[i].y1 &&
+                    c >= s_cockDyn[i].c0 && c <= s_cockDyn[i].c1) { dyn = 1; break; }
+            if (!dyn) {
+                const uint8_t b = src[c * 8u];
+                lo = (uint8_t)~s_expandHi[b];
+                hi = (uint8_t)~s_expandLo[b];
+                if (s_expandLo[b] & s_expandHi[b]) g_cockpitPen3++;      /* the tripwire */
+            }
+        }
+        q[c]             = lo;
+        q[c + kPlaneGap] = hi;
+        s_cockCells++;
+    }
+}
+
+/* THE LAYER, AND IN THE STEADY STATE IT DOES NOTHING AT ALL.  It repaints only when an INPUT to
+   the expansion moves — the silhouette table (once, when the race view's blocks go live) or the
+   band schedule's mode for one of these lines.  Neither is visible to a byte compare, which is
+   why they are tested here rather than inferred. */
+static void revs_cockpit_paint(const uint8_t* base, uint8_t* cock, const unsigned char* lineMode)
+{
+    static unsigned char force = 1;
+    static unsigned char poll  = 0;
+    const uint32_t* const lw = (const uint32_t*)(const void*)&lineMode[COCK_ROW0 * BBC_SCREEN_LINES];
+    unsigned i, y;
+
+    /* ⚠⚠ ASKING "DID ANYTHING CHANGE?" IS NOT FREE, AND IT WAS 2.84 ms/FRAME — with the layer
+       delivering ZERO bytes.  41 lines x three mem[] table reads plus 48 byte compares, at what
+       a chip-RAM access costs under display DMA.  Both halves are fixed here and the lesson is
+       the general one this file keeps meeting: on this machine an ACCESS COUNT is the cost, and
+       that applies to a guard exactly as it applies to the work it guards.
+       ⭐ The silhouette tables are STATIC DATA in the game binary (symbols.csv, view_run_*), so
+       they are re-read once every 64 painted frames rather than every frame — often enough to
+       notice the race view's blocks going live, ~1/64 of the price.  `force` keeps the poll
+       every frame until the first successful build. */
+    if (force || (poll = (unsigned char)((poll + 1u) & 63u)) == 0u) {
+        if (revs_cockpit_runs()) { force = 1; g_cockpitRuns++; }
+    }
+    for (i = 0; i < (COCK_ROWS * BBC_SCREEN_LINES) / 4u; i++)
+        if (s_cockMode[i] != lw[i]) { s_cockMode[i] = lw[i]; force = 1; }
+
+    s_cockCells = 0;
+    if (!force) return;
+    force = 0;
+    g_cockpitFulls++;
+    for (y = COCK_Y0; y <= COCK_Y1; y++) revs_cock_line(base, cock, lineMode[y], y);
+}
+
+#endif  /* REVS_DUAL_PLAYFIELD */
+
 /* ---------------------------------------------------------------------------
    THE CONVERSION ITSELF: BBC frame buffer -> one interleaved 2-plane buffer.
 
@@ -1391,6 +1743,7 @@ extern "C" void revs_screen_convert_reference(uint8_t* dst)
 {
     if (s_lastDecoded) s_lastDecoded->convertRace(dst, 0, 0);
 }
+
 
 /* ---------------------------------------------------------------------------
    Main loop: the BBC frame buffer -> the back buffer.
@@ -1582,6 +1935,7 @@ void RevsScreen::decode()
 
     const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
     uint8_t* dst = (uint8_t*)bm->data;
+    g_screenBackAddr = (uint32_t)dst;
 
 #ifdef REVS_FILLWATCH
     /* ⭐ The tear detector's FIRST pass, and it is its own loop rather than a hitch-hiker inside
@@ -1622,6 +1976,60 @@ void RevsScreen::decode()
     g_decodeCellsTotal += cells;
     if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
     if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
+
+#if defined(REVS_DUAL_PLAYFIELD) && !defined(REVS_DUAL_NOCONVERT)
+    /* ⭐ THE COCKPIT LAYER.  After the terrain conversion, because the two must describe the
+       same mem[] and this is where mem[] is final for the frame. */
+    PROBE_PHASE(PROBE_PHASE_COCKPIT);
+    revs_cockpit_paint(base, (uint8_t*)m_cockpit->data, m_lineMode);
+    PROBE_PHASE(PROBE_PHASE_DECODE);
+    g_cockpitCells       = (uint16_t)s_cockCells;
+    g_cockpitCellsTotal += s_cockCells;
+
+#ifdef REVS_DUAL_CHECK
+    /* ⭐⭐ THE ORACLE FOR THE DECOMPOSITION, and it runs HERE because here is the only place the
+     * three things it relates are simultaneous: mem[], the PF1 buffer this decode just filled,
+     * and PF2.  The same check from gdb at a frame boundary read 114 then 38 stale pixels — the
+     * displayed buffer is a decode behind mem[], and the layer under test looked guilty for it.
+     *
+     * COMPOSITE PF2 OVER PF1 AND REQUIRE THE BBC PEN BACK.  Bitwise, so it is two expressions
+     * rather than eight pixels: PF2 is opaque wherever either plane bit is set, its pen 1 is
+     * `lo & ~hi` and its pen 2 is `hi & ~lo`, and its pen 3 maps to BBC pen 0 = both bits clear.
+     *
+     * ⚠⚠ AND ITS SCOPE, STATED AT THE ORACLE (docs/validation-harness.md).  It CANNOT falsify
+     * the silhouette: PF1 still decodes every cell, so marking a terrain cell as car merely
+     * covers a pixel with its own colour and composites back identically.  That is not a gap to
+     * widen — it is the step being a pure decomposition, and it is exactly why the mask is
+     * gated instead by dumping s_cockRun and diffing it against the game's own tables read out
+     * of a real BBC race (tools/revs_dualpf.py, amiga/dualpf_dump.gdb).  What it DOES cover is
+     * the remap, the plane offsets, the two bitmap addresses and the per-line region bounds —
+     * i.e. everything that would put the car in the wrong place or the wrong colour. */
+    {
+        const uint8_t* const cbase = (const uint8_t*)mem + BBC_SCREEN_BASE;
+        const uint8_t* const p2b   = (const uint8_t*)m_cockpit->data;
+        unsigned y;
+        g_cockpitChecks++;
+        for (y = COCK_Y0; y <= COCK_Y1; y++) {
+            const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+            const unsigned lo  = revs_mulu16((uint16_t)y, kRowBytes);
+            unsigned c;
+            if (m_lineMode[y] != 5u) continue;
+            for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const uint8_t b     = cbase[off + c * 8u];
+                const uint8_t p1lo  = dst[lo + c],        p1hi = dst[lo + c + kPlaneGap];
+                const uint8_t p2lo  = p2b[lo + c],        p2hi = p2b[lo + c + kPlaneGap];
+                const uint8_t clear = (uint8_t)~(p2lo | p2hi);      /* PF2 transparent here */
+                const uint8_t gotLo = (uint8_t)((p2lo & ~p2hi) | (clear & p1lo));
+                const uint8_t gotHi = (uint8_t)((p2hi & ~p2lo) | (clear & p1hi));
+                if (gotLo == s_expandLo[b] && gotHi == s_expandHi[b]) continue;
+                g_cockpitMismatch++;
+                if (g_cockpitMismatchAt == 0xFFFFu)
+                    g_cockpitMismatchAt = (uint16_t)((y << 8) | c);
+            }
+        }
+    }
+#endif
+#endif
 
     /* ⭐⭐⭐ §12c — AND THE DYNAMIC RECTANGLES, over the rows the conversion just skipped.
        The bottom band is OWNED, so `convertRace` wrote none of it; what still moves down there is
@@ -1675,6 +2083,14 @@ void RevsScreen::decode()
        still holds state A's dither, and `REVS_PLOT_RECTS_RUN` re-expands the same two rectangles
        when that feature is on. */
     revs_tyres_outline(dst);
+#ifdef REVS_DUAL_PLAYFIELD
+    /* ⚠ AND ON PF2 TOO, OR THE SPLIT LEAKS.  The tread cells are car cells, so the cockpit layer
+       has just expanded mem[]'s own dither into them; masking it out of PF1 alone would leave
+       PF2 drawing it.  Masked on both, a tread pixel is PF2 pen 0 over PF1 pen 0 = COLOR00 —
+       the same black the single-playfield build left there — and the sprite supplies the
+       pattern. */
+    revs_tyres_outline((uint8_t*)m_cockpit->data);
+#endif
 #endif
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(PROBE_PHASE_DECODE);

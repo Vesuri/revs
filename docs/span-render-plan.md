@@ -2310,3 +2310,87 @@ from `mem[]` every sweep: 67 checks, 0 mismatch. ⚠ It deliberately EXCLUDES th
 ⚠ `plotDeltaCheck` had a hardcoded `blk < 2u` and so had silently stopped checking whichever
 block was added last. Same defect class as the always-true `#ifdef` above: a literal that has to
 track a `#define` and does not.
+
+### §12e — THE COCKPIT IS A SECOND PLAYFIELD (`make DUALPF=1`), and four dirty-scan designs died first
+
+⭐⭐⭐ **The user's directive is the architecture** (2026-09-21): *"the cockpit should only be
+rendered to the second playfield"*, and §12's *"the terrain should be rendered as if the car
+wasn't there and the car should be blitted on top with a mask. In fact, we could even use dual
+playfield so that the car is a separate playfield altogether."*
+
+**The display.** Four LORES bitplanes, `DBLPF`, `BPLCON2 |= PF2PRI`:
+
+| | planes | colours | buffering | holds |
+|---|---|---|---|---|
+| PF1 | 1, 3 | COLOR00..03 | double | the terrain, exactly as before |
+| PF2 | 2, 4 | COLOR08..11 | **single** | the car, display lines 117..157 |
+
+⭐ **The two extra planes cost NOTHING and that is measured, not quoted.** The Hardware Reference
+Manual says bitplane DMA takes only the even slots below five lores planes; a `DUALPF=1` build
+with the layer never filled (`make DUALPFNOCONV=1`) reads `ph27` **16.66 ms against 16.68** and a
+frame total of **172.82 against 172.86**. Chip RAM is +16.6 KB.
+
+⭐ **Each playfield can be its own BITMAP, because BPL1MOD is the odd planes and BPL2MOD the
+even ones** — the modulo split *is* the playfield split. Two 2-plane interleaved bitmaps, one
+modulo each (40), and `kRowBytes`/`kPlaneGap` are unchanged, so **`RevsPlot.cpp` needed no edit**
+and only PF1's two pointers are rewritten at the swap.
+
+⭐⭐⭐ **THE COLOUR CENSUS IS WHAT LICENSES IT.** PF2's pen 0 is transparent, so the car gets
+three opaque pens. Counted over display lines 117..157 of a live race dump, in the cells outside
+the game's own two terrain runs (`view_run_left_end` / `view_run_right_end` /
+`view_run_right_start` — static tables, so the silhouette is data, not a sample):
+
+```
+CAR      {0: 1392, 1: 1294, 2: 1042}      <- pen 3 NEVER occurs
+TERRAIN  {0: 2145, 2: 10, 3: 21}
+```
+
+so the remap is a free permutation — BBC pen 0 → PF2 pen 3, 1 → 1, 2 → 2, 3 → transparent — and
+in plane bytes it is two complements with no table and no branch:
+`lo = ~expandHi[b], hi = ~expandLo[b]` (because pen = 2·hi + lo).
+
+⭐⭐⭐ **AND THE LAYER DELIVERS ZERO BYTES A FRAME, WHICH IS THE ONLY VERSION THAT PAYS. Four
+designs that kept it live were built and measured first, and every one lost:**
+
+| design | ph27 |
+|---|---|
+| its own six-row dirty scan | **+11.23 ms** |
+| fused into `convertRace`'s scan, one pass | +14.82 |
+| fused, two-pass, car cells only | + 9.81 |
+| no scan, refresh the two EDGE STRIPS (48 cells = 768 bytes) | +20.35 |
+| **paint the static car once; leave what moves transparent** | **+0.82** (own bracket) |
+
+The first three lose to §12c's *the decode is ~99% SCAN*: `convertRace` walks 26 rows for
+16.7 ms — **0.64 ms a row** — so **any second opinion about which cells changed costs more than
+re-expanding the few that can**. The fourth loses to §12c's other number, ~143 cyc per delivered
+byte for a small region: 768 × 143 = 15.5 of the 20.35.
+⚠⚠ **A GUARD IS PRICED BY THE SAME RULE AS THE WORK IT GUARDS.** With the layer delivering zero
+bytes, merely *asking* "did anything change?" — 41 lines × three `mem[]` table reads, plus 48
+byte compares against `m_lineMode` — measured **2.84 ms a frame**. Polling the static silhouette
+every 64th frame and comparing the modes as twelve longwords took it to 0.82.
+
+**What is left transparent, and the debt that creates.** Three things inside 117..157 are not
+static art: the rev-counter / steering mark (`plot_line_octant`, 129..180 × cells 16..23), the
+front-wheel dither (`tick_wheel_spin`, 133..140 × cells 0..1 / 38..39) and the wing mirrors
+(154..178 × cells 0..2 / 37..39). PF2 leaves them transparent and **PF1, which still decodes
+every cell, shows them** — right today and free.
+⚠⚠ **It stops being right the moment §2a lands**, because PF1 will then hold road there. Each of
+the three must become a PF2 painter, and each already exists in the right shape: `NEEDLE=1`
+(geometry), `TYRESPRITE=1` (sprites), and a mirror painter. **That retarget is §2a's entry fee.**
+
+**What it buys.** Nothing yet — the frame is **+1.08 ms** (172.86 → 173.93 bracketed). It is an
+enabler, and what it enables is the whole of §2a: the car body stops belonging to the terrain
+painter, so owning 117..157 no longer leaves the furniture unpainted. That hole is what made the
+cockpit alternate between complete and incomplete every second painted frame under `LOWOWN=1`.
+
+**The gates.** `make DUALPFCHECK=1` composites PF2 over PF1 every painted frame over all 41 × 40
+cells and requires the BBC pen back (0 mismatch / 67 checks). It found two real defects while
+this was being built — 180 mismatches at line 133 cell 0 (the dither: a per-PF1-buffer shadow is
+two decodes old, which is the wrong predicate for a single-buffered layer) and 203 at line 157
+cell 17 (the steering mark, nowhere near the edge strips the first design refreshed).
+⚠⚠ **It CANNOT falsify the silhouette** — PF1 still decodes every cell, so a mis-masked cell
+composites back identically. The mask is gated instead by dumping `s_cockRun` off the target and
+diffing it against the game's own tables read out of a real BBC race
+(`amiga/dualpf_dump.gdb` + `tools/revs_dualpf.py`); they agree line for line.
+⚠⚠ **And a pen-level oracle cannot see a wrong colour REGISTER** — read the copper back and
+require `COLOR09 == COLOR01`, `COLOR10 == COLOR02`, `COLOR11 == COLOR00` in every band.

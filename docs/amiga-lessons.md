@@ -205,6 +205,42 @@ playfield draws nothing.  A sprite overhanging its intended window can only be h
 bitmap has a non-zero pen — anywhere else, blank the sprite's own pen for those scanlines (or
 end the sprite).
 
+## Dual playfield
+
+⭐⭐ **Up to four LORES bitplanes cost the 68000 NOTHING.**  Bitplane DMA takes only the EVEN
+slots of a display line until the fifth plane, so a 4-plane lores screen leaves every odd slot
+to the CPU exactly as a 2-plane one does (user, 2026-09-21, against the Hardware Reference
+Manual; `/Volumes/ADCD_2.1/REFERENCE/ROM_KERNEL_MANUALS/HARDWARE`).  **So "can we afford another
+plane?" is not the question below five planes in lores — only chip RAM is.**  Revs went 2 -> 4
+planes to give the cockpit its own playfield and paid 16.6 KB and no cycles.
+
+⭐⭐ **PF1 IS THE ODD PLANES AND PF2 THE EVEN ONES, AND SO ARE THE MODULOS — which means two
+SEPARATE bitmaps, one per playfield, cost nothing to describe.**  `BPL1MOD` applies to planes
+1/3/5 and `BPL2MOD` to 2/4/6, i.e. the modulo split IS the playfield split.  A 4-plane display
+built from two independent 2-plane INTERLEAVED bitmaps therefore needs one modulo each
+(`2*bytesPerRow - bytesPerRow`), not the 4-plane value a "one interleaved bitmap" helper
+derives — and each layer keeps whatever buffering it wants.  Revs' terrain stays
+double-buffered on planes 1,3 and its cockpit is single-buffered on 2,4, with only PF1's two
+pointers rewritten at the swap.
+
+⚠ **PF2's pen 0 is TRANSPARENT and PF1's is the background** — so PF2 has three opaque colours
+and PF1 has four (its pen 0 shows COLOR00).  Put the layer that needs four colours on PF1.  With
+two planes each, PF1 is COLOR00..03 and PF2 is COLOR08..11; **COLOR08 is never displayed** and
+need not be written.
+⭐ A 4-colour source can still fit PF2 if one of its colours can be re-pointed: Revs stores BBC
+pen 0 as PF2 pen 3 and lets BBC pen 3 fall through to PF1.  **Count the colours in the region
+first** — the census is what licensed the design, not an assumption.
+
+⚠ **`BPLCON2` bit 6 (`PF2PRI`, `$0040`) is what puts PF2 in front of PF1**, and it lives in the
+same register as the sprite priority codes above.  It is inert without `DBLPF`, so it can be set
+once with the other constants.
+
+⚠⚠ **A pen-level oracle CANNOT see a wrong colour REGISTER.**  Compositing PF2 over PF1 and
+comparing the resulting pen against the source is exact and catches the remap, the plane
+offsets and the addresses — and it would pass with `COLOR09..11` written in any order at all.
+Read the copper back and require each PF2 register to equal its PF1 partner (Revs:
+`COLOR09 == COLOR01`, `COLOR10 == COLOR02`, `COLOR11 == COLOR00`).
+
 ## Write-only registers
 
 ### BPLCON2 is per-SCENE state with no owner

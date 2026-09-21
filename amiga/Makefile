@@ -800,6 +800,77 @@ endif
 # so "two states" is a property the build CHECKS, not one it assumes.
 # ⭐ `g_tyreZeroAnim` reports animated pixels that are colour 0 in a state — a sprite cannot draw
 # colour 0, so a non-zero count constrains the step that owns these rows.
+# ⭐⭐⭐ `make DUALPF=1` — THE COCKPIT AS A SECOND PLAYFIELD (user directive, 2026-09-21:
+# "the cockpit should only be rendered to the second playfield").  FOUR bitplanes, DBLPF, and the
+# display splits into two independent layers:
+#
+#   PF1 = planes 1,3  COLOR00..03   the terrain, DOUBLE buffered   (m_bitmap[0]/[1], unchanged)
+#   PF2 = planes 2,4  COLOR08..11   the cockpit, SINGLE buffered   (m_cockpit)
+#
+# ⭐ IT COSTS NOTHING IN DMA, AND THAT IS MEASURED.  In LORES, bitplane DMA takes only the EVEN
+# slots below five planes, so the 68000 keeps every odd slot it had at two (Hardware Reference
+# Manual §6, "if the display contains four or fewer low resolution bitplanes the 68000 can be
+# granted alternate memory cycles").  `make DUALPF=1 DUALPFNOCONV=1` confirms it on the target:
+# ph27 16.66 ms against 16.68, frame 172.82 against 172.86.  Chip RAM is +16.6 KB.
+#
+# ⭐⭐ WHY IT IS THE ARCHITECTURE AND NOT AN OPTIMISATION.  The view sweep's own display lines
+# 117..157 carry BOTH the terrain and the car, and the game's rasteriser clips every line to the
+# car's silhouette to keep out of it.  Owning those rows for the direct-to-bitplane painter
+# (`LOWOWN=1`) therefore left the car body — which the sweep never paints — belonging to nobody.
+# With the car on its own playfield the terrain layer's car cells become DON'T CARE.
+#
+# ⭐⭐⭐ THE MEASUREMENT THAT MAKES IT FIT.  PF2's pen 0 is TRANSPARENT, so the car gets three
+# opaque pens, not four — and the car uses exactly three.  Counted over display lines 117..157 of
+# a live race dump, in the cells OUTSIDE both of the game's own terrain runs (the runs come from
+# view_run_left_end / view_run_right_end / view_run_right_start, which are static tables):
+#     CAR      {0: 1392, 1: 1294, 2: 1042}     <- pen 3 NEVER occurs
+#     TERRAIN  {0: 2145, 2: 10, 3: 21}
+# So the remap is a PERMUTATION and it is free: pen 0 -> PF2 pen 3, 1 -> 1, 2 -> 2, 3 -> pen 0.
+# In plane bytes that is `lo = ~expandHi[b], hi = ~expandLo[b]` — no table, no branch.
+# ⚠ `g_cockpitPen3` is the tripwire on the one assumption and must stay 0.
+#
+# ⭐⭐⭐ AND THE LAYER DELIVERS ZERO BYTES A FRAME.  PF2 carries only the STATIC car; the three
+# things that move inside 117..157 are left TRANSPARENT and come from PF1, which still decodes
+# every cell.  Four designs that kept the layer live were built and measured first and each lost
+# — its own six-row scan +11.23 ms of ph27, fused into convertRace's scan +14.82, fused two-pass
+# +9.81, refreshing the two edge strips +20.35.  The first three lose to "the decode is ~99%
+# SCAN" (convertRace walks 26 rows for 16.7 ms, 0.64 ms a row); the fourth to ~143 cyc per
+# delivered byte for a small region.  docs/span-render-plan.md §12e has the table.
+# ⚠⚠ Even the GUARD had to be priced the same way: asking "did anything change?" every frame —
+# 41 lines of mem[] table reads plus 48 byte compares — was 2.84 ms on its own.
+#
+# ⚠⚠ THE DEBT THIS CREATES IS §2a's ENTRY FEE.  The transparent strips work only while PF1 holds
+# the whole picture; once the terrain painter ignores the silhouette PF1 holds ROAD there, and
+# the rev-counter/steering mark (NEEDLE=1), the front-wheel dither (TYRESPRITE=1) and the wing
+# mirrors must each write PF2 instead.
+# ⚠ SCOPE: display lines 117..157 only.  Rows 158..207 stay wholly on PF1, so DELTAOWN's glyph
+# rows (192..207), the needle painter (158..191) and the rectangle painter are untouched.
+DUALPF ?= 0
+ifeq ($(DUALPF),1)
+EXTRA_DEFINES += -DREVS_DUAL_PLAYFIELD
+PROBE_SYMS_DUALPF = g_cockpitCells g_cockpitCellsTotal g_cockpitPen3 g_cockpitRuns g_cockpitBadSlot g_cockpitFulls
+# ⚠ A CEILING PROBE, NEVER A SHIPPING ARM: `make DUALPF=1 DUALPFNOCONV=1` sets the display up as
+# a dual playfield and never fills PF2, so the cockpit layer is blank (transparent) and the
+# picture is the single-playfield one.  It exists to separate the layer's CONVERSION cost from
+# the two extra bitplanes' DMA cost — which the Hardware Reference Manual says is zero below
+# five lores planes, and this is how that is confirmed on the target rather than quoted.
+ifeq ($(DUALPFNOCONV),1)
+EXTRA_DEFINES += -DREVS_DUAL_NOCONVERT
+endif
+# ⭐⭐ `make DUALPFCHECK=1` — THE DECOMPOSITION'S ORACLE: composite PF2 over PF1 every painted
+# frame and require the BBC pen back, over all 41 lines x 40 cells.  `g_cockpitMismatch` must be
+# 0; `g_cockpitMismatchAt` is (line << 8) | cell of the first.  It found two real defects while
+# this was being built (180 mismatches at line 133 cell 0, 203 at line 157 cell 17).
+# ⚠ It CANNOT falsify the silhouette — PF1 still decodes every cell, so a mis-masked cell
+# composites back identically.  The mask is gated instead by dumping s_cockRun
+# (amiga/dualpf_dump.gdb + tools/revs_dualpf.py) and diffing it against the game's own run
+# tables read out of a real BBC race.  Scope is written at the oracle.
+ifeq ($(DUALPFCHECK),1)
+EXTRA_DEFINES += -DREVS_DUAL_CHECK
+PROBE_SYMS_DUALPFCHK = g_cockpitChecks g_cockpitMismatch g_cockpitMismatchAt
+endif
+endif
+
 TYRESPRITE ?= 0
 ifeq ($(TYRESPRITE),1)
 EXTRA_DEFINES += -DREVS_TYRE_SPRITES
@@ -1213,7 +1284,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
              g_viaT2Reads g_viaT2Last \
              g_badRegionCount g_badRegionEntry \
-             g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
+             g_screenFrontAddr g_screenCockpitAddr g_screenBackAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
              g_gapWalkSlow g_bandRejects g_decodeFlatLines g_decodeFlatBands \
              g_decodeCells g_decodeCellsMax g_decodeCellsTotal g_decodeFullFrames \
              g_decodeModeLines \
@@ -1294,6 +1365,7 @@ PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
+PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping

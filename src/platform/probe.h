@@ -242,6 +242,10 @@ extern int g_viewPhaseIdx;
 #define PROBE_PHASE_DRAIN  26
 #define PROBE_PHASE_DECODE 27
 #define PROBE_PHASE_SPIN   28
+/* ⭐ `make DUALPF=1`: the cockpit layer's own bracket, carved out of the decode's.  Its own row
+   because ph27 alone cannot say whether a move is the terrain conversion or the second layer —
+   the same reason the rectangle painter got one (§12c). */
+#define PROBE_PHASE_COCKPIT 30
 
 /* ⭐ Beam ticks in one PAL display frame, in the units beamTick() composes
    (line * 256 + hpos, 313 lines).  The VERTB ISR adds this to g_beamEpoch once per
@@ -301,6 +305,7 @@ extern volatile unsigned long g_probeFrozenUnits[3], g_probeFrozenRuns[3], g_pro
 #define PROBE_VIEW_LINE()     ((void)0)
 #define PROBE_PHASE_DRAIN     26
 #define PROBE_PHASE_DECODE    27
+#define PROBE_PHASE_COCKPIT   30
 #define PROBE_PHASE_SPIN      28
 #define PROBE_PHASE_BODYARM   29
 #endif

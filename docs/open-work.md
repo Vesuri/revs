@@ -299,6 +299,19 @@ scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
 `copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
 ### 2a. ⭐⭐⭐ ROWS 117..157 — THE BIGGER OF THE DECODE'S TWO REMAINING PRIZES, ~7.2 ms
+⭐⭐⭐ **UNBLOCKED, 2026-09-21: the cockpit is now its own PLAYFIELD (`make DUALPF=1`,
+`docs/span-render-plan.md` §12e).** The car body used to belong to nobody once the sweep claimed
+these rows — the terrain painter clips to the silhouette and never paints inside it — and the
+player saw the cockpit alternate between complete and incomplete every second painted frame.
+With the car on PF2 the terrain layer's car cells are DON'T CARE.
+⚠ **The entry fee is three retargets, and all three already exist in the right shape.** PF2
+carries only the STATIC car; what moves inside 117..157 is left transparent and comes from PF1
+today, which stops working the moment PF1 holds road: the rev-counter / steering mark must come
+from `NEEDLE=1`'s geometry, the front-wheel dither from `TYRESPRITE=1`'s sprites, and the wing
+mirrors from a painter of their own — each writing PF2 instead of PF1.
+⚠⚠ **`make DUALPFCHECK=1` is the gate that says when it is done**: it composites the two
+playfields and requires the BBC pen back, so a strip that stops arriving shows up on the frame
+it moves.
 ⚠⚠ **The 2026-09-20 "re-pricing" that used to head this entry is RETRACTED** — both arms of the
 §12c A/B owned display lines 158..191 (a macro-name collision; `docs/span-render-plan.md` §12c).
 Re-measured with the collision fixed, `decode()` is **17.55 ms** and `convertRace` **10.13 ms at
