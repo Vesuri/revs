@@ -2191,3 +2191,86 @@ and the **3.02 ms remainder**. 5 ms of overhead around 7.2 ms of real conversion
   segments) is derived from the game's own `mirror_seg_addr_lo/hi` + `mirror_seg_start_row` /
   `mirror_seg_end_row` tables, walked as `mirror_draw_car_core` walks them. No practice
   measurement can see them.
+
+### ⭐⭐⭐ §12d — THE TWO DASH NEEDLES AS GEOMETRY: `make NEEDLE=1` (2026-09-21)
+
+User directive, and the third writer of the §12 block to stop touching `mem[]`:
+
+> *"For the needle, go for the 'render to the other playfield' option. Instead of undoing the
+> previous needle with XOR and all the logic associated with that, just keep track of the
+> bounding rectangle for the needle and copy that from the original cockpit image with no needle
+> instead. Use 32 pixel granularity so the copy can be just a number of move.l instructions."*
+
+**What went.** `plot_line_octant` drew each pixel with a `bus_read` + `bus_write` through
+`($70),Y` and saved the displaced byte into a 248-entry undo list, which `undraw_plot_lines`
+replayed backwards at the top of the next frame — per pixel: one bus read, five `mem[]` stores, a
+bus write, a `plot_store_resync`, and next frame one more bus write. `bus_read`/`bus_write` inside
+the renderer is the standing red flag and this was the last of them on the dash.
+
+**What replaced it.** The DDA is still the game's own — it is the game's line — but its per-pixel
+action is an APPEND: the plane offset and a mask index. The renderer then, once per painted frame
+at the end of `decode()`:
+
+1. copies each mark's bounding rectangle back out of `s_ndlBase`, a cached expansion of the CLEAN
+   COCKPIT (`mem[]` holds no needle any more, because nothing writes one there);
+2. blits the listed pixels into the plane pair;
+3. records the new rectangles.
+
+**⭐⭐ ONE RECTANGLE PER MARK, NOT ONE ROUND BOTH — 4.74 ms against 0.4.** The rev-counter needle
+pivots at display line 168 and the steering mark sits thirty lines above it, so their COMBINED box
+is very nearly the whole 64-line column: ~500 longwords copied to put back 35 pixels. Per mark it
+is **14 longword pairs a frame**, measured. ⇒ *a bounding box is only a good erase when the thing
+inside it is CONNECTED.*
+
+**⭐⭐⭐ AND THE PAINTER MUST NOT RE-DERIVE THE ADDRESS — 3.2 ms for 35 pixels.** Written the
+obvious way, mapping each pixel's `mem[]` address back through `s_lineOf`/`s_planeOff` and a
+`cell = po - y*80`, the loop came out at ~45 instructions a pixel: five `lea`s of absolute table
+bases and a `mulu.w #80`. The plotter already HAS the position — its DDA walks one BBC cell (= one
+plane byte, ±1) and one scan line (= one plane line, ±80) at a time — so carrying the plane offset
+alongside the plot pointer is two `addq`s in a loop that was doing six `mem[]` accesses a pixel.
+The ladder, same session, `PROBEFIELDS=3000`, driving, measured in the decode's own carve:
+
+| painter | phase 55 |
+|---|---:|
+| BBC addresses re-mapped per pixel, one box round both marks | 4.74 ms |
+| ...one box per mark | 4.03 |
+| ...plane offsets carried by the DDA (the blit) | 2.31 |
+| ...pre-scaled mask index + band SIGNATURE instead of a 64-line kind scan | **1.64** |
+
+⭐ Two of those are general. **A pre-scaled index**: handing the loop `maskIdx << 2` instead of
+`maskIdx` deleted six instructions a pixel (zero-extend, mask, two `adda`s to multiply by four,
+an absolute `adda`). **A signature, not a scan**: the backdrop is stale only if a line's MODE
+moves, and a per-line kind table answered that in 64 byte compares a frame = 0.62 ms. The
+signature is five — and it must MERGE adjacent same-mode bands, because band 3's boundary is the
+HORIZON and moves every frame while bands 2, 3 and 4 are all MODE 5.
+
+**⚠⚠ ON ITS OWN IT IS +0.90 ms — IT IS AN ENABLER, NOT A WIN.** Control against needle arm, whole
+frame, same session: `ph27` 16.60 → 18.06 (+1.46, the painter) and `ph32` 6.24 → 5.68 (−0.56, the
+6502 plot and the undo walk going away). The 6502 path was only 0.56 ms — much cheaper than it
+looks, because it is 35 pixels. ⇒ **this pays when display lines 158..191 are OWNED** (§12c's
+correction: ~2.9 ms), which it is the precondition for, and not before.
+
+**The invariant, and its gates.** Everything rests on one sentence: *`mem[]` under the needle
+never changes.* That is what makes a cached backdrop legal AND what stops the dirty decode
+repainting over the mark. Five counters, all measured 0 over 100+ painted frames driving:
+
+- `g_needleOutside` — a pixel outside the column the rectangle could erase. The column is the
+  DDA's ARITHMETIC bound (cells 12..27, lines 128..191), not the sampled footprint.
+- `g_needleMaskBad` — the game's `plot_line_colour_tbl`/`pixel_keep_others_tbl` not being
+  pixel-aligned, which is what licenses turning the byte OR into two plane bits. The rev needle
+  is colour 2 and the steering mark colour **0** — it is drawn by CLEARING pixels.
+- `g_needleOverflow`.
+- `g_needleBaseMismatch` (`NEEDLECHECK=1`) — the cache against a fresh expansion of `mem[]`,
+  every painted frame: 101 checks, 0.
+- `g_needleRestoreMismatch` (`NEEDLECHECK=1`) — the whole column against the cache AFTER the
+  erase and BEFORE the draw, which is what catches a smear: 101 checks, 0. **Sabotaged twice:
+  skipping the erase fires at 11989, a rectangle one group too narrow at 4318.**
+- `g_needleVerifyMismatch` (`NEEDLEVERIFY=1`) — the painter against the DECODE, pixel for pixel,
+  with the `mem[]` plot kept live so the decode produces the reference: **127 frames, 0 mismatch**.
+  Sabotaged by swapping the two planes: 3529. That is the gate on the address map, the bit
+  positions and the colours; the two above are the gate on the erase.
+
+⭐ The rectangle needs no min/max: an octant DDA takes one x-step opcode and one y-step opcode for
+the whole line, so a mark is MONOTONE in both axes and its box is its first and last pixel. That
+is an argument, and the restore oracle is its gate — a non-monotone line leaves pixels outside the
+rectangle and fires it on the next frame.

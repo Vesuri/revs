@@ -806,6 +806,44 @@ EXTRA_DEFINES += -DREVS_TYRE_SPRITES
 PROBE_SYMS_TYRE = g_tyreBuilds g_tyrePeriodBad g_tyrePhase g_tyreZeroAnim
 endif
 
+# ⭐⭐⭐ `make NEEDLE=1` — THE TWO DASH NEEDLES STRAIGHT INTO THE PLANES (§12d, user directive).
+# `plot_line_octant` stops reading and writing the frame buffer and stops filling the 248-entry
+# undo list `undraw_plot_lines` replayed backwards every frame; it appends (address, mask index)
+# instead, and the renderer paints those pixels into the plane pair at the end of the decode.
+# Last frame's mark is erased by copying the needle column's BOUNDING RECTANGLE back out of a
+# cached expansion of the clean cockpit — 32 Amiga pixels to a group, one aligned plane longword,
+# so the erase is a run of `move.l` and nothing else.
+# ⚠⚠ THE INVARIANT: `mem[]` under the needle never changes.  That is what makes the cached
+# backdrop legal AND what stops the dirty decode repainting over the mark.  `make NEEDLECHECK=1`
+# is its oracle — the column is re-expanded from `mem[]` every painted frame and compared against
+# the cache, so a writer with no rectangle of its own shows up on the frame it writes.
+# ⚠ THREE COUNTERS MUST READ 0: `g_needleOutside` (a pixel outside the column, which the
+# rectangle copy could never erase — the column is the DDA's arithmetic bound, not the sampled
+# footprint), `g_needleMaskBad` (the game's two mask tables not pixel-aligned, which is what
+# licenses turning the byte OR into two plane bits) and `g_needleOverflow`.
+# ⭐ Amiga only by construction: the host keeps the faithful undo-list plotter, so `make validate`
+# and every `determinism` trajectory are untouched.
+NEEDLE ?= 0
+ifeq ($(NEEDLE),1)
+EXTRA_DEFINES += -DREVS_NEEDLE_PLANES
+PROBE_SYMS_NEEDLE = g_needleOutside g_needleMaskBad g_needleOverflow \
+                    g_needlePaints g_needleBases g_needlePixLast g_needleLwLast
+ifeq ($(NEEDLECHECK),1)
+EXTRA_DEFINES += -DREVS_NEEDLE_CHECK
+PROBE_SYMS_NEEDLECHK = g_needleBaseChecks g_needleBaseMismatch g_needleBaseMismatchAt \
+                       g_needleRestoreChecks g_needleRestoreMismatch g_needleRestoreMismatchAt
+endif
+# ⭐⭐⭐ `make NEEDLEVERIFY=1` — THE PAINTER AGAINST THE DECODE, pixel for pixel, in process.
+# `plot_line_octant` takes BOTH arms of its pixel site, so the decode converts the real needle
+# out of `mem[]` and the painter's own answer is compared against it instead of being drawn.
+# `g_needleVerifyMismatch` must be 0.  ⚠ Its scope is the DRAW; the erase's gates are
+# NEEDLECHECK's two.  Diagnostic only — the mem[] plot is live, so quote no framerate from it.
+ifeq ($(NEEDLEVERIFY),1)
+EXTRA_DEFINES += -DREVS_NEEDLE_VERIFY
+PROBE_SYMS_NEEDLEVFY = g_needleVerifyChecks g_needleVerifyMismatch g_needleVerifyMismatchAt
+endif
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_LOW
@@ -996,6 +1034,7 @@ PROBE_SYMS_PLOT =
 PROBE_SYMS_SPAN =
 PROBE_SYMS_DELTA =
 PROBE_SYMS_PAINT =
+PROBE_SYMS_NEEDLE =
 endif
 
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
@@ -1214,6 +1253,7 @@ PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
+PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping

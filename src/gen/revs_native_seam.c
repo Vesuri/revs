@@ -1095,6 +1095,12 @@ void draw_dash_needles_native(void)
        (the folded angle index and a fixed 6) until the $74/$75 relocation. */
     /* ⭐ Core-to-core: undraw_plot_lines' 6502 exit ABI (A/X/Y + N/Z) is dead here —
        dial_needle_angle sets up plot_line_octant's entry registers itself. */
+    /* §12d: the frame boundary for the renderer's pixel list.  A list left over from a game
+       frame that was never painted is discarded here rather than drawn twice — and on every
+       other build this compiles to nothing.  ⚠ `undraw_plot_lines_core` below still runs and
+       still takes its empty-list exit; the undo list is not filled on that arm at all
+       (the reader audit is at the pixel site in plot_line_octant_core). */
+    REVS_NEEDLE_CLEAR();
     undraw_plot_lines_core();                     /* $513A */
     dial_needle_angle_plot();                     /* $513D — rev needle; falls into plot_line_octant.
                                                      Core-to-core: the model state is already live. */

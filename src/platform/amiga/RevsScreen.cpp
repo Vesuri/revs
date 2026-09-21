@@ -1621,6 +1621,13 @@ void RevsScreen::decode()
 #endif
     REVS_PLOT_RECTS_RUN();
 
+    /* ⭐⭐⭐ §12d — AND THE TWO DASH NEEDLES, LAST OF ALL.  The list was filled by
+       `draw_dash_needles`, `race_main_loop`'s closing draw, so it describes the same game frame
+       the conversion above just painted; it goes on last because the conversion may well have
+       repainted a line of the needle column out of `mem[]` (128..157 are the view sweep's).
+       Erase, draw, remember — revs_plot.h §12d. */
+    REVS_NEEDLE_PAINT();
+
 #ifdef REVS_TYRE_SPRITES
     /* ⭐ BUILD THE TWO TYRE STATES, ONCE.  Main-loop context, as RevsTyres.h requires: the build
        applies the game's own EOR to the live frame buffer twice (to discover state B and to

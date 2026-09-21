@@ -4713,6 +4713,39 @@ void plot_line_octant_core(uint8_t entryScanline)
        once a frame, so the pointer is read in here once and written back at every exit. */
     plot_ptr_marshal_in();
 
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_NEEDLE_PLANES)
+    /* ⭐⭐⭐ §12d — THE MARK, AND ITS POSITION CARRIED ALONGSIDE THE PLOT POINTER.
+       One `plot_line_octant` call is one connected line and one rectangle (a box round BOTH dash
+       needles is nearly the whole column — revs_plot.h).  `ndlPo` is the pixel's plane-1 byte
+       offset: the DDA moves one BBC cell at a time, which is one plane byte, and one scan line at
+       a time, which is one plane line — so it walks by ±1 and ±80 beside the pointer walk that is
+       already happening, and the painter never has to map an address back.
+       ⚠ `ndlY0`/`ndlG0` are the FIRST pixel and `ndlLine`/`ndlGroup` end as the LAST: an octant
+       DDA takes one x-step opcode and one y-step opcode for the whole line, so the mark is
+       monotone in both axes and needs no min/max.  `make NEEDLECHECK=1` is that argument's gate. */
+    unsigned short ndlPo;
+    unsigned char  ndlLine, ndlCell;
+    unsigned       ndlGroup, ndlY0, ndlG0;
+    REVS_NEEDLE_MARK();
+    revs_needle_origin((unsigned short)plot_ptr_v, entryScanline, &ndlPo, &ndlLine, &ndlCell);
+    ndlGroup = ((unsigned)ndlCell - REVS_NEEDLE_C0) >> 2;
+    ndlY0 = ndlLine; ndlG0 = ndlGroup;
+/* One scan line is one plane line; one BBC cell is one plane byte.  `y` and the plot pointer
+   already move by exactly those, so these ride along with them. */
+#define NDL_YSTEP(d)  do { ndlLine = (unsigned char)((int)ndlLine + (d));                      \
+                           ndlPo   = (unsigned short)((int)ndlPo                               \
+                                                      + (d) * (int)REVS_NEEDLE_LINE_STRIDE);   \
+                      } while (0)
+#define NDL_XSTEP(d)  do { ndlCell = (unsigned char)((int)ndlCell + (d));                      \
+                           ndlPo   = (unsigned short)((int)ndlPo + (d));                       \
+                           ndlGroup = ((unsigned)ndlCell - REVS_NEEDLE_C0) >> 2;               \
+                      } while (0)
+#define NDL_CLOSE()  REVS_NEEDLE_CLOSE(ndlY0, ndlLine, ndlG0, ndlGroup)
+#else
+#define NDL_YSTEP(d)  ((void)0)
+#define NDL_XSTEP(d)  ((void)0)
+#define NDL_CLOSE()   ((void)0)
+#endif
     uint8_t octant = shared_temp_76;                            /* $5204 */
     mem[MEM_smc_major_step] = mem[MEM_octant_major_step_tbl + octant];  /* $5209 -> SMC slot */
     mem[MEM_smc_minor_step] = mem[MEM_octant_minor_step_tbl + octant];  /* $520f -> SMC slot */
@@ -4733,12 +4766,12 @@ void plot_line_octant_core(uint8_t entryScanline)
         if (sum > 0xFFu) {                                 /* $521c carry -> the major step */
             acc = (uint8_t)(acc - mem[MEM_point_delta_hi]);    /* $521e SBC delta (C=1) */
             switch (mem[MEM_smc_major_step]) {                 /* $5220 SMC opcode slot */
-            case 0x88u: y = (uint8_t)(y - 1); break;       /* DEY */
-            case 0xC8u: y = (uint8_t)(y + 1); break;       /* INY */
+            case 0x88u: y = (uint8_t)(y - 1); NDL_YSTEP(-1); break;   /* DEY */
+            case 0xC8u: y = (uint8_t)(y + 1); NDL_YSTEP(+1); break;   /* INY */
             case 0xCAu: x = (uint8_t)(x - 1); break;       /* DEX */
             case 0xE8u: x = (uint8_t)(x + 1); break;       /* INX */
             default: platform_smc_unhandled(MEM_smc_major_step, mem[MEM_smc_major_step]);
-                     plot_ptr_marshal_out(); return;
+                     NDL_CLOSE(); plot_ptr_marshal_out(); return;
             }
         }
         bearing_lo = acc;                                  /* $5221 park the DDA accumulator */
@@ -4754,6 +4787,7 @@ void plot_line_octant_core(uint8_t entryScanline)
             x = 7u;                                        /* $522e */
             uint8_t oldLo = (uint8_t)plot_ptr_v;
             PLOT_PTR_ADD(plot_ptr, -8);                    /* $5230-5239 one cell left */
+            NDL_XSTEP(-1);
             /* ⭐ `>= 8` vs `> 8` is provably the same program: at oldLo == 8 the new low byte is
                0, and the re-test below asks `a >= 8`, which 0 fails — so the borrow arm falls
                through without stepping, exactly where the no-borrow arm jumps.  A sabotage of
@@ -4774,6 +4808,7 @@ void plot_line_octant_core(uint8_t entryScanline)
                store direction.  The fixture PLANTS the case (one seed in eight puts $71 in page
                $00); without the plant these guards are untested. */
             PLOT_PTR_ADD(plot_ptr,  8);                    /* $5243-524c one cell right */
+            NDL_XSTEP(+1);
         }
         shared_temp_77 = x;                                /* $524e */
 
@@ -4793,6 +4828,36 @@ void plot_line_octant_core(uint8_t entryScanline)
         }
 
         /* $527b-5294 — record the undo entry, then OR the pixel into the cell. */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_NEEDLE_PLANES)
+        /* ⭐⭐⭐ §12d — THE PIXEL GOES ON A LIST AND NOTHING GOES INTO `mem[]` (revs_plot.h).
+           This is the whole of the Amiga arm: one append against the 6502's `bus_read`, five
+           `mem[]` stores, a `bus_write` and a `plot_store_resync` — and, next frame, the undo
+           walk that replayed them.  The renderer paints the pixels into the plane pair and
+           erases last frame's by copying the needle column's bounding rectangle back out of the
+           clean cockpit, so no byte of the picture has to be saved to put it back.
+           ⚠⚠ THE READER AUDIT this rests on.  (a) THE FRAME BUFFER: `make fbwrites FILLREADS=1`
+           over a real BBC race names every genuine reader of display lines 117..157 —
+           `tick_wheel_spin` (cells 0,1,38,39), `plot_line_octant`'s own undo save, and
+           `update_grip_limits` (line 149, cells 7 and 32) — and the only one inside the needle
+           column is this routine itself; below 158 the band is read by nothing.  (b) THE UNDO
+           LIST: `plot_undo_ptr_lo/hi`, `plot_undo_byte` and `plot_undo_count` have exactly two
+           readers, `undraw_plot_lines` and this loop, and the count stays at the 0 that `$3860`
+           left — so `undraw_plot_lines` keeps taking its empty-list exit and needs no arm of its
+           own.  (c) `plot_store_resync` exists for a plot that lands ON its own zero-page
+           pointer; with no store there is nothing to resynchronise.
+           ⭐ And `bearing_lo`/`shared_temp_76`/`shared_temp_77`/`plot_ptr` keep their 6502 exit
+           values, because the DDA above is untouched — only its per-pixel STORE changed. */
+        (void)undoIdx; (void)ay;   /* the undo list is not filled on this arm */
+        if ((unsigned)(ndlLine - REVS_NEEDLE_Y0) < REVS_NEEDLE_YN &&
+            (unsigned)(ndlCell - REVS_NEEDLE_C0) < REVS_NEEDLE_CELLS)
+            REVS_NEEDLE_PIXEL(ndlPo, maskIdx);
+        else
+            REVS_NEEDLE_OUTSIDE();      /* the rectangle copy could never erase it — see the header */
+#endif
+        /* ⭐ `make NEEDLEVERIFY=1` keeps the 6502's own plot as well, so the decode produces a
+           reference the painter can be compared against pixel for pixel (RevsPlot.cpp
+           §ndlVerify).  Every other build takes exactly one of these two. */
+#if !defined(REVS_PLATFORM_AMIGA) || !defined(REVS_NEEDLE_PLANES) || defined(REVS_NEEDLE_VERIFY)
         ay = (uint8_t)(ay | (uint8_t)plot_ptr_v);          /* $527b address low, scan line folded in */
         mem[MEM_plot_undo_ptr_lo + undoIdx] = ay;              /* $527d */
         mem[MEM_plot_undo_ptr_hi + undoIdx] = (uint8_t)(plot_ptr_v >> 8);  /* $5282 */
@@ -4804,22 +4869,27 @@ void plot_line_octant_core(uint8_t entryScanline)
                                 | mem[MEM_plot_line_colour_tbl + maskIdx]);       /* $528e-5291 */
         bus_write(addr, out);                              /* $5294 */
         plot_store_resync(addr, out);   /* the plotter can write its OWN pointer cells */
+#endif
 
         /* $5296-52a0 — the minor (every-pixel) step, then loop until the counter goes negative. */
         x   = shared_temp_77;                              /* $5296 (a no-op mirror of the 6502) */
         acc = bearing_lo;                                  /* $5298 restore the DDA accumulator */
         switch (mem[MEM_smc_minor_step]) {                     /* $529b SMC opcode slot */
-        case 0x88u: y = (uint8_t)(y - 1); break;           /* DEY */
-        case 0xC8u: y = (uint8_t)(y + 1); break;           /* INY */
+        case 0x88u: y = (uint8_t)(y - 1); NDL_YSTEP(-1); break;   /* DEY */
+        case 0xC8u: y = (uint8_t)(y + 1); NDL_YSTEP(+1); break;   /* INY */
         case 0xCAu: x = (uint8_t)(x - 1); break;           /* DEX */
         case 0xE8u: x = (uint8_t)(x + 1); break;           /* INX */
         default: platform_smc_unhandled(MEM_smc_minor_step, mem[MEM_smc_minor_step]);
-                 plot_ptr_marshal_out(); return;
+                 NDL_CLOSE(); plot_ptr_marshal_out(); return;
         }
         math_hi = (uint8_t)(math_hi - 1);                  /* $529c DEC math_hi — IN PLACE */
         if (math_hi & 0x80u) break;                        /* $529e BMI -> done */
     }
+    NDL_CLOSE();
     plot_ptr_marshal_out();                                /* publish $70/$71 for the 6502-ABI mirror */
+#undef NDL_YSTEP
+#undef NDL_XSTEP
+#undef NDL_CLOSE
 }
 
 /* $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE (twin #156)
