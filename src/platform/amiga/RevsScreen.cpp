@@ -1619,7 +1619,7 @@ void RevsScreen::decode()
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(DEC_PHASE_RECTS);
 #endif
-    REVS_PLOT_RECTS();
+    REVS_PLOT_RECTS_RUN();
 
 #ifdef REVS_TYRE_SPRITES
     /* ⭐ BUILD THE TWO TYRE STATES, ONCE.  Main-loop context, as RevsTyres.h requires: the build

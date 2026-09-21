@@ -2099,24 +2099,56 @@ session, `PROBEFIELDS=3000`, driving:
 | **`convertRace`** | **7.22** | **7.29** | **+0.07** |
 | whole `decode()` | 15.04 | 23.16 | **+8.12** |
 
-#### ⭐⭐⭐ THE FINDING, AND IT IS ABOUT THE PRIZE, NOT THE PAINTER: `convertRace` DID NOT MOVE
+#### ⛔⛔⛔ RETRACTED (2026-09-21) — BOTH ARMS OF THAT TABLE OWNED THE ROWS
 
-Owning 34 more rows bought **+0.07 ms**. `convertRace` is **dirty-region** — it converts only the
-cells whose `mem[]` byte changed against the shadow — so it had **already** skipped this band.
-And the number closes exactly: 0.07 ms is ~500 cycles is ~37 cells at 13.6 cyc/cell, against the
-**33 changes a frame** `make fbwrites` measures in 158..191. The decode was converting the needle
-and nothing else.
+The `+0.07` is real and it means nothing, because **`DASHOWN=0` was not the control.**
 
-⇒ **OWNING A ROW IS WORTH (the cells the DIRTY decode actually converts on it) × 13.6 cyc, NOT
-(40 cells) × 13.6.** §11's ~544 cyc/row is the price of a row the producers **rewrite wholesale**
-— which is what the terrain rows are, and is why `VIEWCARVE` measured it there. For a row that
-changes in a handful of cells the true price is **~13 cycles**, a factor of **40** smaller.
-⭐⭐ And the writer-set ledger has been printing the right number all along, in the column nobody
-used: rank an ownership domain by **`ch/f`**, never by `st/f` and never by the row count.
-158..191 is 0.97 changed cells per row per frame.
+`revs_plot.h` spelled its invocation macro `REVS_PLOT_RECTS()` and gave the feature-off branch a
+no-op **of the same name**. C answers `#ifdef REVS_PLOT_RECTS` TRUE for a function-like macro as
+readily as for a `-D`, so every `#ifdef REVS_PLOT_RECTS` in `RevsPlot.cpp` took the feature's arm
+in a build with the feature OFF. `kDeltaBlock` therefore took its **three-block** form always:
 
-⇒ **No tuning rescues this.** A painter can be made cheaper; a prize of zero cannot. The
-mechanism is closed on the budget.
+```
+DASHOWN=0, before the fix:   owned=104   OWNED 0..17, 81..116, 158..207   cells/frame = 55
+DASHOWN=0, after  the fix:   owned= 70   OWNED 0..17, 81..116, 192..207   cells/frame = 80
+```
+
+Display lines 158..191 were **claimed with no painter behind them** — `REVS_PLOT_RECTS_RUN()` was
+the no-op and `plot_line_octant` has no `REVS_PLOT_BYTE` at its store site — so the decode stopped
+converting them and nothing else drew them. ⇒ **the rev-counter needle and the steering-wheel mark
+were frozen on screen from `a9e2116` until this correction**, and the wing mirrors with them.
+
+With the collision fixed, the same carve on the same trajectory:
+
+| decode, carved | broken "control" | true control | Δ |
+|---|---:|---:|---:|
+| `convertRace` | 7.22 | **10.13** | **+2.91** |
+| cells converted / frame | 55 | **80** | +25 |
+| owned display lines | 104 | 70 | −34 |
+
+⇒ **those 34 rows are worth ~2.9 ms — 0.086 ms a row — which is §11's ledger price, not ~0.**
+
+#### ⭐⭐⭐ AND THE PRIZE IS THE SCAN, NOT THE CELLS — WHICH KILLS THE `ch/f` RULE OUTRIGHT
+
+2.91 ms for 34 rows while only **25 more cells a frame** are converted. 25 × 13.6 cyc = 0.05 ms,
+i.e. **2% of the move**. The other 98% is `convertRace` walking rows it no longer skips: the
+shadow compare, the mode classification and the per-row setup, paid whether or not a cell moved.
+That is the same "~99% scan" the split has been saying all along.
+
+⇒ Both halves of the retracted rule are false. Owning a row is **not** worth
+(changed cells × 13.6); `ch/f` is **not** how to rank an ownership domain; and `st/row` —
+derived from the same arithmetic — is suspended with it. **Rank by ROWS OWNED**, as §11 did.
+
+#### ⚠⚠⚠ THE METHOD LESSON: PROVE THE CONTROL ARM IS THE CONTROL
+
+"An A/B switch must print its own state" was already the rule, and `DASHOWN` obeyed it — the
+*feature* switch was genuinely off. What was not proven is that the **control** was a control.
+One run of `amiga/own_map.gdb` on a `DASHOWN=0` build would have printed `OWNED 158..207` and
+ended it; `g_decodeOwnLines` alone could not, because a COUNT cannot say *which* rows
+(which is precisely why that script prints RUNS, and it had been written two commits earlier).
+A silent always-true `#ifdef` defeats an A/B without defeating its build: no warning, no byte
+differential, no probe. `make macro-lint` is the mechanical guard, and it fires on this exact
+defect (`tools/macro_lint.py`, sabotage-verified).
 
 #### ⭐⭐ THE SECOND CORRECTION: 13.6 cyc/byte IS A WHOLESALE RATE AND DOES NOT TRANSFER
 
@@ -2126,15 +2158,14 @@ rate over 40 contiguous cells with the per-row setup amortised across all of the
 strip with byte stores gets none of that amortisation. **Never price a small-region pass at a
 rate measured on a wholesale one** — same family as §10q's coarse-test rule.
 
-#### ⇒ WHERE THE DECODE'S TIME ACTUALLY IS, which redirects the rest of the plan
+#### ⇒ WHERE THE DECODE'S TIME ACTUALLY IS (re-measured after the fix)
 
-The shipping carve says `decode()` = 15.04 ms as **0.92 snapshotBands + 1.63 buildLineModes +
-2.00 own/carve + 7.22 convertRace + 3.02 remainder**. Of the 138 unowned rows, 158..191 is worth
-0.07 and the 63 sky rows are flat and static ⇒ **`convertRace`'s 7.22 ms is essentially display
-lines 117..157 alone**, the rows the view sweep rewrites in full every frame. Those are the only
-rows left with a real prize, and they are exactly the ones §12 says are blocked on the car
-furniture. ⚠ And a rectangle painter on THEM must beat 143 cyc/byte to be usable: the needle
-column above 158 is 232 bytes, i.e. ~4.7 ms at the measured rate.
+The true carve is `decode()` = **17.55 ms** as **0.93 snapshotBands + 1.62 buildLineModes +
+1.54 own/carve + 10.13 convertRace + 3.03 remainder**, at 80 cells converted a frame and 70 owned
+lines. Of the 138 unowned rows the 63 sky rows are flat and static, so `convertRace` splits
+roughly **7.2 ms over display lines 117..157** (the rows the view sweep rewrites in full) and
+**2.9 ms over 158..191** (the dashboard). ⇒ **both blocks are real prizes**, and 158..191 is the
+cheaper one to take because nothing on it is redrawn wholesale.
 
 ⭐ Two rows of that table are pure bookkeeping and nobody has looked inside them: **own/carve
 2.00 ms** (a per-frame scan of all 208 display lines that exists only because ownership exists)

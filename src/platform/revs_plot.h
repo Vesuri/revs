@@ -280,12 +280,20 @@ extern volatile unsigned short g_plotDeltaMismatchY;  /* first offending display
  * earlier publishes a frame-old dashboard.  The table, and why the wing mirrors are in it though
  * no practice measurement can see them, are at the definition (RevsPlot.cpp). */
 void revs_plot_rects(void);
-#define REVS_PLOT_RECTS()  revs_plot_rects()
+/* ⚠⚠⚠ `_RUN`, AND THE SUFFIX IS LOAD-BEARING — A CALL MACRO MUST NEVER SHARE ITS NAME WITH A
+   FEATURE MACRO.  This one was spelled `REVS_PLOT_RECTS()`, and the no-op in the #else branch
+   below DEFINED that name, so every `#ifdef REVS_PLOT_RECTS` in RevsPlot.cpp read TRUE in a
+   build with the feature OFF.  The visible cost was the shipping dashboard: `kDeltaBlock` took
+   its three-block form, display lines 158..191 were CLAIMED with no painter behind them, and the
+   two dash needles were frozen at whatever the base laid down.  The measured cost was worse — an
+   A/B whose two arms BOTH owned those rows, and the conclusion drawn from its +0.07 ms went into
+   three documents.  `make macro-lint` is the guard.  (docs/span-render-plan.md §12c) */
+#define REVS_PLOT_RECTS_RUN()  revs_plot_rects()
 #ifdef REVS_SPAN_STATS
 extern volatile unsigned long g_plotRectPasses;
 #endif
 #else
-#define REVS_PLOT_RECTS()  ((void)0)
+#define REVS_PLOT_RECTS_RUN()  ((void)0)
 #endif
 
 /* Counters — every one of them in PROBE_SYMS (amiga/Makefile).
@@ -370,7 +378,7 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)
-#define REVS_PLOT_RECTS()        ((void)0)
+#define REVS_PLOT_RECTS_RUN()    ((void)0)
 #define REVS_PLOT_CHECK_BEFORE() ((void)0)
 #define REVS_PLOT_CHECK_AFTER()  ((void)0)
 

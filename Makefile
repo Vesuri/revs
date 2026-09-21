@@ -359,7 +359,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: todo cpu-lint all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
+.PHONY: todo cpu-lint macro-lint all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
         trackmenu trackmenu-fixture titlescreen \
@@ -956,6 +956,15 @@ fastmem:
 	@$(CC) -std=c99 -O2 -Wall -Wextra -DFM_TRACE -o tmp/fastmem_test \
 	   tools/fastmem_test.c src/platform/amiga/fastmem.c
 	@tmp/fastmem_test
+
+# ⭐⭐ A FEATURE MACRO MUST NEVER SHARE ITS NAME WITH A CALL MACRO, and this is the guard.
+# `revs_plot.h` once spelled its invocation `REVS_PLOT_RECTS()` and gave the feature-off branch a
+# no-op of the same name — so `#ifdef REVS_PLOT_RECTS` read TRUE with the feature OFF, the
+# shipping build claimed display lines 158..191 with no painter behind them, the two dash needles
+# FROZE, and an A/B whose arms both owned those rows was published as if one of them did not.
+# Silent in every compiler warning and in every byte differential; one grep catches the class.
+macro-lint:
+	@python3 tools/macro_lint.py
 
 endian-lint:
 	@hits=$$(grep -rnE '\((u?int(16|32)_t) *\*\) *(\(void\*\))? *(&? *mem|M\b)' \

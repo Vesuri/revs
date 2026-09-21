@@ -125,6 +125,9 @@ make todo                  # ⭐⭐ WHAT IS OPEN: docs/open-work.md's queue + a 
                            #   Expected output is "none" — a printed marker is either a real
                            #   work item for the queue or a stale marker to delete
 make endian-lint           # fail if mem[] is aliased as a wide pointer
+make macro-lint            # ⭐ fail if a FEATURE macro shares its name with a CALL macro —
+                           #   `#define X()` in a feature's OFF branch makes `#ifdef X` TRUE,
+                           #   which froze the dash needles and voided an A/B for four commits
 make cpu-lint              # ⭐ fail if revs_native.c speaks `cpu` outside the argued
                            #   classes (tools/cpu_lint.py names them, and a STALE allowlist
                            #   row fails too).  The 6502-ABI shims the oracle needs live in
@@ -502,22 +505,27 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   11.0 ms against 4.8 of budget). ⇒ ⭐⭐⭐ **A MIRROR CAN ONLY PAY ON ROWS WHOSE WRITERS ARE NEARLY
   SILENT — a row with a busy writer is won by making that writer's own store land in the bitplanes
   INSTEAD of `mem[]`, not in addition to it.** `docs/span-render-plan.md` §11d.
-  ⛔⛔⛔ **AND ALL OF THAT ARITHMETIC IS SUPERSEDED BY ONE MEASUREMENT: `convertRace` IS
-  DIRTY-REGION, SO A ROW THE DECODE ALREADY SKIPS IS WORTH NOTHING TO OWN.** A third mechanism —
-  re-expanding a few small FIXED rectangles once per painted frame, which has no per-store term at
-  all and so escapes both break-evens above — was built for display lines 158..191, proved correct
-  (75 checks, 0 mismatch, four of five sabotages fire) and cost **+8.12 ms**. Carved six ways
-  (`make DECODESPLIT=1`), owning all 34 rows moves `convertRace` **7.22 → 7.29 ms: +0.07**, i.e.
-  ~500 cycles, i.e. exactly the **33 cells a frame** that band changes.
-  ⇒ ⭐⭐⭐ **OWNING A ROW IS WORTH (the cells the DIRTY decode converts on it) × 13.6 cyc, NOT
-  (40 cells) × 13.6.** The ~544 cyc/row above is the price of a row the producers **rewrite
-  wholesale** (the terrain); for a sparsely-changing row it is **~13**, forty times less.
-  ⭐⭐ **Rank an ownership domain by the writer-set ledger's `ch/f` column — never `st/f`, never
-  the row count, never the ledger's row price.** `make fbwrites` prints `ch/f` already.
-  ⇒ And the consequence for the plan: of the 138 unowned rows, 158..191 is worth ~0 and the 63 sky
-  rows are flat, so **`convertRace`'s whole 7.22 ms is display lines 117..157** — the rows the view
-  sweep rewrites in full — and they are the only ownership prize left.
-  ⚠ **Second correction, and it is general: 13.6 cyc/byte is a WHOLESALE rate and does not
+  ⛔⛔⛔ **THE §12c MEASUREMENT THAT WAS SAID TO SUPERSEDE ALL OF THAT IS RETRACTED — BOTH ITS ARMS
+  OWNED THE ROWS, AND THE CAUSE WAS A MACRO-NAME COLLISION THAT ALSO FROZE THE DASH NEEDLES ON
+  SCREEN FOR FOUR COMMITS.** `revs_plot.h` spelled its invocation `REVS_PLOT_RECTS()` and gave the
+  feature-off branch a no-op **of the same name**, so `#ifdef REVS_PLOT_RECTS` read TRUE with the
+  feature OFF: `kDeltaBlock` took its three-block form in every build, display lines 158..191 were
+  CLAIMED with no painter behind them, and the rev-counter needle and steering mark stopped moving.
+  ⇒ "owning all 34 rows moves `convertRace` 7.22 → 7.29" compared **owned against owned**. With the
+  collision fixed the control reads `convertRace` **10.13 ms and 80 cells/frame** against the
+  broken 7.22 and 55 — so those 34 rows are worth **~2.9 ms, ~0.086 ms a row**, which is §11's
+  ledger price and NOT ~0.
+  ⇒ ⭐⭐⭐ **AND THE SHAPE OF THE PRIZE IS THE SCAN, NOT THE CELLS: 34 rows of ~2.9 ms while only
+  25 more cells a frame get converted (25 × 13.6 cyc = 0.05 ms).** So the retracted rule — "owning
+  a row is worth (the cells the dirty decode converts on it) × 13.6" — is false in both halves, and
+  `ch/f` is **not** how to rank an ownership domain: the decode is ~99% SCAN, and a row costs what
+  it costs to walk whether or not a cell on it moved. Rank by ROWS OWNED, as §11 always did.
+  ⚠⚠⚠ **The method lesson is the larger half, and it is new: A SILENT `#ifdef` THAT IS ALWAYS TRUE
+  DEFEATS AN A/B WITHOUT DEFEATING ITS BUILD** — no warning, no byte differential, no probe. **An
+  A/B switch must print its own state** was already the rule; this adds **prove the CONTROL arm is
+  the control** — `amiga/own_map.gdb` (which prints the owned RUNS, not a count) would have shown
+  158..207 owned in a DASHOWN=0 build the first time it was run. `make macro-lint` is the guard.
+  ⚠ **And separately, and this one stands: 13.6 cyc/byte is a WHOLESALE rate and does not
   transfer.** It is longword-batched, dirty-skipping and amortised over 40 contiguous cells; the
   same expansion over an 8-cell strip measured **143 cyc/byte**. Never price a small-region pass
   at a rate measured on a wholesale one. `docs/span-render-plan.md` §12c.
@@ -531,10 +539,14 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   −2.18 ms net and leaves the view sweep's own 117..157 AT break-even (6..28 st/row, ±0.6 ms a
   block): a row repainted 27 times a frame costs 27 retargets to own. A ledger's ROW PRICE cannot
   see that; only `st/row` can.
-  ⛔⛔⛔ **AND THAT CLOSES ROW OWNERSHIP ALTOGETHER — THE WHOLE REMAINING CAMPAIGN IS −3.61 ms BEST
-  CASE** (all 75 unowned rows, ideal inline retarget, no shape cost) **AGAINST A MEASURED +3.45 ms
-  FOR THE ONLY STORE-SITE PLACEMENT EVER BUILT**, because a cross-TU call in the writers' own loops
-  is an aliasing barrier and the loop spills. **Domain A ships; nothing else on the screen pays.**
+  ⚠⚠ **THAT `st/row` RANKING AND ITS "row ownership is closed" VERDICT BOTH REST ON THE RETRACTED
+  ARITHMETIC ABOVE AND ARE SUSPENDED** — they were computed over "75 unowned rows" in a build that
+  had wrongly claimed 34 of them, and their prize term came from `ch/f`. What survives untouched is
+  the one MEASUREMENT in them: a cross-TU call placed in a writer's own loop is an aliasing barrier
+  and cost **+3.45 ms**, so a retarget must be inline or the writer must be retargeted wholesale.
+  ⭐ The live shape is neither a mirror nor a per-store retarget: the writer stops writing `mem[]`
+  and hands the renderer its GEOMETRY (§12d's needles — a pixel list and a rectangle copy), which
+  has no per-store term, no undo list and no `mem[]` traffic at all.
   ⚠⚠ **And the arithmetic error that made the needles look like −4.67 is the transferable half: A
   MEASURED DELTA BELONGS TO EVERYTHING THAT CHANGED BETWEEN ITS TWO ARMS, so name what else moved
   before quoting it as one part's price.** §11d's headline −5.44 ms is arm B − arm 0, and arm B owns
