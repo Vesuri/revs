@@ -217,6 +217,16 @@ CXXFLAGS += -DREVS_SRC_EVENTS_CHECK
 endif
 endif
 
+# ⭐⭐ `make SURFPROBE=1` — THE SURFACE-PROBE ORACLE (host).  `update_grip_limits` reads two
+# FRAME-BUFFER bytes at display line 149 to ask what colour the road is under each wheel; the
+# renderer now publishes the same two values (`g_surfaceProbe`), which is what lets the low
+# block's mem[] stores go.  This compares the two in process, same frame, same data.
+# Run it under `make determinism-drive` — 300 driving frames, the $FF arm on 22 of them.
+ifeq ($(SURFPROBE),1)
+CFLAGS   += -DREVS_SURFACE_PROBE_CHECK
+CXXFLAGS += -DREVS_SURFACE_PROBE_CHECK
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 CFLAGS   += -DREVS_TERRAIN_LOW
@@ -1122,7 +1132,7 @@ FILLFRAMES ?= 9-23
 fbwrites:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
-	    --fill=$(FILL) --fill-frames=$(FILLFRAMES)
+	    --fill=$(FILL) --fill-frames=$(FILLFRAMES) $(if $(filter 1,$(FILLREADS)),--fill-reads,)
 
 # Is key injection working at all?  Verified at the BASIC prompt, where success is VISIBLE —
 # never through the game, where a silent no-op and a rejected value look identical.

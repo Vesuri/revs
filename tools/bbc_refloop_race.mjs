@@ -564,10 +564,11 @@ if (fillReads) {
         if (frames < fillFrameLo || frames > fillFrameHi || !fillFlags[addr]) return;
         const pc = tm.processor.getPrevPc(0);   // see the write hook: NOT processor.pc
         let e = readPC.get(pc);
-        if (!e) readPC.set(pc, (e = { n: 0, lines: new Set(), sample: [] }));
+        if (!e) readPC.set(pc, (e = { n: 0, lines: new Set(), cells: new Set(), sample: [] }));
         e.n++;
         if (e.sample.length < 6) e.sample.push(addr);
         e.lines.add(fillLineOf[addr]);
+        e.cells.add(fillCellOf[addr]);
         fbReads++;
     });
 }
@@ -1465,7 +1466,8 @@ if (fillArg && fillWrites) {
        census that ranks by volume buries exactly the finding an ownership ledger is looking for. */
     /* A compact "0,1,38,39" / "3..34" rendering: a writer split between the two screen edges is
        a DIFFERENT shape from one covering the middle, and a bare lo..hi hides exactly that. */
-    const cellSpan = (set) => {
+    // eslint-disable-next-line no-var
+    var cellSpan = (set) => {
         const cs = [...set].filter((c) => c >= 0).sort((a, b) => a - b);
         if (!cs.length) return "-";
         if (cs.length <= 6) return cs.join(",");
@@ -1539,15 +1541,18 @@ if (fillArg && fillWrites) {
         for (const [pc, e] of readPC.entries()) {
             const fn = nameOf(pc).split("+")[0];
             let f = byFnR.get(fn);
-            if (!f) byFnR.set(fn, (f = { n: 0, lo: 999, hi: -1 }));
+            if (!f) byFnR.set(fn, (f = { n: 0, lo: 999, hi: -1, cells: new Set() }));
             f.n += e.n;
             for (const y of e.lines) { if (y < f.lo) f.lo = y; if (y > f.hi) f.hi = y; }
-        for (const c of e.cells) f.cells.add(c);
+            for (const c of e.cells) f.cells.add(c);
         }
         console.log(`\n⭐⭐ WHO READS THE FRAME BUFFER BACK — ${fbReads} reads ` +
             `(${(fbReads / nWin).toFixed(0)}/frame) from ${readPC.size} PCs.  A WRITE-ONLY region ` +
             `can be plotted straight to bitplanes; a region read back is STATE:`);
         if (!byFnR.size) console.log("   (none — the flagged lines are write-only)");
+        for (const [fn, f] of [...byFnR.entries()].sort((a, b) => b[1].n - a[1].n))
+            console.log(`   ${fn.padEnd(24)} ${String((f.n / nWin).toFixed(f.n / nWin < 10 ? 2 : 0)).padStart(7)} reads/frame` +
+                `  lines ${f.lo}..${f.hi}  cells ${cellSpan(f.cells)}`);
         /* ⚠ THE PC MATTERS MORE THAN THE COUNT HERE: the 6502's `STA (zp),Y` performs a DUMMY
            READ of the un-carried address before it writes, and jsbeeb models it, so a store site
            shows up as a reader.  Print the PCs so the opcode at each can be checked against the
