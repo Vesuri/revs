@@ -2725,6 +2725,45 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
     return ev;
 }
 
+/* ⭐⭐⭐ THE SURFACE PROBE — the physics stops reading the picture (user directive, 2026-09-21).
+   ============================================================================================
+   `update_grip_limits` asks what colour the road is under the car's left and right wheels by
+   READING TWO FRAME-BUFFER BYTES: `surface_change_0` ($713D) and `surface_change_1` ($7205),
+   both on display line 149 at MODE 5 pixels 28..31 and 128..131 (twin #.. note 5).  On a BBC
+   that is free — the picture is the only copy of the road.  Here it is the last thing keeping
+   the low block's `mem[]` stores alive, because a byte nobody stores is a byte nobody can read.
+
+   ⭐ So the RENDERER PUBLISHES IT instead.  The painter already computes that cell's colour to
+   put it on the screen; handing the same value to the model is not an approximation of the
+   frame-buffer read, it IS the value the frame-buffer read would have returned.  Two bytes a
+   frame, off the per-cell path.
+   ⚠ Published on BOTH backends (the low block compiles on the host too), so `determinism`
+   compares identical values and the publish cannot itself move a trajectory. */
+unsigned char g_surfaceProbe[2] = { 0, 0 };
+
+/* Display line 149 is internal line 11 (`display = 160 - line`, VIEW_LOW_LO 3 -> 157 and
+   VIEW_LOW_HI 43 -> 117), and the two probes are cells 7 and 32. */
+#define VIEW_LOW_PROBE_LINE   11u
+#define VIEW_LOW_PROBE_CELL0   7u
+#define VIEW_LOW_PROBE_CELL1  32u
+
+/* What `view_low_run` WOULD store at `cell`, without storing anything — the same RLE the painter
+   walks: the run enters at `entry`, each event replaces the colour from its own cell on, and the
+   run's LAST cell is composed through (mask, fill).  ⚠ A cell outside [first, last] is not this
+   run's: the caller tries the other run, and a cell in neither is dashboard furniture the sweep
+   never writes, which the `found` flag reports rather than guessing a colour for. */
+static unsigned char view_low_run_colour_at(const ViewSpan* ev, unsigned first, unsigned last,
+                                            unsigned entry, unsigned mask, unsigned fill,
+                                            unsigned cell, int* found)
+{
+    unsigned value = entry;
+    if (cell < first || cell > last) return 0u;
+    while (ev->start < first) ev++;
+    for (; ev->start <= cell && ev->start <= last; ev++) value = ev->colour;
+    *found = 1;
+    return (unsigned char)(cell == last ? ((value & mask) | fill) : value);
+}
+
 /* ⚠ The ENTRY cell takes its colour from the per-line `*_start_src` table, not from the RLE:
    chain B starts a fresh run with no carry from chain A, and chain A's own first cell is the
    dash edge.  Both are composed through the edge phase's mask/fill exactly as the drivers do. */
@@ -2747,6 +2786,40 @@ static void view_own_low(ViewState* v)
             const int       clip = s_lowClipped[line];
             const unsigned  base = plot_ptr_v;
             const ViewSpan* ev   = &g_viewEv[line][0];
+
+            /* ⭐⭐⭐ PUBLISH THE TWO SURFACE PROBES (see view_low_run_colour_at above).  ONE line
+               of the forty-one, so this is two walks of a ~3-entry event list a frame and it is
+               off every per-cell path.  It runs whether or not the `mem[]` stores are still
+               being made: the value is the same either way, which is what lets the stores go
+               without the grip model noticing. */
+            if (line == VIEW_LOW_PROBE_LINE) {
+                const unsigned entryA = clip
+                        ? view_compose(mem[MEM_view_left_start_src  + line],
+                                       mem[MEM_view_left_start_mask + edge],
+                                       mem[MEM_view_left_start_fill + edge])
+                        : mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3u)];
+                const unsigned entryB = view_compose(mem[MEM_view_right_start_src  + line],
+                                                     mem[MEM_view_right_start_mask + line],
+                                                     mem[MEM_view_right_start_fill + line]);
+                const unsigned maskA = mem[MEM_view_left_end_mask + line];
+                const unsigned fillA = mem[MEM_view_left_end_fill + line];
+                const unsigned maskB = clip ? mem[MEM_view_right_end_mask + edge] : 0xFFu;
+                const unsigned fillB = clip ? mem[MEM_view_right_end_fill + edge] : 0x00u;
+                unsigned k;
+                for (k = 0; k < 2u; k++) {
+                    const unsigned cell = k ? VIEW_LOW_PROBE_CELL1 : VIEW_LOW_PROBE_CELL0;
+                    int found = 0;
+                    unsigned char c = view_low_run_colour_at(ev, s_lowA0[line], s_lowA1[line],
+                                                             entryA, maskA, fillA, cell, &found);
+                    if (!found)
+                        c = view_low_run_colour_at(ev, s_lowB0[line], s_lowB1[line],
+                                                   entryB, maskB, fillB, cell, &found);
+                    /* ⚠ A cell in NEITHER run is dashboard furniture the sweep never writes, so
+                       its byte is whatever the dash laid down and does not change: keep the last
+                       published value rather than inventing one. */
+                    if (found) g_surfaceProbe[k] = c;
+                }
+            }
 
 #ifdef REVS_LOW_DOUBLE
             /* ⭐⭐ `make LOWDOUBLE=1` — WHAT THE LOW BLOCK'S PAINTING COSTS, vs its per-line
@@ -10930,6 +11003,28 @@ void update_grip_limits_core(void)
     /* $4BEE-$4C24 — has the surface changed?  $FF in EITHER surface byte opens the (dead-on-
        this-release) disturbance arm; $FF in BOTH also swaps in the alternate grip base below.
        The begin_spin test reads grip_disturbance as it was BEFORE this frame's write. */
+#ifdef REVS_SURFACE_PROBE_CHECK
+    /* ⭐⭐ THE PUBLISH'S ORACLE (`make SURFPROBE=1`, host).  The renderer's published probe must
+       equal the frame-buffer byte the model would have read — the whole claim of the change, and
+       an in-process, same-frame, same-data comparison of the two.  It runs on the host under
+       `make determinism-drive`, whose 300 driving frames reach the $FF arm on 22 of them.
+       ⚠ Its scope: it proves the VALUE agrees while the sweep still writes `mem[]`.  It cannot
+       prove anything once those stores are gone — by then there is nothing to compare against,
+       which is exactly why the agreement has to be established FIRST. */
+    {
+        extern int printf(const char*, ...);
+        static unsigned long checks = 0, bad = 0;
+        checks++;
+        if (g_surfaceProbe[0] != surface_change_0 || g_surfaceProbe[1] != surface_change_1) {
+            if (!bad++)
+                printf("SURFPROBE MISMATCH at check %lu: published %02X/%02X, mem[] %02X/%02X\n",
+                       checks, g_surfaceProbe[0], g_surfaceProbe[1],
+                       (unsigned)surface_change_0, (unsigned)surface_change_1);
+        }
+        if ((checks % 20u) == 0u)   /* ⚠ a PASS must PRINT: a silent oracle is indistinguishable from one that never ran */
+            printf("SURFPROBE: %lu checks, %lu mismatch\n", checks, bad);
+    }
+#endif
     uint8_t surfaceBoth = (uint8_t)(surface_change_0 & surface_change_1);   /* $4BF0-$4BF6 */
     uint8_t oldDisturb  = grip_disturbance;
     uint8_t newDisturb  = 0u;
