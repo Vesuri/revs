@@ -29,6 +29,11 @@ dump binary memory .run/pf2.bin    ((char*)g_screenCockpitAddr) ((char*)g_screen
 dump binary memory .run/copper.bin ((char*)g_screenCopperAddr)  ((char*)g_screenCopperAddr + 4*g_screenCopperWords)
 dump binary memory .run/fb.bin     ((char*)&mem[0x5A80])        ((char*)&mem[0x8000])
 dump binary memory .run/cockrun.bin ((char*)&s_cockRun[0][0])   ((char*)&s_cockRun[0][0] + 41*4)
+
+# ⭐⭐ THE DYNAMIC FOOTPRINT (DUALPFCHECK=1 only) — which cells of 117..157 are not static art,
+# enumerated over the whole run rather than sampled.  Zero without the check build.
+printf "=== change census over %lu frames\n", g_cockChangeFrames
+dump binary memory .run/cockchange.bin ((char*)&g_cockChange[0][0]) ((char*)&g_cockChange[0][0] + 41*40*2)
 printf "=== dumped\n"
 detach
 quit

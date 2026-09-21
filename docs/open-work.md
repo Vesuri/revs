@@ -331,7 +331,12 @@ does for 81..116) is the shape that has the rate; a strip re-expand is not.
 GEOMETRY. The two dash needles are a 36-entry pixel list plus a rectangle copy now, with no
 `mem[]` traffic, no undo list and no re-expand — `make NEEDLE=1`.
 
-### 2d. ✅ ROWS 158..191 — THE DASHBOARD, DONE: `make NEEDLE=1`, `ph27` 18.06 → 15.64
+### 2d. ✅ ROWS 158..191 — THE DASHBOARD, DONE AND NOW **DEFAULT ON** (`NEEDLE ?= 1`)
+⭐ Flipped 2026-09-21 after re-measuring on the current baseline: **ph27 16.68 → 15.70** and
+**Σ(1..39)−ph28 −0.80** as the default flip, −1.21 / −1.39 alongside `DUALPF=1`, which is the
+−1.3 to −1.5 this entry predicted. ⚠ The raw frame total reads **+0.08** because ph28 (the
+`50/N` vblank pad) absorbs it — size it against Σ−ph28, as Rule 1a says. It is also a
+PRECONDITION of `LOWOWN=1`, which `#error`s without it.
 Re-opened by the §12c retraction above and then taken: these 34 rows really are worth ~0.086 ms
 each. All four writers are off `mem[]` or mirrored:
 - ✅ the two dash NEEDLES — §12d: a pixel list painted into the planes, erased by a

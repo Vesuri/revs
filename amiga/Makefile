@@ -867,7 +867,7 @@ endif
 # tables read out of a real BBC race.  Scope is written at the oracle.
 ifeq ($(DUALPFCHECK),1)
 EXTRA_DEFINES += -DREVS_DUAL_CHECK
-PROBE_SYMS_DUALPFCHK = g_cockpitChecks g_cockpitMismatch g_cockpitMismatchAt
+PROBE_SYMS_DUALPFCHK = g_cockpitChecks g_cockpitMismatch g_cockpitMismatchAt g_cockChange g_cockChangeFrames
 endif
 endif
 
@@ -899,7 +899,12 @@ endif
 # their store site, the delta domain's third block turns on with this switch and `convertRace`
 # stops scanning 34 rows.  `make DELTACHECK=1` is the staleness oracle over all three blocks;
 # ⚠ it deliberately does NOT cover the needle column, which has NEEDLECHECK's two instead.
-NEEDLE ?= 0
+# ⭐ DEFAULT ON since 2026-09-21: six gates green, and measured -0.98 ms of ph27 / -0.80 ms of
+# Sigma(1..39)-ph28 as the default flip, -1.21 / -1.39 alongside DUALPF=1.  ⚠ Size it against
+# Sigma-ph28: the raw frame total reads +0.08 because ph28, the 50/N vblank pad, absorbs it.
+# It is also a PRECONDITION of LOWOWN=1 (revs_native.c #errors on it) — plot_line_octant writes
+# display lines 129..157, and an owned line is painted by the renderer alone.
+NEEDLE ?= 1
 ifeq ($(NEEDLE),1)
 EXTRA_DEFINES += -DREVS_NEEDLE_PLANES
 PROBE_SYMS_NEEDLE = g_needleOutside g_needleMaskBad g_needleOverflow \

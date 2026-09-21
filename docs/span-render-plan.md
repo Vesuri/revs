@@ -2394,3 +2394,29 @@ diffing it against the game's own tables read out of a real BBC race
 (`amiga/dualpf_dump.gdb` + `tools/revs_dualpf.py`); they agree line for line.
 ⚠⚠ **And a pen-level oracle cannot see a wrong colour REGISTER** — read the copper back and
 require `COLOR09 == COLOR01`, `COLOR10 == COLOR02`, `COLOR11 == COLOR00` in every band.
+
+#### §12e-i — the dynamic footprint of 117..157, ENUMERATED (`make DUALPFCHECK=1`)
+
+`g_cockChange[41][40]` counts the painted frames in which each cell's eight source bytes moved,
+against its own shadow, and `amiga/dualpf_dump.gdb` dumps it. Over 31 painted frames of a
+driving practice session, **most car cells never move at all**; the movers are cells 0..2 /
+35..39 (the front-wheel dither and the wing mirrors' surround), the needle column, and
+single-frame transients beside the run boundaries. That is what licenses PF2 holding the car as
+a one-time paint.
+
+⚠⚠ **AND IT UNDER-REPORTS ONE OF THEM, WHICH IS THE ENUMERATOR TRAP ONE AXIS OVER.**
+`HOLD_THROTTLE=1` drives in a STRAIGHT LINE, so the steering mark barely moves — cell 20, once
+in 31 frames — while its real range is the whole of `plot_line_octant`'s column. So the needle
+rectangle in `s_cockDyn` is **derived from `REVS_NEEDLE_Y0` / `_C0` / `_CELLS`**, the bound the
+DDA is clipped to, and not from this census: a hand-written 129..157 × 16..23 read off the map
+was short on both axes against the painter's 128..191 × 12..27. CLAUDE.md's rule is *enumerate a
+footprint, never sample it*; a census taken on a trajectory that does not exercise the thing is
+still a sample.
+
+⚠⚠ **`NEEDLE=1` MOVES THE REFERENCE, NOT JUST THE PIXELS.** With the needles painted from
+geometry, `plot_line_octant` no longer writes the frame buffer, so expanding `mem[]` over the
+needle column produces a picture with no needle in it — the composite is right and the ORACLE is
+stale. Measured: 198 mismatches, every one of them in that column, first at line 129 cell 20.
+The cockpit oracle therefore steps around the column under `REVS_NEEDLE_PLANES` and
+`NEEDLECHECK=1` covers it instead. **An oracle whose reference is `mem[]` has to be told every
+time a writer leaves `mem[]`.**

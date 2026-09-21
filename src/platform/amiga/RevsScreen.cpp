@@ -267,6 +267,16 @@ volatile unsigned long g_cockpitBadSlot    = 0;
 volatile unsigned long g_cockpitChecks     = 0;
 volatile unsigned long g_cockpitMismatch   = 0;
 volatile uint16_t      g_cockpitMismatchAt = 0xFFFFu;   /* (line << 8) | cell of the first */
+/* ⭐⭐⭐ THE DYNAMIC FOOTPRINT, ENUMERATED RATHER THAN SAMPLED (`make DUALPFCHECK=1`, read with
+   amiga/dualpf_dump.gdb).  [line - 117][cell] counts the painted frames in which that cell's
+   eight source bytes moved.  Which cells of 117..157 are NOT static decides how much of the car
+   PF2 can own and which painters have to be retargeted before `LOWOWN=1` can claim these rows —
+   and a 41-frame `fbwrites` census is exactly the instrument CLAUDE.md warns cannot answer it
+   (a needle ROTATES; a sample of a moving thing is not its range).
+   ⚠ A PRACTICE SESSION STILL CANNOT SEE THE WING MIRRORS — an empty track reflects nothing.
+   That one rectangle comes from the game's own six-segment tables, as it does for DASHCHECK. */
+volatile unsigned short g_cockChange[41][40];
+volatile unsigned long  g_cockChangeFrames = 0;
 }
 
 /* The shadow of the frame-buffer bytes that produced each bitplane buffer's current content, in
@@ -1515,8 +1525,15 @@ static int revs_cockpit_runs(void)
    ⚠ `make DUALPFCHECK=1` IS THE COMPLETENESS GATE, every painted frame over all 41 lines x 40
    cells.  It found this list: the first cut refreshed edge strips only and read 203 mismatches
    at display line 157 cell 17 — the steering mark, which is nowhere near an edge. */
+/* ⚠ THE NEEDLE RECTANGLE IS DERIVED FROM THE PAINTER'S OWN COLUMN, never from a census.  A
+   needle ROTATES, so what a run happens to touch is not its range — and the run that sized this
+   by hand drove in a STRAIGHT LINE, which leaves the steering mark almost still (measured: one
+   cell, one frame in 31).  `REVS_NEEDLE_Y0`/`_C0`/`_CELLS` are the bound the DDA is clipped to,
+   so they are the bound PF2 must keep out of; a hand-written 129..157 x 16..23 was short on
+   both axes. */
 static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
-    { 129, 157, 16, 23 },                         /* the rev-counter / steering mark column   */
+    { REVS_NEEDLE_Y0, COCK_Y1,                    /* the rev-counter / steering mark column   */
+      REVS_NEEDLE_C0, REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS - 1u },
     { 133, 140,  0,  1 }, { 133, 140, 38, 39 },   /* the front-wheel dither                   */
     { 154, 157,  0,  2 }, { 154, 157, 37, 39 },   /* the wing mirrors, where they reach here  */
 };
@@ -2009,12 +2026,48 @@ void RevsScreen::decode()
         const uint8_t* const p2b   = (const uint8_t*)m_cockpit->data;
         unsigned y;
         g_cockpitChecks++;
+
+        /* The footprint census — its own shadow, so it reports "moved since the LAST painted
+           frame" for every cell, independently of anything the layer or the decode believes. */
+        {
+            static uint32_t seen[41][40][2];
+            static int primed = 0;
+            for (y = COCK_Y0; y <= COCK_Y1; y++) {
+                const unsigned row = y >> 3, ln = y & 7u;
+                unsigned c;
+                for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+                    const uint8_t* const q =
+                        cbase + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR) + c * 8u;
+                    const uint32_t w0 = ((const uint32_t*)(const void*)q)[0];
+                    const uint32_t w1 = ((const uint32_t*)(const void*)q)[1];
+                    (void)ln;
+                    if (primed && (w0 != seen[y - COCK_Y0][c][0] ||
+                                   w1 != seen[y - COCK_Y0][c][1]))
+                        g_cockChange[y - COCK_Y0][c]++;
+                    seen[y - COCK_Y0][c][0] = w0;
+                    seen[y - COCK_Y0][c][1] = w1;
+                }
+            }
+            if (primed) g_cockChangeFrames++;
+            primed = 1;
+        }
         for (y = COCK_Y0; y <= COCK_Y1; y++) {
             const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
             const unsigned lo  = revs_mulu16((uint16_t)y, kRowBytes);
             unsigned c;
             if (m_lineMode[y] != 5u) continue;
             for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+#ifdef REVS_NEEDLE_PLANES
+                /* ⚠⚠ THE ONE PLACE mem[] STOPS BEING THE REFERENCE.  With the needles painted
+                   from GEOMETRY (§12d) `plot_line_octant` no longer writes the frame buffer, so
+                   expanding `mem[]` over the needle column yields a picture with no needle in
+                   it — the composite is RIGHT and the reference is stale.  Measured: 198
+                   mismatches, all of them here, first at display line 129 cell 20.  That column
+                   has its own oracle (`NEEDLECHECK=1`), which is why this one steps around it
+                   rather than being widened. */
+                if (y >= REVS_NEEDLE_Y0 &&
+                    c >= REVS_NEEDLE_C0 && c < REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS) continue;
+#endif
                 const uint8_t b     = cbase[off + c * 8u];
                 const uint8_t p1lo  = dst[lo + c],        p1hi = dst[lo + c + kPlaneGap];
                 const uint8_t p2lo  = p2b[lo + c],        p2hi = p2b[lo + c + kPlaneGap];
