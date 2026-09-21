@@ -53,6 +53,7 @@ CXX_SRCS := \
     $(AMIGA_SRC)/Revs.cpp \
     $(AMIGA_SRC)/RevsScreen.cpp \
     $(AMIGA_SRC)/RevsPlot.cpp \
+    $(AMIGA_SRC)/RevsTyres.cpp \
     $(AMIGA_SRC)/RevsInput.cpp \
     $(AMIGA_SRC)/RevsAudio.cpp \
     $(REPO)/src/platform/Platform.cpp \
@@ -789,6 +790,22 @@ PROBE_SYMS_SRCEV = g_srcEvChecks g_srcEvMismatch g_srcEvMismatchAt
 endif
 endif
 
+# ⭐⭐⭐ `make TYRESPRITE=1` — THE FRONT WHEELS AS TWO PRECOMPUTED SPRITES (§12, user directive).
+# `tick_wheel_spin` stops EORing 44 bytes of mem[] at 50 Hz; the animation becomes two copper
+# SPRxPT writes a frame between two precomputed images.  Channel 0 is the left arch, channel 1
+# the right (they are 304 pixels apart, so one channel cannot carry both).  Default OFF until
+# the position and colours have been looked at on a real screen — a sprite is invisible to
+# `screen_dump.gdb`, which dumps the BITPLANE buffer and nothing Agnus overlays on it.
+# ⚠⚠ `g_tyrePeriodBad` MUST be 0: the EOR's mask is state-dependent (the `if (r != 0) continue`),
+# so "two states" is a property the build CHECKS, not one it assumes.
+# ⭐ `g_tyreZeroAnim` reports animated pixels that are colour 0 in a state — a sprite cannot draw
+# colour 0, so a non-zero count constrains the step that owns these rows.
+TYRESPRITE ?= 0
+ifeq ($(TYRESPRITE),1)
+EXTRA_DEFINES += -DREVS_TYRE_SPRITES
+PROBE_SYMS_TYRE = g_tyreBuilds g_tyrePeriodBad g_tyrePhase g_tyreZeroAnim
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_LOW
@@ -1196,7 +1213,7 @@ PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
-PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
+PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping

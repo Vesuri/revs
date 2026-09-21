@@ -753,6 +753,11 @@ Rules that must survive without opening `docs/perf-method.md`:
   diagnostic counter (a 32-bit RMW, ~40 cycles, uncoalescable — 13% of `snd_tick`, now behind
   `SND_STAT()`) and an unmemoised recompute of an unchanged value (`program()`, 94.7% hit rate).
   `docs/perf-method.md` §The VERTB ISR.
+- ⚠⚠ **NEVER RUN A MANUAL `REVS_MEM_DUMP=1` BINARY WHILE `make determinism` IS RUNNING** — they
+  share `tmp/determinism/`, and the collision shows up as a determinism FAILURE that passes on a
+  clean re-run. A whole-corpus gate failing intermittently is the last thing that should be
+  waved away as a flake, so keep host probe runs serial with it and re-run twice before
+  believing either verdict.
 - **An A/B switch must PRINT its own state**, and any new instrument must be sabotaged before its
   output is believed.
   ⚠⚠ **And PROVE THE FLAGS REACHED THE BUILD — `zsh` does not word-split an unquoted parameter**, so

@@ -144,6 +144,13 @@ private:
     /* One 8-byte all-zero sprite (VSTART == VSTOP == 0), pointed to by all eight channels
        so sprite DMA has somewhere harmless to go.  See initialize(). */
     Sprite*     m_nullSprite;
+#ifdef REVS_TYRE_SPRITES
+    /* ⭐ THE FRONT-WHEEL DITHER, as two precomputed states per side (RevsTyres.h).  Four images:
+       [side][state].  Alternating the animation is a copper SPRxPT repoint and nothing else —
+       no CPU touches a pixel of it after the build. */
+    Sprite*     m_tyre[2][2];
+    bool        m_tyreReady;
+#endif
     unsigned    m_back;               /* index of the buffer decode() writes */
     bool        m_ready;              /* the back buffer holds a finished frame */
 

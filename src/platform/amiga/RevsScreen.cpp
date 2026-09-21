@@ -14,6 +14,9 @@
 #include "../bbc_screen.h"
 #include "../teletext.h"           /* the MODE 7 model: the VDU driver's page + the SAA5050 */
 #include "../revs_plot.h"        /* the direct-to-bitplane plotter: this is where it is aimed */
+#ifdef REVS_TYRE_SPRITES
+#include "RevsTyres.h"
+#endif
 #ifdef REVS_DECODE_SPLIT
 #include "../probe.h"              /* DECODESPLIT: the three spare phase ids carve decode() */
 #endif
@@ -52,7 +55,17 @@ static const uint16_t kRowBytes   = (kW / 8) * kBP;          /* 80: interleaved 
 #define IDX_PLAYFIELD   (IDX_SPRITES + 16)      /* BPLCON0 + BPL1MOD + BPL2MOD   (3) */
 #define IDX_BPL         (IDX_PLAYFIELD + 3)     /* 2 interleaved planes          (4) */
 #define IDX_TOPPAL      (IDX_BPL + 4)           /* COLOR00..03 for display line 0 (4) */
+#ifdef REVS_TYRE_SPRITES
+/* ⭐ COLOR17..19 — the tyre sprites' three pens (sprite pair 0/1 shares 17..19).  Written at the
+   TOP of the frame rather than inside a band, because the patch (display lines 130..140) sits
+   wholly inside raster band 3 and nothing else on screen uses a sprite: one set of values covers
+   every line a sprite is visible on.  Filled in buildBands() from band 3's own palette record, so
+   the sprite's colours track the game's palette instead of being baked in. */
+#define IDX_SPRPAL      (IDX_TOPPAL + 4)        /* COLOR17..19                    (3) */
+#define IDX_BANDS       (IDX_SPRPAL + 3)
+#else
 #define IDX_BANDS       (IDX_TOPPAL + 4)
+#endif
 #define BAND_WORDS      5                       /* WAIT + COLOR00..03                */
 #define MAX_BANDS       8
 #define LIST_LENGTH     (IDX_BANDS + MAX_BANDS * BAND_WORDS + 1)
@@ -475,7 +488,16 @@ void RevsScreen::setConstantRegisters()
        the OPPOSITE (playfield behind every group), which is what let the unpointed sprite
        channels paint over the picture.  Belt and braces with the null sprites: the sprites
        are disarmed AND would lose the priority fight if they weren't. */
+#ifdef REVS_TYRE_SPRITES
+    /* ⭐ SPRITES IN FRONT (PF1P/PF2P = 0).  The default below puts the playfield in front of every
+       sprite group, which was right while the BBC's "there is no sprite layer" held and the only
+       sprites were the disarmed null ones.  The tyre patch IS a sprite layer now and must win the
+       priority fight; the other six channels still point at the 8-byte null sprite, whose
+       VSTART == VSTOP == 0 means they are never armed on any line, so nothing else can appear. */
+    *bplcon2Pointer = 0x0000;
+#else
     *bplcon2Pointer = 0x0024;
+#endif
 
     /* ECS Denise border blanking: the area outside the display window renders BLACK instead
        of COLOR00.  Without it the border tracks the copper's current COLOR00 — which this
@@ -538,6 +560,24 @@ void RevsScreen::initialize()
        one-time CPU write would hold for the first frame only. */
     for (unsigned s = 0; s < 8; s++)
         m_copper->showSprite(IDX_SPRITES + s * 2, (uint16_t)s, *m_nullSprite);
+
+#ifdef REVS_TYRE_SPRITES
+    /* ⭐ TWO CHANNELS, TWO IMAGES EACH.  A channel shows one horizontal position per line and the
+       two wheel arches are 304 pixels apart, so one channel cannot carry both sides however the
+       images are laid out — channel 0 is the left arch and channel 1 the right.  The ALTERNATION
+       is still just a pointer swap, which is the point.
+       ⚠ Positions are set ONCE, here: the patch never moves.  DIWSTRT is $2C81, so screen pixel
+       (0,0) is hardware (H $81, V 44) and a lores sprite's HSTART is in those same units. */
+    m_tyreReady = false;
+    for (unsigned side = 0; side < 2u; side++)
+        for (unsigned st = 0; st < 2u; st++) {
+            Sprite* sp = Sprite::allocate(REVS_TYRE_LINES);
+            m_tyre[side][st] = sp;
+            if (!sp) continue;
+            sp->setX((uint16_t)(0x81u + (side ? REVS_TYRE_R_X : REVS_TYRE_L_X)));
+            sp->setY((uint16_t)(kDisplayTop + REVS_TYRE_Y0));
+        }
+#endif
 
     /* Per-frame / per-band playfield state: BPLCON0 (plane count + ECSENA) and the
        interleave modulos.  These are the only playfield registers the copper touches —
@@ -902,6 +942,20 @@ void RevsScreen::buildBands()
         for (unsigned pen = 0; pen < 4; pen++)
             d[at + pen] = copperMove(color00 + (pen << 1),
                                      bbcColour(s.palette[rec][kLogicalForPen[pen]]));
+#ifdef REVS_TYRE_SPRITES
+        /* ⭐ The tyre patch lives at display lines 130..140, so whichever band covers line 130 is
+           the one whose pens the sprites must use.  Taken from the same record as the playfield's
+           own COLOR01..03 above, which is what keeps the sprite and the outline underneath it in
+           the same palette. */
+        if (lineStart <= (int)REVS_TYRE_Y0 &&
+            (n == 4u || (int)m_plan.line[n + 1u] > (int)REVS_TYRE_Y0)) {
+            unsigned pen;
+            for (pen = 1; pen < 4u; pen++)
+                d[IDX_SPRPAL + pen - 1u] =
+                    copperMove(0x1A0 + ((pen - 1u) << 1),      /* COLOR17, 18, 19 */
+                               bbcColour(s.palette[rec][kLogicalForPen[pen]]));
+        }
+#endif
     }
 
     /* Any band slot the game did not use this frame goes back to a copper NOP, so a
@@ -938,6 +992,20 @@ void RevsScreen::present()
      * teletext page. */
     REVS_PLOT_TARGET(tt_active() || !m_bitmap[m_back] ? (uint8_t*)0
                                                       : (uint8_t*)m_bitmap[m_back]->data);
+
+#ifdef REVS_TYRE_SPRITES
+    /* ⭐⭐ THE WHOLE ANIMATION: TWO POINTER WRITES.  No CPU touches a tyre pixel after the build —
+       alternating the dither is repointing each channel at the other precomputed image, which is
+       what the EOR over 44 bytes of `mem[]` at 50 Hz used to do.  ⚠ In the VBI and FIRST, beside
+       the bitplane pointers: Agnus fetches a channel's control words in the sprite DMA slots near
+       the START of a line, so SPRxPT has the tightest deadline in the list (docs/amiga-lessons.md).
+       ⚠ MODE 7 has no tyres — leave the null sprites in place there. */
+    if (m_tyreReady && !tt_active()) {
+        const unsigned ph = g_tyrePhase & 1u;
+        m_copper->showSprite(IDX_SPRITES + 0, 0, *m_tyre[0][ph]);
+        m_copper->showSprite(IDX_SPRITES + 2, 1, *m_tyre[1][ph]);
+    }
+#endif
 }
 
 /* ⭐⭐ SNAPSHOT THE BAND RECORD WITH THE FRAME IT DESCRIBES.  Main-loop context, called from
@@ -1552,6 +1620,29 @@ void RevsScreen::decode()
     PROBE_PHASE(DEC_PHASE_RECTS);
 #endif
     REVS_PLOT_RECTS();
+
+#ifdef REVS_TYRE_SPRITES
+    /* ⭐ BUILD THE TWO TYRE STATES, ONCE.  Main-loop context, as RevsTyres.h requires: the build
+       applies the game's own EOR to the live frame buffer twice (to discover state B and to
+       check the period) and restores around it, so the band-4 ISR arm must not run `tick_wheel_
+       spin` in the middle of it.  Deferred to here rather than initialize() because the patch
+       does not exist until the race view has been painted at least once. */
+    /* ⚠ NOT OVER A MODE 7 PAGE.  $7B00-$7FFF is the teletext screen as well as the race view's
+       code overlay, and the patch addresses are frame-buffer addresses either way — building
+       from a front-end page would fill both sprites with teletext bytes and the report would
+       look entirely plausible (a believable `zeroAnim`, `periodBad` 0).
+       ⚠⚠ AND THE COLOURS ARE SAMPLED FROM ONE FRAME.  The sweep repaints the arch every frame
+       with the off-road colour of wherever the car is, so an image built on grass is wrong on
+       gravel.  That is tolerable only because this is a staging step: the arch stops being
+       repainted at all once these rows are owned, which is the same commit that has to make the
+       playfield colour 0 under the 58 animated pixels `g_tyreZeroAnim` counts. */
+    if (!m_tyreReady && !tt_active() &&
+        m_tyre[0][0] && m_tyre[0][1] && m_tyre[1][0] && m_tyre[1][1])
+        m_tyreReady = revs_tyres_build((uint16_t*)m_tyre[0][0]->data() + 2,
+                                       (uint16_t*)m_tyre[0][1]->data() + 2,
+                                       (uint16_t*)m_tyre[1][0]->data() + 2,
+                                       (uint16_t*)m_tyre[1][1]->data() + 2) != 0;
+#endif
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(PROBE_PHASE_DECODE);
 #endif

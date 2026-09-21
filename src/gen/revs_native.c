@@ -14206,6 +14206,9 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
    Every $6Exx/$6Fxx/$70xx store is a frame-buffer write. */
 void tick_wheel_spin(void)
 {
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_TYRE_SPRITES)
+    extern volatile unsigned char g_tyrePhase;
+#endif
     field_countdown++;
 
     unsigned s1  = (unsigned)road_speed + 0x30;                      /* CLC; ADC #$30 */
@@ -14214,6 +14217,23 @@ void tick_wheel_spin(void)
     if (!(acc & 0x100)) return;              /* no carry this field */
     if (wheel_spin_rate == 0) return;        /* spin disabled */
 
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_TYRE_SPRITES)
+    /* ⭐⭐⭐ THE WHEELS ARE A SPRITE NOW (§12, user directive) — so the EOR does not happen, and
+       this is a FAITHFULNESS-SEAM decision rather than an optimisation.  The EOR's only
+       observable is the PICTURE: `make fbwrites FILLREADS=1` over display lines 117..157 names
+       every reader of these 44 bytes on a real BBC and `tick_wheel_spin` is the only one — its
+       own read-modify-write.  Nothing else in the engine looks at them.  So reproducing the
+       byte-level flicker in `mem[]` reproduces an implementation detail, not a result
+       (docs/validation-harness.md §THE RESULTS RULE), and the result is produced instead by
+       flipping which of two precomputed sprites the copper points at.
+       ⚠ The field counter and the rate accumulator above STAY: `field_countdown` is the engine's
+       own 2-second frame wait ($1760) and the accumulator is what makes the flicker rate track
+       road speed, so both are real state with readers outside this routine.
+       ⚠ HOST BUILDS AND THE ORACLE KEEP THE EOR — `make validate` and every `determinism`
+       trajectory compare `mem[]`, and this arm is Amiga-only by construction. */
+    g_tyrePhase ^= 1u;
+    return;
+#endif
     for (int x = 4; x >= 0; x--) {
         mem[MEM_wheel_spin_run_a + x] ^= mem[MEM_wheel_spin_xor_tbl_a + x];
         mem[MEM_wheel_spin_run_b + x] ^= mem[MEM_wheel_spin_xor_tbl_b + x];
