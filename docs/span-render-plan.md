@@ -2274,3 +2274,39 @@ repainting over the mark. Five counters, all measured 0 over 100+ painted frames
 the whole line, so a mark is MONOTONE in both axes and its box is its first and last pixel. That
 is an argument, and the restore oracle is its gate — a non-monotone line leaves pixels outside the
 rectangle and fires it on the next frame.
+
+#### ✅ AND THE BLOCK IS OWNED — `make NEEDLE=1` claims display lines 158..191
+
+With the needles off `mem[]` there are only two other writers of the dashboard block, and both
+are cheap: the wing mirrors take a `REVS_PLOT_BYTE` at `mirror_draw_car_core`'s store site, and
+the gear indicator is `vdu_char_emit`'s already (and lives at 192..207 regardless). So
+`kDeltaBlock` gains `{158, 192}` and `convertRace` stops scanning 34 rows.
+
+Three arms, one session, `PROBEFIELDS=3000`, driving, whole frame:
+
+| arm | Σ ph1..39 | − ph28 | ph27 | ph32 | cells/frame |
+|---|---:|---:|---:|---:|---:|
+| control | 134.74 | 123.86 | 16.60 | 6.24 | 80 |
+| NEEDLE=1, rows unowned | 135.25 | 124.76 | 18.06 | 5.68 | 64 |
+| NEEDLE=1, rows **owned** | 134.26 | **122.57** | **15.64** | 5.68 | **16** |
+
+⇒ the ownership is **−2.42 ms of `ph27`**, the painter **+1.46**, the deleted 6502 plot **−0.56**:
+net **−1.29 ms** on the bracketed frame. ⭐ And the painter is now the thing eating half the
+prize — 36 pixels at ~148 cycles each is simply what two byte read-modify-writes cost on a 68000.
+
+**The oracles, and one instructive survivor.** `DELTACHECK=1` re-expands all three delta blocks
+from `mem[]` every sweep: 67 checks, 0 mismatch. ⚠ It deliberately EXCLUDES the needle column —
+§12d paints pixels there that are absent from `mem[]` by design, and that region has
+`NEEDLECHECK`'s two oracles instead (0/68 both). Sabotages:
+
+- poking one plane byte at line 170 cell 5 fires at **51 mismatches, first at `AA05`** — so the
+  oracle really does cover the new block;
+- ⚠ making the BASE skip cell 5 of 158..191 **survives 67/67 at 0**, and it is the documented
+  no-change case rather than a gap: the base runs ONCE, over buffers that already hold a full
+  unowned decode of those rows, so an incomplete base changes nothing. Same argument as
+  `plotDeltaBase`'s second-buffer write surviving 497/497 — and the same conclusion, that the
+  base becomes load-bearing only on the MODE 7 round trip.
+
+⚠ `plotDeltaCheck` had a hardcoded `blk < 2u` and so had silently stopped checking whichever
+block was added last. Same defect class as the always-true `#ifdef` above: a literal that has to
+track a `#define` and does not.

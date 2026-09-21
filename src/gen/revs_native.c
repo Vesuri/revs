@@ -17195,6 +17195,13 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
         }
         if (dstIsRam) mem[(uint16_t)(dst + row)] = pattern;      /* $7FDF */
         else          bus_write((uint16_t)(dst + row), pattern);
+        /* ⭐ THE MIRROR'S OWN STORE SITE, into the owned dashboard rows (revs_plot.h §delta).
+           ⚠⚠ INVISIBLE TO EVERY PRACTICE MEASUREMENT — a `STRAIGHT_TO_RACE` lap has an empty
+           track and reflects nothing, so this writes the same $F0 every frame and no census can
+           see it move.  Its footprint comes from the game's own six-segment tables instead
+           (display lines 154..178, cells 0..2 and 37..39).  Owning 158..191 without this would
+           freeze both wing mirrors in a real race and nothing in a practice run could tell. */
+        REVS_PLOT_BYTE((uint16_t)(dst + row), pattern);
 
         row--;                                                   /* $7FE1 */
         if ((row & 0x80u) && (row & 7u) == 7u)                   /* $7FE2/$7FE7 — wrapped past a char row */

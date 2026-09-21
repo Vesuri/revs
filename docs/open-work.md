@@ -318,18 +318,20 @@ does for 81..116) is the shape that has the rate; a strip re-expand is not.
 GEOMETRY. The two dash needles are a 36-entry pixel list plus a rectangle copy now, with no
 `mem[]` traffic, no undo list and no re-expand — `make NEEDLE=1`.
 
-### 2d. ⭐⭐ ROWS 158..191 — THE DASHBOARD, ~2.9 ms, AND TWO OF ITS FOUR WRITERS ARE ALREADY DONE
-Re-opened by the §12c retraction above: these 34 rows really are worth ~0.086 ms each. What has
-to stop writing `mem[]` there before they can be claimed:
-- ✅ the two dash NEEDLES — `make NEEDLE=1` (§12d): a pixel list painted into the planes, erased
-  by a 32-pixel-granular rectangle copy out of a cached clean cockpit. Five gates green.
-- ✅ the front-wheel DITHER — `make TYRESPRITE=1`: two precomputed sprites (but its rows are
-  133..140, i.e. entry 2a's block, not this one).
-- ☐ the two WING MIRRORS (display lines 154..178, cells 0..2 and 37..39, 118 bytes, six segments
-  from the game's own `mirror_seg_*` tables). ⚠ Invisible in every practice measurement — an
-  empty track reflects nothing — so its gate is the tables, not a run.
-- ☐ the GEAR indicator, and whatever else `DASHBARE=1`'s enumerator reports once the needles are
-  out of the way. Re-run it: the enumeration on record was taken with these rows wrongly owned.
+### 2d. ✅ ROWS 158..191 — THE DASHBOARD, DONE: `make NEEDLE=1`, `ph27` 18.06 → 15.64
+Re-opened by the §12c retraction above and then taken: these 34 rows really are worth ~0.086 ms
+each. All four writers are off `mem[]` or mirrored:
+- ✅ the two dash NEEDLES — §12d: a pixel list painted into the planes, erased by a
+  32-pixel-granular rectangle copy out of a cached clean cockpit. Six gates green.
+- ✅ the two WING MIRRORS — a `REVS_PLOT_BYTE` at `mirror_draw_car_core`'s store site. ⚠ Invisible
+  in every practice measurement (an empty track reflects nothing), so its justification is the
+  game's own `mirror_seg_*` tables, not a census.
+- ✅ the GEAR indicator — already `vdu_char_emit`'s, and its rows are 192..207 anyway.
+- ✅ the front-wheel DITHER is at 133..140, i.e. entry 2a's block, not this one.
+Net −1.3 to −1.5 ms of frame: −2.42 of decode against the painter's +1.46 and the 6502 plot's
+−0.56. ⭐ The painter is now the thing eating half the prize — 36 pixels at ~148 cycles each is
+the 68000's price for two byte read-modify-writes, and grouping the pixels that share a byte is
+the only lever left on it.
 
 ### 2a-old. ROWS 117..157 under the pre-§12c model — only 17 of the 41 have a single writer
 `make fbwrites FILL=117-157 FILLFRAMES=15-70` gives the per-line writer set: **117..128 (12) and

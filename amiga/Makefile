@@ -823,6 +823,11 @@ endif
 # licenses turning the byte OR into two plane bits) and `g_needleOverflow`.
 # ⭐ Amiga only by construction: the host keeps the faithful undo-list plotter, so `make validate`
 # and every `determinism` trajectory are untouched.
+# ⭐⭐⭐ AND IT IS WHAT MAKES DISPLAY LINES 158..191 OWNABLE — the decode's second-biggest prize,
+# ~2.9 ms (docs/open-work.md 2d).  With the needles off `mem[]` and the wing mirrors mirrored at
+# their store site, the delta domain's third block turns on with this switch and `convertRace`
+# stops scanning 34 rows.  `make DELTACHECK=1` is the staleness oracle over all three blocks;
+# ⚠ it deliberately does NOT cover the needle column, which has NEEDLECHECK's two instead.
 NEEDLE ?= 0
 ifeq ($(NEEDLE),1)
 EXTRA_DEFINES += -DREVS_NEEDLE_PLANES

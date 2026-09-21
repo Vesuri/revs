@@ -925,8 +925,19 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
    painter only below ~0.8 delivered bytes a frame** — `vdu_char_emit`'s rows are at 3.7/34 = 0.11
    and the needles at 57.6/34 = 1.69.  docs/span-render-plan.md §11d has the three-arm table and
    why no placement of the hook escapes it. */
-#ifdef REVS_PLOT_RECTS
-/* ⭐⭐⭐ §12c — AND THE NEEDLE ROWS COME BACK, BY A THIRD MECHANISM THE RATE ABOVE DOES NOT PRICE.
+#if defined(REVS_PLOT_RECTS) || defined(REVS_NEEDLE_PLANES)
+/* ⭐⭐⭐ §12d — AND THE DASHBOARD COMES BACK, WORTH ~2.9 ms, ONCE ITS WRITERS HAND OVER GEOMETRY.
+   §12c's "+0.07, the prize is zero" is retracted: both arms of that A/B owned these rows through
+   a macro-name collision, and with it fixed `convertRace` reads 10.13 ms against the broken
+   7.22.  34 rows at ~0.086 ms each — §11's ledger price, and the decode is ~99% SCAN so it does
+   not matter how few cells on them actually change.
+   ⚠ Gated on `REVS_NEEDLE_PLANES`, because owning a row means every writer of it must stop
+   writing `mem[]` or mirror what it writes.  In this block that is exactly two: the two dash
+   needles (§12d — a pixel list and a rectangle copy, no `mem[]` at all) and the two WING
+   MIRRORS, whose store site now carries a `REVS_PLOT_BYTE`.  The gear indicator is already
+   `vdu_char_emit`'s and the front-wheel dither is at 133..140, i.e. the OTHER block.
+   ⚠⚠ The mirrors are invisible to every practice measurement — an empty track reflects
+   nothing — so their inclusion rests on the game's own `mirror_seg_*` tables, not on a census.
    The paragraph above is still correct about what it measured: at ~666 cycles per DELIVERED byte
    no per-store mirror can pay for 158..191.  ⭐ But "delivered bytes" is a property of the HOOK,
    not of the rows — the ~405 cycles of "getting there" is a call and a display-line filter paid
@@ -940,6 +951,7 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
    §11d. */
 static const unsigned char kDeltaBlock[3][2] = { { 0u, 18u }, { 158u, 192u }, { 192u, 208u } };
 #define DELTA_BLOCKS 3u
+#define DELTA_DASH_BLOCK 1u
 #else
 static const unsigned char kDeltaBlock[2][2] = { { 0u, 18u }, { 192u, 208u } };
 #define DELTA_BLOCKS 2u
@@ -1229,7 +1241,10 @@ static void plotDeltaCheck(void)
     unsigned blk, y, c;
     if (!s_deltaBased) return;
     g_plotDeltaChecks++;
-    for (blk = 0; blk < 2u; blk++)
+    /* ⚠ `DELTA_BLOCKS`, not a literal 2 — a hardcoded count silently stopped checking the block
+       that was added after it was written, which is the same class of defect as a feature macro
+       that is always true. */
+    for (blk = 0; blk < DELTA_BLOCKS; blk++)
         for (y = kDeltaBlock[blk][0]; y < kDeltaBlock[blk][1]; y++) {
             const unsigned kind   = s_deltaKind[y];
             const unsigned row    = y >> 3;
@@ -1239,6 +1254,15 @@ static void plotDeltaCheck(void)
                 const uint8_t v  = *src;
                 const uint8_t lo = (kind == 4u) ? (uint8_t)0 : g_bbcExpandLo[v];
                 const uint8_t hi = (kind == 4u) ? v           : g_bbcExpandHi[v];
+#ifdef REVS_NEEDLE_PLANES
+                /* ⚠⚠ THE NEEDLE COLUMN IS NOT THIS ORACLE'S — STATED SCOPE, NOT A HOLE.  §12d
+                   paints pixels there that are deliberately absent from `mem[]`, so comparing
+                   the buffers against `mem[]` would fire on every needle pixel.  That region has
+                   two oracles of its own (`make NEEDLECHECK=1`: the cached cockpit against
+                   `mem[]`, and the column against the cache after the erase). */
+                if ((unsigned)(y - REVS_NEEDLE_Y0) < REVS_NEEDLE_YN &&
+                    (unsigned)(c - REVS_NEEDLE_C0) < REVS_NEEDLE_CELLS) continue;
+#endif
                 if (s_plane[0][rowOff + c] != lo || s_plane[0][rowOff + c + kPlaneGap] != hi ||
                     s_plane[1][rowOff + c] != lo || s_plane[1][rowOff + c + kPlaneGap] != hi) {
                     if (!g_plotDeltaMismatch)
