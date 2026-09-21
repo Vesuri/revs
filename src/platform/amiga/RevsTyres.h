@@ -31,6 +31,13 @@ extern "C" {
 int  revs_tyres_build(unsigned short* leftA, unsigned short* leftB,
                       unsigned short* rightA, unsigned short* rightB);
 
+/* ⭐⭐ CLEAR THE ANIMATED PIXELS OUT OF ONE PLANE BUFFER — the playfield's half of the split, and
+   it has to be applied to the BITPLANES rather than to `mem[]` because the view sweep repaints
+   the wheel arch every frame (the reasoning is at RevsTyres.cpp).  Call it at the END of the
+   decode that filled `planeBase`, after every other painter: 44 word AND's over display lines
+   130..140, cells 0,1 and 38,39 of both planes.  A no-op until revs_tyres_build has succeeded. */
+void revs_tyres_outline(unsigned char* planeBase);
+
 /* Which image is showing: 0 = A, 1 = B.  Toggled where the EOR used to happen. */
 extern volatile unsigned char g_tyrePhase;
 extern volatile unsigned long g_tyreBuilds;

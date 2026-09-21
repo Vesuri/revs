@@ -482,21 +482,28 @@ void RevsScreen::setConstantRegisters()
     /* No horizontal scroll — both playfields at delay 0. */
     *bplcon1Pointer = 0x0000;
 
-    /* ⭐ PLAYFIELD IN FRONT OF EVERY SPRITE GROUP.  PFxP = 4 means "the playfield is behind
-       sprite groups 0..3 and in front of groups 4..", i.e. in front of all four — the BBC
-       has no sprite layer, so nothing may ever appear over the game.  The reset value 0 is
-       the OPPOSITE (playfield behind every group), which is what let the unpointed sprite
-       channels paint over the picture.  Belt and braces with the null sprites: the sprites
-       are disarmed AND would lose the priority fight if they weren't. */
+    /* ⚠⚠⚠ THE PLAYFIELD/SPRITE PRIORITY CODES READ THE OTHER WAY ROUND, AND BOTH ARMS HERE HAD
+       THEM INVERTED (measured on the target, 2026-09-21 — the tyre sprites appeared only over
+       playfield colour 0, which is the signature of a playfield that is in FRONT).
+         PFxP = 0   playfield in front of sprite group 0, i.e. IN FRONT OF EVERY SPRITE
+         PFxP = N   playfield behind groups 0..N-1, in front of groups N..3
+         PFxP = 4   playfield behind all four groups, i.e. EVERY SPRITE IN FRONT
+       The cross-check is Intuition, which runs BPLCON2 = $0024 and shows the mouse pointer over
+       the screen: $0024 is PF1P = PF2P = 4 = sprites in front.  The old comment here read the
+       table upside down (there is no "group 4"), so the value that was supposed to keep the
+       unpointed channels off the picture was doing the opposite — harmless only because the null
+       sprites are disarmed, which is what actually fixed that artefact. */
 #ifdef REVS_TYRE_SPRITES
-    /* ⭐ SPRITES IN FRONT (PF1P/PF2P = 0).  The default below puts the playfield in front of every
-       sprite group, which was right while the BBC's "there is no sprite layer" held and the only
-       sprites were the disarmed null ones.  The tyre patch IS a sprite layer now and must win the
-       priority fight; the other six channels still point at the 8-byte null sprite, whose
-       VSTART == VSTOP == 0 means they are never armed on any line, so nothing else can appear. */
-    *bplcon2Pointer = 0x0000;
-#else
+    /* ⭐ SPRITES IN FRONT (PF1P = PF2P = 4).  The tyre patch IS a sprite layer and must win the
+       priority fight — the whole split (playfield = outline, sprite = pattern) depends on the
+       sprite's pixels landing over the playfield's, not under them.  The other six channels
+       still point at the 8-byte null sprite, whose VSTART == VSTOP == 0 means they are never
+       armed on any line, so nothing else can appear. */
     *bplcon2Pointer = 0x0024;
+#else
+    /* PLAYFIELD IN FRONT OF EVERY SPRITE GROUP — the BBC has no sprite layer, so nothing may
+       ever appear over the game.  Belt and braces with the null sprites. */
+    *bplcon2Pointer = 0x0000;
 #endif
 
     /* ECS Denise border blanking: the area outside the display window renders BLACK instead
@@ -567,14 +574,18 @@ void RevsScreen::initialize()
        images are laid out — channel 0 is the left arch and channel 1 the right.  The ALTERNATION
        is still just a pointer swap, which is the point.
        ⚠ Positions are set ONCE, here: the patch never moves.  DIWSTRT is $2C81, so screen pixel
-       (0,0) is hardware (H $81, V 44) and a lores sprite's HSTART is in those same units. */
+       (0,0) is hardware (H $81, V 44) — but a SPRITE whose HSTART is $81 lands one lores pixel
+       to the RIGHT of the playfield's first pixel, so the base is $80.  Measured on the target
+       (2026-09-21): at $81 every sprite pixel pair straddled the MODE 5 pixel boundary, half of
+       it over the playfield pixel it was supposed to replace.  ⚠ setX()'s argument is the 9-bit
+       HSTART whose LSB is SH0, so ±1 here is one lores pixel, not one hires pixel. */
     m_tyreReady = false;
     for (unsigned side = 0; side < 2u; side++)
         for (unsigned st = 0; st < 2u; st++) {
             Sprite* sp = Sprite::allocate(REVS_TYRE_LINES);
             m_tyre[side][st] = sp;
             if (!sp) continue;
-            sp->setX((uint16_t)(0x81u + (side ? REVS_TYRE_R_X : REVS_TYRE_L_X)));
+            sp->setX((uint16_t)(0x80u + (side ? REVS_TYRE_R_X : REVS_TYRE_L_X)));
             sp->setY((uint16_t)(kDisplayTop + REVS_TYRE_Y0));
         }
 #endif
@@ -949,10 +960,18 @@ void RevsScreen::buildBands()
            the same palette. */
         if (lineStart <= (int)REVS_TYRE_Y0 &&
             (n == 4u || (int)m_plan.line[n + 1u] > (int)REVS_TYRE_Y0)) {
+            /* ⚠⚠ COLOR16 IS $1A0, NOT COLOR17 — COLOR00 is $180 and the registers are two bytes
+               apart, so COLOR16 = $180 + 16*2 = $1A0.  Writing the three pens from $1A0 put
+               them one register low (sprite colour 2 then read COLOR18, which held PEN 3's
+               colour) and the tyre pattern came out GREEN instead of white: measured on the
+               target, and the copper dump is the evidence (`$1a0 <- 0f00  $1a2 <- 0fff  $1a4 <-
+               00f0` against a band whose pens are black/red/white/green).  COLOR16 itself is
+               never displayed for a sprite — index 0 is transparent — so the first sprite pen
+               is COLOR17 = $1A2. */
             unsigned pen;
             for (pen = 1; pen < 4u; pen++)
                 d[IDX_SPRPAL + pen - 1u] =
-                    copperMove(0x1A0 + ((pen - 1u) << 1),      /* COLOR17, 18, 19 */
+                    copperMove(0x1A2 + ((pen - 1u) << 1),      /* COLOR17, 18, 19 */
                                bbcColour(s.palette[rec][kLogicalForPen[pen]]));
         }
 #endif
@@ -1649,6 +1668,13 @@ void RevsScreen::decode()
                                        (uint16_t*)m_tyre[0][1]->data() + 2,
                                        (uint16_t*)m_tyre[1][0]->data() + 2,
                                        (uint16_t*)m_tyre[1][1]->data() + 2) != 0;
+
+    /* ⭐⭐⭐ AND THE PLAYFIELD'S HALF OF THE SPLIT, LAST OF ALL: the tread comes OUT of the
+       bitplanes, so the sprite is the only layer that draws it (user, 2026-09-21).  It must be
+       the last write to these rows — the conversion above re-expands them from `mem[]`, which
+       still holds state A's dither, and `REVS_PLOT_RECTS_RUN` re-expands the same two rectangles
+       when that feature is on. */
+    revs_tyres_outline(dst);
 #endif
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(PROBE_PHASE_DECODE);

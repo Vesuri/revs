@@ -89,6 +89,27 @@ volatile unsigned long g_tyreZeroAnim  = 0;   /* animated pixels that are colour
 /* A snapshot of the 44 patch bytes, indexed [side][line][cellInPair]. */
 struct TyrePatch { unsigned char b[2][TYRE_LINES][2]; };
 
+/* ⭐⭐⭐ THE OUTLINE, AS A MASK OVER THE BITPLANES (user, 2026-09-21: "the static bitmap graphics
+   still have the band stripes in them - they should be removed from the bitplanes").
+   The split at the top of this file needs the playfield to read colour 0 under every ANIMATED
+   pixel; without that the sprite is merely additive and state A's dither stays baked into the
+   picture.  It cannot be done by writing an outline into `mem[]`: the view sweep repaints the
+   arch every frame (`make fbwrites FILLREADS=1` names `view_cell_chain_a` and
+   `view_cell_chain_b_mid` on display lines 130..140, cells 0,1,38,39), so the write would be
+   undone before the next decode read it.  ⚠ And a gdb poke cannot even test that — writing
+   `mem[]` through the FS-UAE stub silently does nothing, which reads as "the sweep repainted it".
+   ⇒ Apply it where nothing can overwrite it: to the PLANE BYTES, at the end of the decode that
+   just expanded them.  One AND per plane per cell pair, 44 word read-modify-writes a frame.
+   ⚠ Both plane bytes get the same mask: clearing a MODE 5 pixel to colour 0 clears both of its
+   colour bits, and the two planes carry one bit each (bbc_screen.h). */
+static unsigned short s_keepW[2][TYRE_LINES];   /* [side][line] — cells (0,1) / (38,39)        */
+static int            s_keepReady = 0;          /* 0 until revs_tyres_build has succeeded once */
+
+/* One plane's bytes per display line, and the interleaved pair's stride — DERIVED, so a display
+   width change cannot leave this file behind. */
+#define TYRE_PLANE_GAP    (BBC_SCREEN_WIDTH / 8u)
+#define TYRE_LINE_STRIDE  (TYRE_PLANE_GAP * 2u)
+
 /* Where a patch byte lives in mem[]: the BBC cell layout, charRow*320 + cell*8 + lineInRow. */
 static unsigned tyreAddr(unsigned cell, unsigned y)
 {
@@ -258,6 +279,49 @@ int revs_tyres_build(unsigned short* leftA, unsigned short* leftB,
                 }
     }
 
+    /* ⭐ AND THE OUTLINE MASK, from the same animated set the sprites were filled from — so the
+       playfield can only ever be cleared at pixels the sprite is responsible for. */
+    {
+        unsigned s2, l2, c2;
+        for (s2 = 0; s2 < 2u; s2++)
+            for (l2 = 0; l2 < TYRE_LINES; l2++) {
+                unsigned short keep = 0xFFFFu;
+                for (c2 = 0; c2 < 2u; c2++) {
+                    const unsigned anim = tyreAnimMask(a.b[s2][l2][c2], b.b[s2][l2][c2]);
+                    unsigned pp, clear = 0;
+                    for (pp = 0; pp < 4u; pp++)
+                        if ((anim >> pp) & 1u) clear |= 0xC0u >> (pp * 2u);
+                    /* Big-endian plane order: the FIRST cell of the pair is the word's high byte,
+                       which is the byte order the bitplane itself is in.  (⚠ This is a PLANE
+                       buffer, not `mem[]` — the little-endian `mem[]` aliasing rule does not
+                       apply, and `make endian-lint` scopes itself to `mem[]` for that reason.) */
+                    keep &= (unsigned short)~(clear << (c2 ? 0u : 8u));
+                }
+                s_keepW[s2][l2] = keep;
+            }
+        s_keepReady = 1;
+    }
+
     g_tyreBuilds++;
     return 1;
+}
+
+void revs_tyres_outline(unsigned char* planeBase)
+{
+    unsigned short* p;
+    unsigned        l;
+    if (!s_keepReady || !planeBase) return;
+    /* ⚠ NO MULTIPLY: the first line's byte offset is a compile-time constant and the walk is
+       += one line (m68k has no 32-bit multiply, and `make muldiv-audit` fails a link that emits
+       the software one). */
+    p = (unsigned short*)(planeBase + TYRE_Y0 * TYRE_LINE_STRIDE);
+    for (l = 0; l < TYRE_LINES; l++) {
+        const unsigned short kl = s_keepW[0][l];
+        const unsigned short kr = s_keepW[1][l];
+        p[0]  = (unsigned short)(p[0]  & kl);   /* plane 1, cells 0,1   */
+        p[19] = (unsigned short)(p[19] & kr);   /* plane 1, cells 38,39 */
+        p[20] = (unsigned short)(p[20] & kl);   /* plane 2, cells 0,1   */
+        p[39] = (unsigned short)(p[39] & kr);   /* plane 2, cells 38,39 */
+        p += TYRE_LINE_STRIDE / 2u;
+    }
 }

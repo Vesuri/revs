@@ -175,6 +175,29 @@ Cheap when the element is a build-once solid whose only per-frame change is `set
 two control words each frame and the pixels only on the one-time fill.  Do NOT memcpy the whole
 block per frame (that was ~1% of wall clock).
 
+### ⭐⭐ THE FIRST SPRITE PEN IS COLOR17 = `$1A2`, AND COLOR16 IS `$1A0` — Revs, 2026-09-21
+COLOR00 is `$180` and the registers are two bytes apart, so **COLOR16 = `$180 + 16*2` = `$1A0`**.
+Writing a sprite pair's three pens from `$1A0` puts every one of them ONE REGISTER LOW: sprite
+colour 1 reads COLOR16 (which a sprite never displays — index 0 is transparent), colour 2 reads
+COLOR17 and colour 3 reads COLOR18.  Symptom on the target: the pattern drew in the wrong pen's
+colour (green where the pen table said white), *positioned correctly*, which reads like a palette
+bug in the band schedule rather than an addressing slip.  **Sprite pair 0/1 = COLOR17..19 =
+`$1A2`/`$1A4`/`$1A6`**; pair 2/3 = COLOR21..23 = `$1AA`.., and so on every eight bytes.
+
+### ⭐⭐ A SPRITE AT HSTART = DIWSTRT's hstart IS ONE LORES PIXEL TOO FAR RIGHT — Revs, 2026-09-21
+With `DIWSTRT = $2C81` the playfield's first pixel is at H `$81`, and the folklore "so put the
+sprite at `$81`" is **wrong by one**: measured on the target, a sprite at `$81` starts one lores
+pixel right of the playfield's first pixel.  Use **`$80` + x**.  ⚠ `Sprite::setX()` takes the
+whole 9-bit HSTART whose LSB is SH0, so ±1 there is one LORES pixel (SH0 selects which half of
+the colour clock the comparator fires in, and the two halves of a lores pixel are not separately
+addressable by the playfield) — `HSTART = ((SPRxPOS & $FF) << 1) | (SPRxCTL & 1)`.
+
+⭐ **The playfield is its own ruler for this.**  A doubled sprite pattern that is supposed to land
+ON the pixels it replaces shows a one-pixel error as *half* of each pair sitting over the wrong
+playfield pixel — so dump the plane buffer, compose it with the sprite words on the host, and fit
+the offset.  Sixteen (line, side) observations pinned it uniquely; an eyeball on the emulator
+window had called it "green and a bit off".
+
 ### Priority is NOT a general way to hide a sprite
 Over a **pen-0 playfield pixel a sprite wins at EVERY BPLCON2 value**.  COLOR00 is the
 background; there is no priority code that puts the playfield in front of a sprite where the
@@ -189,6 +212,14 @@ Sprite-vs-playfield priority **persists across copper lists**.  A list that emit
 does not get "unchanged" — it gets whatever the previous scene left.  On RoF that meant a scene
 inheriting PFxP=4 (all sprites in front of the playfield) and drawing a gauge over the cockpit —
 and it looked right on a fresh boot, where `initialize()` had just set it by hand.
+
+⚠⚠ **AND THE PRIORITY CODES READ THE OPPOSITE WAY TO THE OBVIOUS ONE — Revs, 2026-09-21 had
+both arms of its own `#ifdef` inverted, with a comment arguing for each.**  `PFxP = 0` is
+**playfield in front of every sprite**; `PFxP = N` is behind groups `0..N-1` and in front of
+`N..3`; `PFxP = 4` (`BPLCON2 = $0024`) is **every sprite in front**, which is why that is the
+value Intuition runs — its mouse pointer is sprite 0.  There is no "group 4".  The tell on the
+target is a sprite that appears *only* over pen-0 playfield pixels (see the previous section: at
+`PFxP = 0` that is the only place it can).
 
 **Treat every write-only display register as scene state with a NAMED owner.**  The "emit only
 what the original's interrupt handler emits" rule keeps lists minimal but says nothing about who
