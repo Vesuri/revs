@@ -855,6 +855,41 @@ EXTRA_DEFINES += -DREVS_TERRAIN_LOW
 PROBE_SYMS_TERRAINLOW = g_terrainClipBad
 endif
 
+# ⭐⭐⭐ `make LOWOWN=1` — §2a: THE LOW BLOCK'S STORE GOES TO THE BITPLANES AND DISPLAY LINES
+# 117..157 BECOME OWNED.  The last unowned block on the screen, and the last ~7 ms of the
+# decode's `convertRace` (span-render-plan §12c: the conversion is ~99% SCAN, so a row costs what
+# it costs to walk).  It is a RETARGET, not a mirror: `view_low_run`'s per-cell `mem[]` byte
+# becomes two plane bytes ONE index apart, the row is claimed in `revs_plot_low_line`, and there
+# is no undo list, no delta and no second walk anywhere.
+# ⭐ It is licensed by the real BBC's own writer census (`make fbwrites FILL=117-207`,
+# span-render-plan §12a): with `tick_wheel_spin` a sprite (TYRESPRITE) and the needles geometry
+# (NEEDLE), the view sweep is the ONLY writer left in the band.
+# ⚠⚠ THE PHYSICS READS THIS BAND.  `update_grip_limits` reads two frame-buffer bytes at display
+# line 149, and a byte nobody stores is a byte nobody can read — so the painter publishes them
+# (`g_surfaceProbe`) and the model takes them from there on this arm.  The agreement was
+# established FIRST, on the host, with both copies live: `make SURFPROBE=1` under
+# `determinism-drive` reads 280 checks, 1 mismatch, and that one is check 1 — before the first
+# sweep, which is the case `g_surfacePublished` falls back to `mem[]` for.
+# ⚠ `LOWOWNCHECK=1` nests and is the ONLY oracle this path can have (the `mem[]` store it would
+# be diffed against is what it deletes): every cell of both runs, against the run's own colour
+# walk, in process and on the same data.  `g_lowOwnMismatch` must be 0.  Diagnostic only —
+# forty colour walks a line is more work than the painting.
+# ⛔ `TERRAINLOWCHECK=1` is INVALID with this (it leaves the chain in charge and stores nothing,
+# so an owned line would be painted by nobody); the `#error` in revs_native.c states the
+# TERRAINLOW dependency.
+# ⚠⚠⚠ AND IT IS STILL BLOCKED, ON THE FURNITURE: the sweep paints TWO RUNS a line and the car
+# body between them is painted by nobody, so an owned row loses it.  The fix is `DUALPF=1` — the
+# car moves to its own playfield and the terrain layer's car cells become don't care
+# (docs/span-render-plan.md §12e).  Its three transparent strips must be retargeted to PF2 first.
+LOWOWN ?= 0
+ifeq ($(LOWOWN),1)
+EXTRA_DEFINES += -DREVS_LOW_OWN
+ifeq ($(LOWOWNCHECK),1)
+EXTRA_DEFINES += -DREVS_LOW_OWN_CHECK
+PROBE_SYMS_LOWOWN = g_lowOwnChecks g_lowOwnMismatch g_lowOwnMismatchAt
+endif
+endif
+
 # ⭐⭐ `make SCANDOUBLE=1` — price the transposed scan without deleting it (src/gen/revs_native.c
 # §view_scan_all_keep).  Runs the scan an extra time with `consume = 0`: no byte, no pixel and no
 # trajectory changes, so `phase 24` minus the control IS the scan's cost.  An INSTRUMENT ONLY.
@@ -1256,7 +1291,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
+PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 

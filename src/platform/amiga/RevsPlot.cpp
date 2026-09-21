@@ -493,6 +493,27 @@ extern "C" void revs_plot_terrain(unsigned first, unsigned last)
 
 extern "C" int revs_plot_has_target(void) { return s_target != 0; }
 
+#ifdef REVS_LOW_OWN
+/* ⭐⭐⭐ §2a — ONE LINE OF THE LOW BLOCK (display lines 117..157), CLAIMED.
+ *
+ * The whole of this domain's renderer side is these four lines: the sweep's own cell loop does the
+ * painting, inline, two plane bytes a cell (revs_plot.h §2a says why the loop may not call out).
+ * `addr` is the line's cell-0 frame-buffer address — `plot_ptr_v`, which the game's own
+ * `view_paint_lines` sets from an immediate — so `s_planeOff[off] + cell` is the cell's plane byte:
+ * the table is `y * kRowBytes + cell` and every cell of a run is on this one row.
+ * ⚠ NO CLAIM WITHOUT A TARGET.  A claimed line is painted by the renderer alone, so claiming one
+ * with nowhere to paint leaves it painted by nobody (revs_plot.h §revs_plot_has_target). */
+extern "C" unsigned char* revs_plot_low_line(unsigned short addr)
+{
+    uint8_t* const base = s_target;
+    const unsigned off  = (unsigned)addr - BBC_SCREEN_BASE;
+    if (!base) { SPAN_STAT(g_plotNoTarget++); return 0; }
+    if (off >= FB_BYTES) return 0;
+    g_plotOwn[s_lineOf[off]] = 1;
+    return base + s_planeOff[off];
+}
+#endif
+
 /* ── the band record, as the painters need it ─────────────────────────────────────────────── */
 /* Five entries at most, published once per decode by `RevsScreen::buildLineModes()` — the ONE
    thing a painter cannot get from `m_lineMode` (revs_plot.h says why: the carve has zeroed its

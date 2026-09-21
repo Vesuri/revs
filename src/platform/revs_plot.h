@@ -173,6 +173,37 @@ unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* spans, unsign
 void revs_plot_terrain(unsigned first, unsigned last);
 #endif
 
+#ifdef REVS_LOW_OWN
+/* ⭐⭐⭐ §2a — THE LOW BLOCK'S LINE, CLAIMED, AND ITS PLANE BYTE FOR CELL 0.
+ *
+ * Display lines 117..157 are the view sweep's own, and it is the ONLY writer of them: the real
+ * BBC's census (`make fbwrites FILL=117-207`, span-render-plan §12a) names `view_cell_chain_a`,
+ * `view_cell_chain_b_mid` and the two `view_paint_lines_*` drivers and nothing else, once
+ * `tick_wheel_spin` has become a sprite and the needles have become geometry.  So the block can
+ * be owned by RETARGETING one writer — no mirror, no delta, no undo list.
+ *
+ * ⭐ This is the per-LINE half: claim the display line and hand back `&plane1[cell 0]`, from which
+ * cell `c` is `+c` and the second plane `+REVS_PLOT_PLANE_GAP`.  The sweep's own cell loop then
+ * writes the two plane bytes INLINE — a cross-TU call inside a writer's loop is an aliasing
+ * barrier and measured +3.45 ms (§11e), which is why only the line setup comes through here.
+ * ⚠ It returns 0 when there is no target (MODE 7 and the frames either side of it), and the
+ * caller must then paint NOTHING and the line stays unclaimed — the decode covers it, exactly as
+ * `revs_plot_terrain`'s `!s_target` return does for 81..116.
+ * ⚠ The rows are MODE 5 by construction: 117..157 sits inside ONE band, the same band whose
+ * upper half (102..116) the terrain painter has been expanding as MODE 5 since §11.  `make
+ * LOWOWNCHECK=1` is what proves it, per cell, against the run's own colour walk. */
+unsigned char* revs_plot_low_line(unsigned short addr);
+#endif
+
+/* ⭐ The second plane's displacement inside one interleaved display line, for a painter that
+   walks cells as BYTES.  Spelled once, here, so the needle block and the low block cannot
+   disagree about it (they are the same 40). */
+#define REVS_PLOT_PLANE_GAP  40u
+
+/* The MODE 5 byte -> plane byte expansion tables, published by `RevsScreen::initialize()`.  A
+   painter that writes the planes from a colour byte needs them; nothing else does. */
+extern unsigned char g_bbcExpandLo[256], g_bbcExpandHi[256];
+
 /* ⭐⭐ IS THERE A BUFFER TO PAINT INTO THIS FRAME?  Asked ONCE PER SWEEP, not per line — the
  * target is set once per painted frame in `present()` — and the answer is what licenses ownership
  * (`paint_cells`'s `mayOwn`).
@@ -479,6 +510,11 @@ extern volatile unsigned short g_plotChainNZLast; /* ...on the most recent sweep
         revs_plot_spans((unsigned short)(a), (sp), (n), (s), (t))
 #define REVS_PLOT_TERRAIN(f, l)  revs_plot_terrain((unsigned)(f), (unsigned)(l))
 #define REVS_PLOT_HAS_TARGET()  revs_plot_has_target()
+#ifdef REVS_LOW_OWN
+#define REVS_PLOT_LOW_LINE(a)   revs_plot_low_line((unsigned short)(a))
+#else
+#define REVS_PLOT_LOW_LINE(a)   ((unsigned char*)0)
+#endif
 #define REVS_PLOT_OWN_RESET()   revs_plot_own_reset()
 
 #ifdef REVS_SPAN_OWN
@@ -524,6 +560,7 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_CHAIN(a, v, s, t)  ((unsigned char)(v))
 #define REVS_PLOT_SPANS(a, sp, n, s, t)  ((unsigned char)0)
 #define REVS_PLOT_TERRAIN(f, l)  ((void)0)
+#define REVS_PLOT_LOW_LINE(a)    ((unsigned char*)0)
 #define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)

@@ -2664,6 +2664,40 @@ static void revs_report_low(void)
 #define TERRAIN_LOW_SCAN()  view_scan_low()
 #endif
 
+/* ⭐⭐⭐ §2a — `make LOWOWN=1`: THE LOW BLOCK'S DESTINATION IS THE BITPLANES, NOT `mem[]`.
+   The Amiga arm only — the host has no planes, which is also what keeps `make determinism` a
+   valid gate on everything else this file does.
+   ⛔ AND IT IS INCOMPATIBLE WITH `TERRAINLOWCHECK=1` BY CONSTRUCTION: that oracle leaves the
+   forty-unit chain in charge and stores nothing, so an owned line would be painted by nobody.
+   The plane arm's oracle is `LOWOWNCHECK=1` below, which compares the plane bytes against the
+   run's own colour walk. */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_LOW_OWN)
+#define LOW_PLANES 1
+#endif
+#if defined(REVS_LOW_OWN) && !defined(REVS_TERRAIN_LOW)
+#error "LOWOWN=1 needs TERRAINLOW=1 — it retargets that painter's store, and with the chain in charge there is nothing to retarget"
+#endif
+/* ⚠⚠⚠ AND OWNING THIS BAND IS LICENSED BY THE WRITER CENSUS, SO THE OTHER TWO WRITERS MUST
+   ALREADY BE OFF `mem[]`.  An owned display line is painted by the renderer ALONE — the decode
+   stops converting it — so a routine still storing into `mem[]` there paints nothing at all, and
+   the symptom is a FROZEN needle or a frozen tyre dither rather than anything a byte differential
+   can see.  `make fbwrites FILL=117-207` (span-render-plan §12a) names exactly three:
+   `plot_line_octant`/`undraw_plot_lines` on 129..180, `tick_wheel_spin` on 133..140, and the view
+   sweep itself.  The first two have their own arms; require them. */
+#if defined(REVS_LOW_OWN) && !defined(REVS_NEEDLE_PLANES)
+#error "LOWOWN=1 needs NEEDLE=1 — plot_line_octant writes display lines 129..157, and an owned line is painted by the renderer alone"
+#endif
+#if defined(REVS_LOW_OWN) && !defined(REVS_TYRE_SPRITES)
+#error "LOWOWN=1 needs TYRESPRITE=1 — tick_wheel_spin writes display lines 133..140, and an owned line is painted by the renderer alone"
+#endif
+
+/* Is there anywhere to paint?  A constant 1 on the `mem[]` arm, which the compiler folds. */
+#ifdef LOW_PLANES
+#define LOW_PAINTABLE(p)  ((p) != 0)
+#else
+#define LOW_PAINTABLE(p)  1
+#endif
+
 /* One run: cells `first`..`last`, entered with `entry` and leaving through `(byte & mask) | fill`.
    ⭐ The colour between events is `view_consume`'s RLE — a zero source means "the same as my
    left" — so the events the transposed scan found ARE the run's interior boundaries and there is
@@ -2683,11 +2717,37 @@ static void revs_report_low(void)
             g_lowMismatch++;                                                    \
         }                                                                       \
     } while (0)
+#elif defined(LOW_PLANES)
+/* ⭐⭐⭐ §2a — THE RUN'S STORE GOES STRAIGHT TO THE TWO BITPLANES, and the `mem[]` store is GONE.
+   Display lines 117..157 are then OWNED (revs_plot.h §2a) and the decode stops scanning them,
+   which is the whole prize: the conversion is ~99% SCAN, so a row costs what it costs to walk
+   whether or not a cell on it moved (span-render-plan §12c).
+   ⭐ TWO BYTES, ONE INDEX APART PER CELL — and that is the quiet win in the retarget: `mem[]` put
+   consecutive cells EIGHT bytes apart, the planes put them ONE apart, so the walk that had to
+   `d += 8` now walks a contiguous byte range in each plane.
+   ⚠ INLINE, never a call: a cross-TU call in a writer's own loop is an aliasing barrier and
+   measured +3.45 ms (span-render-plan §11e).  Only the per-line setup calls out.
+   ⚠ The two expansion tables are the decode's own (`RevsScreen::initialize`), so an owned row's
+   bytes are bit-identical to what the conversion would have produced from the same colour. */
+#define LOW_PUT(V)  do {                                                        \
+        const unsigned lowV_ = (unsigned)(V) & 0xFFu;                           \
+        d[0]                   = g_bbcExpandLo[lowV_];                          \
+        d[REVS_PLOT_PLANE_GAP] = g_bbcExpandHi[lowV_];                          \
+    } while (0)
 #else
 #define LOW_PUT(V)  (*d = (unsigned char)(V))
 #endif
 
-static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsigned base, const ViewSpan* ev,
+/* How far one cell is from the next in the destination: EIGHT bytes in the BBC frame buffer, ONE
+   in a bitplane. */
+#ifdef LOW_PLANES
+#define LOW_STEP  1u
+#else
+#define LOW_STEP  8u
+#endif
+
+static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsigned base,
+                                                    unsigned char* plane, const ViewSpan* ev,
                                                     unsigned first, unsigned last, unsigned entry,
                                                     unsigned mask, unsigned fill, unsigned line)
 {
@@ -2699,7 +2759,12 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
        boundary cell — the only composed one — is lifted out of the loop entirely. */
     unsigned                c     = first;
     unsigned                value = entry;
+#ifdef LOW_PLANES
+    unsigned char*          d     = plane + first;
+#else
     MEM_QUAL unsigned char* d     = mem + ((base + (first << 3)) & 0xFFFFu);
+#endif
+    (void)base; (void)plane;
 
     while (ev->start < first) ev++;
     while (c < last) {
@@ -2716,7 +2781,7 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC unroll 1
 #endif
-        while (c < end) { LOW_PUT(value); d += 8; c++; }
+        while (c < end) { LOW_PUT(value); d += LOW_STEP; c++; }
         if (c < last) { value = ev->colour; ev++; }
     }
     if (ev->start == last) { value = ev->colour; ev++; }
@@ -2740,6 +2805,28 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
    ⚠ Published on BOTH backends (the low block compiles on the host too), so `determinism`
    compares identical values and the publish cannot itself move a trajectory. */
 unsigned char g_surfaceProbe[2] = { 0, 0 };
+/* ⭐ WHICH OF THE TWO HAS BEEN PUBLISHED AT LEAST ONCE — bit k for probe k, and it is not
+   belt and braces.  Before the first sweep of a session there is nothing to publish and
+   `mem[]` still holds what the DASHBOARD painted at those two addresses, which is exactly what
+   a BBC reads on that frame; the host oracle reports the difference as one mismatch on check 1
+   of 280 (`make SURFPROBE=1` under `determinism-drive`) and every later check agrees.  A cell
+   that falls in NEITHER run is also not published — see the note at the publish. */
+unsigned char g_surfacePublished = 0;
+
+/* ⭐⭐⭐ WHERE THE PHYSICS NOW READS THE ROAD SURFACE FROM.
+   On the `mem[]` arm it is still the frame-buffer byte, unchanged, which is what keeps every
+   `determinism` trajectory and `make validate FN=update_grip_limits` a valid gate.  On the plane
+   arm the sweep no longer STORES those two bytes, so the byte would be frozen at whatever the
+   dashboard painted — the published value is what the read would have returned, and it is the
+   painter's own composed colour rather than an approximation of it (see the publish above).
+   ⚠ Per byte, not per pair: either probe can be unpublished on its own. */
+#ifdef LOW_PLANES
+#define SURFACE_BYTE_0  ((g_surfacePublished & 1u) ? g_surfaceProbe[0] : surface_change_0)
+#define SURFACE_BYTE_1  ((g_surfacePublished & 2u) ? g_surfaceProbe[1] : surface_change_1)
+#else
+#define SURFACE_BYTE_0  surface_change_0
+#define SURFACE_BYTE_1  surface_change_1
+#endif
 
 /* Display line 149 is internal line 11 (`display = 160 - line`, VIEW_LOW_LO 3 -> 157 and
    VIEW_LOW_HI 43 -> 117), and the two probes are cells 7 and 32. */
@@ -2764,6 +2851,93 @@ static unsigned char view_low_run_colour_at(const ViewSpan* ev, unsigned first, 
     return (unsigned char)(cell == last ? ((value & mask) | fill) : value);
 }
 
+#if defined(LOW_PLANES) && defined(REVS_LOW_OWN_CHECK)
+/* ⭐⭐⭐ THE PLANE ARM'S ORACLE (`make LOWOWN=1 LOWOWNCHECK=1`), and it is the only one this path
+   can have: the `mem[]` store is gone, so there is nothing left to diff a byte against —
+   `TERRAINLOWCHECK` needed the chain, and a cross-run picture diff is invalid because a faster
+   build has painted a different game frame by the same field.
+   ⇒ The differential is IN PROCESS and against the SAME DATA: walk all forty cells the way the
+   surface probe does — `view_low_run_colour_at` is the run's own colour walk, already written and
+   already used by the physics publish — and require both plane bytes of every cell the sweep
+   painted to be that colour's expansion.  A cell in NEITHER run is dashboard furniture the sweep
+   does not write, and it is skipped (`found` reports it rather than guessing).
+   ⭐ WHAT IT COVERS: the ADDRESSING (`revs_plot_low_line` + the cell index against the decode's
+   own `s_planeOff` table), the two expansion tables, the interior fill, the composed end cell and
+   the event threading between the two runs.  What it cannot cover is the colours themselves —
+   that the events equal the chain's non-zero cells is `TERRAINLOWCHECK`'s job, on the host, with
+   the chain still running, and it is 0-mismatch over all five determinism trajectories.
+   ⚠ DIAGNOSTIC ONLY: forty colour walks a line is far more work than the painting. */
+volatile unsigned long  g_lowOwnChecks     = 0;
+volatile unsigned long  g_lowOwnMismatch   = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned short g_lowOwnMismatchAt = 0;   /* (display line << 8) | cell of the first */
+
+static void low_own_check(const unsigned char* plane, const ViewSpan* ev, unsigned line,
+                          unsigned edge, int clip, unsigned base)
+{
+    const unsigned entryA = clip
+            ? view_compose(mem[MEM_view_left_start_src  + line],
+                           mem[MEM_view_left_start_mask + edge],
+                           mem[MEM_view_left_start_fill + edge])
+            : mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3u)];
+    const unsigned entryB = view_compose(mem[MEM_view_right_start_src  + line],
+                                         mem[MEM_view_right_start_mask + line],
+                                         mem[MEM_view_right_start_fill + line]);
+    const unsigned maskA = mem[MEM_view_left_end_mask + line];
+    const unsigned fillA = mem[MEM_view_left_end_fill + line];
+    const unsigned maskB = clip ? mem[MEM_view_right_end_mask + edge] : 0xFFu;
+    const unsigned fillB = clip ? mem[MEM_view_right_end_fill + edge] : 0x00u;
+    unsigned cell;
+    for (cell = 0; cell < 40u; cell++) {
+        int found = 0;
+        unsigned char c = view_low_run_colour_at(ev, s_lowA0[line], s_lowA1[line],
+                                                 entryA, maskA, fillA, cell, &found);
+        if (!found)
+            c = view_low_run_colour_at(ev, s_lowB0[line], s_lowB1[line],
+                                       entryB, maskB, fillB, cell, &found);
+        if (!found) {
+            /* ⭐⭐⭐ THE FURNITURE CELLS — and THIS CHECK FIRED, which is how the hole in the
+               ownership argument was found (2026-09-21: 10788 mismatches, first at display line
+               117 cell 14, where `mem[]` holds the car body's `70 c0 91 78 f0...` and the plane
+               holds ZERO).  A cell in NEITHER run is the car/dash silhouette; the sweep never
+               writes it, so with the row owned NOBODY writes it — and the row is claimed from the
+               FIRST sweep, which can precede the first conversion of that buffer.  ⇒ the car body
+               is never painted at all in at least one buffer, and the player sees the cockpit
+               alternate between complete and incomplete every second painted frame.
+               ⚠⚠ SO THIS BLOCK MAY NOT BE OWNED UNTIL THE FURNITURE HAS AN OWNER.  The user's
+               directive is the architecture: "the cockpit should only be rendered to the second
+               playfield" — a DUAL PLAYFIELD, where the cockpit is a separate two-plane layer
+               painted once and never double-buffered, and the terrain painter cannot touch it.
+               That also retires the `(value & mask) | fill` composite at each run's boundary cell:
+               the dash silhouette stops being something the terrain has to paint around.
+               The check stays because it is the postcondition that whole design has to satisfy.
+               ⚠ SCOPE: the needle column is excluded on the rows the needle rectangles reach —
+               there the plane legitimately holds the needle's own pixels, drawn by
+               `revs_needle_paint` after the conversion (revs_plot.h §12d). */
+            const unsigned char v = mem[(base + (cell << 3)) & 0xFFFFu];
+            if (line <= 32u && cell >= 12u && cell < 28u) continue;   /* display >= 128: needles */
+            g_lowOwnChecks++;
+            if (plane[cell] != g_bbcExpandLo[v] ||
+                plane[cell + REVS_PLOT_PLANE_GAP] != g_bbcExpandHi[v]) {
+                if (!g_lowOwnMismatch)
+                    g_lowOwnMismatchAt = (unsigned short)(((160u - line) << 8) | cell);
+                g_lowOwnMismatch++;
+            }
+            continue;
+        }
+        g_lowOwnChecks++;
+        if (plane[cell] != g_bbcExpandLo[c] ||
+            plane[cell + REVS_PLOT_PLANE_GAP] != g_bbcExpandHi[c]) {
+            if (!g_lowOwnMismatch)
+                g_lowOwnMismatchAt = (unsigned short)(((160u - line) << 8) | cell);
+            g_lowOwnMismatch++;
+        }
+    }
+}
+#define LOW_OWN_CHECK(p, e, l, ed, cl, b)  low_own_check((p), (e), (l), (ed), (cl), (b))
+#else
+#define LOW_OWN_CHECK(p, e, l, ed, cl, b)  ((void)0)
+#endif
+
 /* ⚠ The ENTRY cell takes its colour from the per-line `*_start_src` table, not from the RLE:
    chain B starts a fresh run with no carry from chain A, and chain A's own first cell is the
    dash edge.  Both are composed through the edge phase's mask/fill exactly as the drivers do. */
@@ -2786,6 +2960,12 @@ static void view_own_low(ViewState* v)
             const int       clip = s_lowClipped[line];
             const unsigned  base = plot_ptr_v;
             const ViewSpan* ev   = &g_viewEv[line][0];
+            /* ⭐⭐⭐ §2a — CLAIM THE DISPLAY LINE AND TAKE ITS PLANE BYTE, once per line.  On the
+               `mem[]` arm this is a null constant the compiler folds away with the test below.
+               ⚠ A null plane means there is no buffer this painted frame (MODE 7 and the frames
+               either side of it): paint NOTHING and leave the line unclaimed, so the decode
+               covers it — the same rule `revs_plot_terrain`'s `!s_target` return obeys. */
+            unsigned char* const lowPlane = REVS_PLOT_LOW_LINE(base);
 
             /* ⭐⭐⭐ PUBLISH THE TWO SURFACE PROBES (see view_low_run_colour_at above).  ONE line
                of the forty-one, so this is two walks of a ~3-entry event list a frame and it is
@@ -2817,7 +2997,10 @@ static void view_own_low(ViewState* v)
                     /* ⚠ A cell in NEITHER run is dashboard furniture the sweep never writes, so
                        its byte is whatever the dash laid down and does not change: keep the last
                        published value rather than inventing one. */
-                    if (found) g_surfaceProbe[k] = c;
+                    if (found) {
+                        g_surfaceProbe[k]   = c;
+                        g_surfacePublished |= (unsigned char)(1u << k);
+                    }
                 }
             }
 
@@ -2831,7 +3014,7 @@ static void view_own_low(ViewState* v)
                ⚠ `ev` must be REWOUND, or the second pair walks past the sentinel.
                ⚠ INSTRUMENT ONLY. */
             {   const ViewSpan* evSave = ev;
-                const ViewSpan* e2 = view_low_run(base, ev, s_lowA0[line], s_lowA1[line],
+                const ViewSpan* e2 = view_low_run(base, lowPlane, ev, s_lowA0[line], s_lowA1[line],
                           clip ? view_compose(mem[MEM_view_left_start_src  + line],
                                               mem[MEM_view_left_start_mask + edge],
                                               mem[MEM_view_left_start_fill + edge])
@@ -2839,7 +3022,7 @@ static void view_own_low(ViewState* v)
                                      + (mem[MEM_view_line_surface + line] & 3u)],
                           mem[MEM_view_left_end_mask + line],
                           mem[MEM_view_left_end_fill + line], line);
-                (void)view_low_run(base, e2, s_lowB0[line], s_lowB1[line],
+                (void)view_low_run(base, lowPlane, e2, s_lowB0[line], s_lowB1[line],
                            view_compose(mem[MEM_view_right_start_src  + line],
                                         mem[MEM_view_right_start_mask + line],
                                         mem[MEM_view_right_start_fill + line]),
@@ -2848,24 +3031,28 @@ static void view_own_low(ViewState* v)
                 ev = evSave;
             }
 #endif
-            ev = view_low_run(base, ev, s_lowA0[line], s_lowA1[line],
-                              clip ? view_compose(mem[MEM_view_left_start_src  + line],
-                                                  mem[MEM_view_left_start_mask + edge],
-                                                  mem[MEM_view_left_start_fill + edge])
-                                   /* phase 2: the run starts at the screen edge, so the line's
-                                      own surface colour enters it uncomposed */
-                                   : mem[MEM_surface_colours
-                                         + (mem[MEM_view_line_surface + line] & 3u)],
-                              mem[MEM_view_left_end_mask + line],
-                              mem[MEM_view_left_end_fill + line], line);
+            if (LOW_PAINTABLE(lowPlane)) {
+                ev = view_low_run(base, lowPlane, ev, s_lowA0[line], s_lowA1[line],
+                          clip ? view_compose(mem[MEM_view_left_start_src  + line],
+                                              mem[MEM_view_left_start_mask + edge],
+                                              mem[MEM_view_left_start_fill + edge])
+                               /* phase 2: the run starts at the screen edge, so the line's
+                                  own surface colour enters it uncomposed */
+                               : mem[MEM_surface_colours
+                                     + (mem[MEM_view_line_surface + line] & 3u)],
+                          mem[MEM_view_left_end_mask + line],
+                          mem[MEM_view_left_end_fill + line], line);
 
-            (void)view_low_run(base, ev, s_lowB0[line], s_lowB1[line],
-                               view_compose(mem[MEM_view_right_start_src  + line],
-                                            mem[MEM_view_right_start_mask + line],
-                                            mem[MEM_view_right_start_fill + line]),
-                               /* phase 2 runs to the screen edge: the identity composite */
-                               clip ? mem[MEM_view_right_end_mask + edge] : 0xFFu,
-                               clip ? mem[MEM_view_right_end_fill + edge] : 0x00u, line);
+                (void)view_low_run(base, lowPlane, ev, s_lowB0[line], s_lowB1[line],
+                           view_compose(mem[MEM_view_right_start_src  + line],
+                                        mem[MEM_view_right_start_mask + line],
+                                        mem[MEM_view_right_start_fill + line]),
+                           /* phase 2 runs to the screen edge: the identity composite */
+                           clip ? mem[MEM_view_right_end_mask + edge] : 0xFFu,
+                           clip ? mem[MEM_view_right_end_fill + edge] : 0x00u, line);
+
+                LOW_OWN_CHECK(lowPlane, &g_viewEv[line][0], line, edge, clip, base);
+            }
         }
 
         if (line_is_last(line, VIEW_LOW_LO)) break;
@@ -6254,7 +6441,7 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
         /* entryC is the 6502's carry at $469E — nothing between the entry and here touches it
            (every callee above is a cpu-free core), so it is an argument rather than a global. */
         EngineExit ee = update_engine_revs_core(entryC,
-                            (uint8_t)(surface_change_0 & surface_change_1));
+                            (uint8_t)(SURFACE_BYTE_0 & SURFACE_BYTE_1));
         /* Only the exit Y escapes: it is the ambient Y update_slip_sound's OSBYTE 21
            (sound_stop_channel, $0E6B) passes to the MOS.  A/X and the flags are dead — the
            tail below overwrites every one of them from update_camera_and_drive_state. */
@@ -11095,10 +11282,10 @@ void update_grip_limits_core(void)
             printf("SURFPROBE: %lu checks, %lu mismatch\n", checks, bad);
     }
 #endif
-    uint8_t surfaceBoth = (uint8_t)(surface_change_0 & surface_change_1);   /* $4BF0-$4BF6 */
+    uint8_t surfaceBoth = (uint8_t)(SURFACE_BYTE_0 & SURFACE_BYTE_1);       /* $4BF0-$4BF6 */
     uint8_t oldDisturb  = grip_disturbance;
     uint8_t newDisturb  = 0u;
-    if (surface_change_0 == 0xFFu || surface_change_1 == 0xFFu) {
+    if (SURFACE_BYTE_0 == 0xFFu || SURFACE_BYTE_1 == 0xFFu) {
         newDisturb = (uint8_t)((((unsigned)bus_read(USRVIA_T2CL) * road_speed) >> 8) & 0x07u);
         if (newDisturb == 0u) newDisturb = 1u;            /* $4C0F — never 0 once the arm runs */
         if (oldDisturb == 0u && drive_state == 0u && (section_jump_history & 0x80u)) {
