@@ -119,7 +119,7 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
 
 /* Number of phases the table below can hold — one per top-level call in $1701-$1763,
    plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry, 44-49
-   ROADSPLIT's of draw_road and 50-54 DECODESPLIT's of RevsScreen::decode() (see the bottom of
+   ROADSPLIT's of draw_road and 50-58 DECODESPLIT's of RevsScreen::prepareFrame() (see the bottom of
    this file), so the table must be sized past them. */
 #define PROBE_PHASES 59
 
@@ -147,7 +147,10 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
  *               (docs/amiga-arch.md).  At ~1 FPS that is ~50 body ticks per painted frame, and the
  *               body DRAWS — so this is real, faithful, non-negotiable engine work whose share
  *               GROWS as the framerate falls.  Optimising it is not the same as removing it.
- *   27  DECODE  RevsScreen::decode(), the BBC frame buffer -> bitplanes pass.  Pure port overhead
+ *   27  PREPARE RevsScreen::prepareFrame() — the COPPER's band plan plus the painters that own
+ *                the dashboard rows.  It was `DECODE`, the BBC frame buffer -> bitplanes pass, and
+ *                that conversion now runs only on a frame where some line has no painter (i.e. the
+ *                cold ones).  Still pure port overhead
  *               and the thing docs/direct-bitplane-plan.md is about.
  *   28  SPIN    waiting for the next real vblank after the paint.  Should be ~0 at 1 FPS; anything
  *               large here means the loop is waiting for the display rather than the reverse.
@@ -240,7 +243,7 @@ extern int g_viewPhaseIdx;
 #define PROBE_VIEW_LINE()     (g_viewLines[g_viewPhaseIdx]++)
 
 #define PROBE_PHASE_DRAIN  26
-#define PROBE_PHASE_DECODE 27
+#define PROBE_PHASE_PREPARE 27
 #define PROBE_PHASE_SPIN   28
 /* ⭐ `make DUALPF=1`: the cockpit layer's own bracket, carved out of the decode's.  Its own row
    because ph27 alone cannot say whether a move is the terrain conversion or the second layer —
@@ -304,7 +307,7 @@ extern volatile unsigned long g_probeFrozenUnits[3], g_probeFrozenRuns[3], g_pro
 #define PROBE_VIEW_RUN(n)     ((void)0)
 #define PROBE_VIEW_LINE()     ((void)0)
 #define PROBE_PHASE_DRAIN     26
-#define PROBE_PHASE_DECODE    27
+#define PROBE_PHASE_PREPARE    27
 #define PROBE_PHASE_COCKPIT   30
 #define PROBE_PHASE_SPIN      28
 #define PROBE_PHASE_BODYARM   29
@@ -441,7 +444,7 @@ extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points st
 /* ===========================================================================
  * ⭐⭐ `make DECODESPLIT=1 PROBES=1` — WHAT IS THE HALF OF phase 27 THAT CONVERTS NOTHING?
  * ---------------------------------------------------------------------------
- * `RevsScreen::decode()` is the port's own cost with no BBC counterpart, and the 208-row
+ * `RevsScreen::prepareFrame()` is the port's own cost with no BBC counterpart, and the 208-row
  * ledger (docs/span-render-plan.md §11) sizes it by ROWS: claiming a block of display lines as
  * `m_lineMode = 0` deletes that block's conversion, and `make VIEWCARVE=<lo>-<hi>` prices any
  * block on one scale.  Summed over the whole picture that accounts for only HALF the row:

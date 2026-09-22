@@ -18,7 +18,7 @@
  *
  * ⚠ THE LAYOUT IS TODAY'S, DELIBERATELY (§7e): 320x208, two interleaved planes, plane 1 at +0 and
  * plane 2 at +40, `kRowBytes` 80, same palette, same copper.  Nothing about the display changes —
- * only who writes it — which is what lets `RevsScreen::decode()` stay the ORACLE unmodified.
+ * only who writes it — which is what lets `RevsScreen::convertRace()` stay the ORACLE unmodified.
  *
  * ⚠ Amiga only, and it compiles to nothing everywhere else: `make validate` and `make determinism`
  * run on the host, where the sweep keeps writing mem[] and nothing here is defined.
@@ -238,7 +238,7 @@ int revs_plot_has_target(void);
 /* ⭐⭐⭐ WHICH DISPLAY LINES THE SPAN EMITTER PAINTED THIS SWEEP — the ownership publication, and
  * the thing the scaffold could not express.  `g_plotLineLo/Hi` + whole-character-row skipping
  * cannot: a BBC cell is EIGHT display lines, so converting one cell of a partly-owned row paints
- * frozen mem[] bytes straight over emitted lines.  `RevsScreen::decode()` reads this and zeroes
+ * frozen mem[] bytes straight over emitted lines.  `RevsScreen::prepareFrame()` reads this and zeroes
  * `m_lineMode[y]` for an owned line, which the decode already understands as "write nothing"
  * (revs_expand_cell), skips a fully-owned character row on wholesale (`any`), and re-expands on
  * the frame a line stops being owned (`modeChanged`).

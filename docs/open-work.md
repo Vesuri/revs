@@ -515,13 +515,34 @@ plus that boot artefact. The three small rows (entry, post-convert, tail, 0.13-0
 instrument's floor: the control bracket is 0.13 and the VERTB ISR lands on whichever phase it
 preempts, so nothing under ~0.5 ms in this split is resolvable.
 
-**What is still owed here (and it is naming, not milliseconds):**
-- ⬜ `RevsScreen::decode()` is not a decode any more — it is the frame's copper schedule plus its
-  painters. Rename it, and with it `DEC_PHASE_*`, `decodesplit.gdb` and `g_decode*`.
-- ⬜ Delete the dirty machinery the cold path does not use: `s_shadow`, `s_shadowMode`, the
-  mode-change bitmask arm of `convertRace`, `DECODESKIP`, `DIRTYCHECK`. **Blocked on** the hole
-  census being green on all five circuits — until then `DECODEFULL=1` is the fallback and it needs
-  them. Silverstone reads `hole frames=2, last at decode #2`.
+⭐⭐ **THE TRIGGER IS EXACT AND PER FRAME, AND A COLD-FRAME COUNT IS NOT A SUBSTITUTE.** The
+five-circuit census: gap frames stop at frame 2 on Silverstone, Brands, Oulton and Snetterton —
+and at frame **54** on Donington, where a two-frame guess left ~45 stale display lines standing for
+ten seconds of race. `own_has_gap(lo, hi)` is asked from `buildLineModes`, per band, where the
+range is already in registers; a flat band is not asked at all and a wholly owned one costs one
+`cmp.l` per four lines. It cost +0.69 ms against the unsound version.
+⚠ **A gap appearing LATE in a run is the one thing that can put stale pixels on screen**, so
+`g_decodeGapFrames` / `g_decodeGapLastAt` / `g_decodeFrames` are always compiled in. Silverstone
+driving reads `gap frames=1 of 1226`.
+
+✅ `RevsScreen::decode()` is **renamed `prepareFrame()`** (and phase 27 `DECODE` → `PREPARE`) —
+what is left is not a decode.
+
+**What is still owed here:**
+- ⬜ **The gap test's own shape**, worth ~0.3-0.5 ms: GCC re-fetches the 32-bit `0x01010101`
+  immediate every iteration (`cmpi.l #imm,(a0)` is ~26 cycles against 14 for a register compare),
+  and the answer only changes when a SWEEP rebuilds ownership — not per frame. Either hold the
+  constant in a register or compute the answer once per sweep and accept a one-frame-stale
+  (conservative) reading.
+- ⬜ **Delete the dirty machinery nothing reaches any more**: `s_shadow`, `s_shadowMode`, the
+  mode-change bitmask arm of `convertRace`, `DECODESKIP`, `DIRTYCHECK`. The cold path calls
+  `convertRace(dst, 0, 0)`, the NULL-shadow arm, so the other arm is now reachable only from
+  `DECODEFULL=1`. Keep that control until the gap census has run on a full RACE (queue 2c), then
+  delete both.
+- ⚠ **One unexplained 36 bytes**: under `DECODEFULL=1` the `DIRTYCHECK` oracle reports 36
+  mismatching bytes on ONE frame at offset 10680 (display line 133, PF1's second plane), and it
+  does so identically with and without the conversion skip — i.e. it is not either change's. Left
+  on the record rather than waved away.
 
 ### 5b-old. (the pre-§2a framing, kept only for its numbers) 5 ms around 7.2 ms of real work
 `make DECODESPLIT=1` now carves `decode()` SIX ways (§12c added the rect slot). The shipping

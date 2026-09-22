@@ -9,7 +9,7 @@ printf "=== first render at vbi=%u\n", g_vbiCount
 
 # One whole main-loop iteration: render() to render().
 set $v0 = (int)g_vbiCount
-tbreak RevsScreen::decode
+tbreak RevsScreen::prepareFrame
 continue
 printf "decode entered at vbi=%u (+%d since render)\n", g_vbiCount, (int)g_vbiCount-$v0
 set $v1 = (int)g_vbiCount

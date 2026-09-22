@@ -474,6 +474,17 @@ every block now priced, −0.08 to −0.12 ms a row — is `docs/span-render-pla
 state is TWO steps and **`ph27` → 0 is RETRACTED**: owning all 208 rows is worth −11.18 ms and the
 rest goes with the CALL, of which `snapshotBands` + `buildLineModes` (~2.4 ms) must keep running
 forever because `m_plan` is the COPPER's palette schedule, not decode work (§11a).
+  ✅⭐⭐⭐ **AND THAT SECOND STEP IS DONE: THERE IS NO PER-FRAME `mem[]` → BITPLANE CONVERSION ANY
+  MORE.** Every display line has a painter and the 64-line sky band is FLAT (its four pens share a
+  colour — it is the engine's own bytes showing through screen memory, so the picture there was
+  always arbitrary), so `convertRace` runs only on a frame where some line is claimed by nobody.
+  `RevsScreen::decode()` is accordingly **renamed `prepareFrame()`**: what is left is the copper's
+  band plan plus the painters that own the dashboard rows, ~5 ms, and every millisecond of it must
+  keep running. ⚠⚠ **The TRIGGER must be exact and per frame** — `own_has_gap` per band, one
+  `cmp.l` per four lines — because a fixed cold-frame count is wrong: gap frames stop at frame 2 on
+  four circuits and at frame **54** on Donington. ⚠ And a gap appearing LATE in a run is the one
+  thing that can put stale pixels on screen, so `g_decodeGapFrames` / `g_decodeGapLastAt` are
+  always compiled in. `docs/open-work.md` §5b.
   ⭐⭐⭐ **BUT THE PRIZE IS ONLY HALF AN OWNERSHIP DECISION — RANK A DOMAIN BY ROWS OWNED ÷ WRITER
   SET, because owning a row means RETARGETING EVERY ROUTINE THAT WRITES IT.** The measured
   writer-set ledger (`make fbwrites FILL=all`, §11b) groups all 208 display lines by their writer

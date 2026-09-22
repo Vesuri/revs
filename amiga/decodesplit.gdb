@@ -32,7 +32,7 @@ set $f = g_phaseFrames
 if $f == 0
   set $f = 1
 end
-printf "\nRevsScreen::decode() whole = %lu.%02lu ms/frame  (27 + brackets 50-54)\n", \
+printf "\nRevsScreen::prepareFrame() whole = %lu.%02lu ms/frame  (27 + brackets 50-54)\n", \
   ($dec/$f)/4006, (($dec/$f)%4006)*100/4006
 printf "  %-30s %3lu.%02lu ms/frame  %2d.%01d%%  (calls=%lu)  <- THE CONTROL, read first\n", \
   "EMPTY bracket        (52)", \

@@ -1857,7 +1857,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                 }
                 if (flat) {
                     /* ⭐ A SPAN, NOT A RUN: `revs_plot_span` also CLAIMS the display line, so
-                       `RevsScreen::decode()` leaves it alone instead of painting mem[] over it
+                       `RevsScreen::prepareFrame()` leaves it alone instead of painting mem[] over it
                        (revs_plot.h §g_plotOwn).  Claiming from inside revs_plot_run would be
                        wrong — the boundary cells and the chain's mirror are runs too. */
                     REVS_PLOT_SPAN(plot_ptr_v, byte);

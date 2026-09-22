@@ -1901,7 +1901,7 @@ extern "C" void revs_screen_convert_reference(uint8_t* dst)
 /* ---------------------------------------------------------------------------
    Main loop: the BBC frame buffer -> the back buffer.
    --------------------------------------------------------------------------- */
-void RevsScreen::decode()
+void RevsScreen::prepareFrame()
 {
 #ifdef REVS_SCREEN_NO_DECODE
     m_ready = true;
@@ -2214,7 +2214,7 @@ void RevsScreen::decode()
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(DEC_PHASE_POST);
 #else
-    PROBE_PHASE(PROBE_PHASE_DECODE);
+    PROBE_PHASE(PROBE_PHASE_PREPARE);
 #endif
     g_cockpitCells       = (uint16_t)s_cockCells;
     g_cockpitCellsTotal += s_cockCells;
@@ -2513,6 +2513,6 @@ void RevsScreen::decode()
 
     m_ready = true;
 #ifdef REVS_DECODE_SPLIT
-    PROBE_PHASE(PROBE_PHASE_DECODE);   /* what is left on 27 is the switches and render() */
+    PROBE_PHASE(PROBE_PHASE_PREPARE);   /* what is left on 27 is the switches and render() */
 #endif
 }

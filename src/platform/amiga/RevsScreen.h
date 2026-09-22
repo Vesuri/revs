@@ -46,7 +46,13 @@ public:
     CopperList* copper() const { return m_copper; }
 
     /* Main-loop context: BBC frame buffer -> the back buffer.  The expensive one. */
-    void decode();
+    /* ⭐⭐⭐ ONCE PER PAINTED FRAME, and it is NOT a decode any more — it was renamed when the
+       frame-buffer conversion stopped running per frame (RevsScreen.cpp at `own_has_gap`).  What
+       it does now is: snapshot the game's raster band schedule and turn it into the COPPER's
+       palette plan, run the painters that own the dashboard rows, lay down the cockpit's
+       playfield — and expand `mem[]` only on a frame where some display line has no painter,
+       which is the cold frames after the front end and nothing else. */
+    void prepareFrame();
 
     /* ⭐ The conversion, cell by cell, DIRTY-REGION by default: only cell columns whose eight
        source bytes differ from `shadow` are converted, because only 4.9% of the frame buffer

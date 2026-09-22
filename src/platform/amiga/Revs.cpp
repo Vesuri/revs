@@ -266,12 +266,12 @@ void Revs::render()
 #endif
     // ⭐ The BBC frame buffer -> the back bitplane buffer.  Main-loop context: the
     // POINTER swap that presents it happens in vbi(), never here.
-    PROBE_PHASE(PROBE_PHASE_DECODE);
+    PROBE_PHASE(PROBE_PHASE_PREPARE);
     /* ⭐ SHAPE builds: how much of the picture actually moved since the last paint — the number
        that prices a dirty-region decode.  Taken BEFORE decode() so it describes the bytes this
        decode is about to convert (src/platform/shape.h). */
     PROBE_SHAPE_FRAME();
-    screen.decode();
+    screen.prepareFrame();
 }
 
 void Revs::vbi()

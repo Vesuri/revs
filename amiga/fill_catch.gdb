@@ -2,7 +2,7 @@
 #
 # Sampling frames and looking at them is a lottery — the artefact is rarer than a dozen frames, and
 # 24 dumped frames were all clean while the screen was visibly broken.  So the check lives in the
-# program (RevsScreen::decode) and latches the horizon neighbourhood the first time it trips:
+# program (RevsScreen::prepareFrame) and latches the horizon neighbourhood the first time it trips:
 #
 #   above the ground line, every cell of band 2 must be SKY ($0F).  A run of $00 (black) or $FF
 #   (green) there is the artefact, in both of its reported colours.
