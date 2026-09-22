@@ -267,6 +267,10 @@ volatile unsigned long g_cockpitPen3       = 0;
    cell into "PF1's terrain" and "PF2's dashboard".  A mask whose two nibbles disagree would be a
    PLANE mask instead and the split would be wrong; this counts them rather than assuming. */
 volatile unsigned long g_cockpitMaskBad    = 0;
+/* ⭐ Set by the ownership walk: every display line's mode is 0, i.e. owned or flat, so the
+   conversion has nothing to do this frame.  `g_decodeSkips` counts the frames it saved. */
+static unsigned char   g_decodeNothingToDo = 0;
+volatile unsigned long g_decodeSkips       = 0;
 /* A silhouette table entry that did not decode to a chain slot: the layer degrades to "no car
    on this line" (PF1 shows, i.e. today's picture) rather than masking the wrong cells. */
 volatile unsigned long g_cockpitBadSlot    = 0;
@@ -1906,15 +1910,41 @@ void RevsScreen::decode()
            ENDIAN-OK: the wide read is a ZERO TEST, and zero has no byte order.  The per-line
            work re-reads the bytes rather than unpacking the longword, so nothing here depends
            on which end byte 0 sits at.  `g_plotOwn` is `aligned(4)` for this. */
+        /* ⭐⭐⭐ AND THE *FULL* GROUP GETS ONE LONGWORD STORE, BECAUSE OWNERSHIP IS RUN-SHAPED.
+           The per-line arm is 68 cycles a line — `tst.b (0,a4,d0.l)` / `clr.b (0,a2,d0.l)` with a
+           LONG index, plus the counter and the loop — and it ran for all 145 owned lines, which is
+           most of this slot's 2.47 ms (probe.h §DECODESPLIT).  But the owned set is BLOCKS
+           (0..18, 117..157, 158..191, 192..207), so four adjacent flags are almost always all
+           set: test the group against `0x01010101` and zero four modes with a single `move.l`.
+           ⚠ ENDIAN-OK twice over: the test is an equality against a byte-uniform constant and the
+           store is ZERO, and neither has a byte order.  Both arrays are `aligned(4)`.
+           ⚠ The mixed group keeps the byte loop — a block boundary is not 4-aligned (117 and 158
+           are not), so there are always a few. */
         const uint32_t* const grp = (const uint32_t*)(const void*)g_plotOwn;
+        uint32_t* const       mw  = (uint32_t*)(void*)m_lineMode;
         unsigned owned = 0;
+        uint32_t anyMode = 0;
         for (unsigned q = 0; q < kH / 4u; q++) {
-            if (!grp[q]) continue;
-            const unsigned y0 = q * 4u;
-            for (unsigned y = y0; y < y0 + 4u; y++)
-                if (g_plotOwn[y]) { m_lineMode[y] = 0; owned++; }
+            const uint32_t g = grp[q];
+            if (g == 0x01010101u) { mw[q] = 0; owned += 4u; continue; }
+            if (g) {
+                const unsigned y0 = q * 4u;
+                for (unsigned y = y0; y < y0 + 4u; y++)
+                    if (g_plotOwn[y]) { m_lineMode[y] = 0; owned++; }
+            }
+            /* ⭐⭐⭐ ...AND THE SAME WALK ANSWERS "IS THERE ANYTHING LEFT TO CONVERT?" FOR ONE
+               `or.l` A GROUP.  A line's mode is 0 when it is OWNED (above) or when its band is
+               FLAT (buildLineModes' palette test), and mode 0 is the decode's "write nothing" —
+               so a frame in which every mode is 0 has `convertRace` walk 26 rows to convert
+               NOTHING.  That is now the normal case: 145 of 208 lines are owned and 64 more are
+               the flat sky, and the conversion was measured at 2.20 ms to deliver FOUR CELLS.
+               ⚠ The full-group arm above `continue`s BEFORE this, which is correct — it has just
+               written zero, so it can contribute nothing to the OR.
+               ⚠ ENDIAN-OK: an OR of bytes against zero has no byte order. */
+            anyMode |= mw[q];
         }
         g_decodeOwnLines = owned;
+        g_decodeNothingToDo = (anyMode == 0u);
     }
 #endif
 
@@ -2061,18 +2091,32 @@ void RevsScreen::decode()
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(DEC_PHASE_CONVERT);
 #endif
-#ifdef REVS_NO_DIRTY
-    const unsigned cells = convertRace(dst, 0, 0);
-#else
-    const unsigned cells = convertRace(dst, (uint8_t*)s_shadow[m_back], s_shadowMode[m_back]);
+    /* ⭐⭐⭐ THE CONVERSION IS SKIPPED OUTRIGHT WHEN EVERY LINE IS OWNED OR FLAT (`DECODESKIP=1`).
+       ⚠⚠ AND THE SHADOW STAYS CONSISTENT, WHICH IS THE ONLY THING THIS COULD BREAK.  The shadow
+       records what was CONVERTED INTO THIS BUFFER; a skipped frame writes nothing, so what the
+       shadow says the buffer holds is still exactly what it holds.  And a line that stops being
+       owned makes its mode non-zero again, so `anyMode` is non-zero on that very frame and the
+       conversion runs — the mode-change bitmask then sees `s_shadowMode` disagree and re-expands
+       the row, which is the owned -> not-owned transition already written and already tested
+       (§SPAN_OWN's fourth property). */
+#ifdef REVS_DECODE_SKIP
+    if (g_decodeNothingToDo) { g_decodeSkips++; g_decodeCells = 0; }
+    else
 #endif
+    {
+#ifdef REVS_NO_DIRTY
+        const unsigned cells = convertRace(dst, 0, 0);
+#else
+        const unsigned cells = convertRace(dst, (uint8_t*)s_shadow[m_back], s_shadowMode[m_back]);
+#endif
+        g_decodeCells       = (uint16_t)cells;
+        g_decodeCellsTotal += cells;
+        if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
+        if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
+    }
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(PROBE_PHASE_DECODE);   /* the remainder goes back on the original row */
 #endif
-    g_decodeCells       = (uint16_t)cells;
-    g_decodeCellsTotal += cells;
-    if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
-    if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
 
 #if defined(REVS_DUAL_PLAYFIELD) && !defined(REVS_DUAL_NOCONVERT)
     /* ⭐ THE COCKPIT LAYER.  After the terrain conversion, because the two must describe the

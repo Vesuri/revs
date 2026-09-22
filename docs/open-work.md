@@ -500,9 +500,12 @@ control-corrected, and the split closes at 12.79 ms:**
 
 ⭐⭐⭐ **THE CONVERSION IS DONE: `convertRace` converts FOUR CELLS A FRAME.** 145 of the 208 lines
 are owned and 64 more are the flat sky band the decode skips by design, so essentially every
-visible line is already somebody's. What is left is the machinery around a pass with nothing to do,
-and **~10.4 of the 12.79 ms is collectable** — everything except the two slots that feed the
-copper.
+visible line is already somebody's.
+⚠ **CORRECTION to the first reading of this split: the 2.19 ms of dynamic rectangles is a PAINTER,
+not bookkeeping** — it is what owns rows 158..191, and skipping it would freeze the dash. So the
+floor is **4.8 ms** (0.94 + 1.66 + 2.19), the certainly-collectable part is **4.4 ms** (the
+ownership scan 2.47 and `convertRace` 2.19), and the 3.19 ms remainder is the unknown that decides
+whether this entry is worth 4 ms or 8.
 
 ⇒ **The step is to stop CALLING the conversion at all** when no line is both unowned and non-flat
 (§11a always said the end state was two steps, and this is the second). The test is cheap — the

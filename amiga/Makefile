@@ -276,6 +276,21 @@ endif
 # remainder left on 27.  src/platform/probe.h §DECODESPLIT says why: the 208-row ledger accounts
 # for only half the decode, and the other half converts nothing.  Read with
 # amiga/decodesplit.gdb, and read its control row FIRST.  A measurement build.
+# ⭐⭐⭐ `make DECODESKIP=1` — DO NOT CALL THE CONVERSION AT ALL on a frame where every display
+# line's mode is 0, i.e. owned or flat.  With §2a's rows owned that is the NORMAL case (145 of 208
+# owned, 64 more flat) and `convertRace` was measured walking 26 rows to deliver FOUR CELLS for
+# 2.20 ms.  The test is one `or.l` a group inside the ownership walk that was already running.
+# ⚠ The shadow stays consistent by construction: a skipped frame writes nothing, so what the
+# shadow says the buffer holds is still what it holds — and a line that STOPS being owned makes
+# its mode non-zero again, so the conversion runs on that very frame and the mode-change bitmask
+# re-expands it (RevsScreen.cpp says it at the skip).
+# ⚠ `g_decodeSkips` must be non-zero or the arm is doing nothing; `g_decodeCells` reads 0 on a
+# skipped frame, so read `g_decodeCellsTotal` instead when checking the conversion still happens.
+ifdef DECODESKIP
+EXTRA_DEFINES += -DREVS_DECODE_SKIP
+PROBE_SYMS_DECODESKIP = g_decodeSkips
+endif
+
 ifdef DECODESPLIT
 EXTRA_DEFINES += -DREVS_DECODE_SPLIT
 endif
@@ -1413,7 +1428,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
+PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
