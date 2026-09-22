@@ -848,7 +848,7 @@ endif
 DUALPF ?= 0
 ifeq ($(DUALPF),1)
 EXTRA_DEFINES += -DREVS_DUAL_PLAYFIELD
-PROBE_SYMS_DUALPF = g_cockpitCells g_cockpitCellsTotal g_cockpitPen3 g_cockpitRuns g_cockpitBadSlot g_cockpitFulls
+PROBE_SYMS_DUALPF = g_cockpitCells g_cockpitCellsTotal g_cockpitPen3 g_cockpitRuns g_cockpitBadSlot g_cockpitFulls g_cockpitMaskBad
 # ⚠ A CEILING PROBE, NEVER A SHIPPING ARM: `make DUALPF=1 DUALPFNOCONV=1` sets the display up as
 # a dual playfield and never fills PF2, so the cockpit layer is blank (transparent) and the
 # picture is the single-playfield one.  It exists to separate the layer's CONVERSION cost from
@@ -977,23 +977,11 @@ endif
 LOWOWN ?= 0
 ifeq ($(LOWOWN),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN
-# ⭐⭐⭐ `make LOWOWN=1 LOWWIDE=1` — §12f-i: ONE CONTIGUOUS FILL A LINE instead of two clipped
-# runs.  With the cockpit on PF2 every cell outside the runs is don't care, so the clip bounds,
-# the four composed boundary cells and the two-run threading have nothing left to decide, and a
-# segment becomes long enough for a longword fill to pay (g_bbcExpand4, one table lookup).
-# ⛔⛔ MEASURED AND THE LITERAL READING LOSES (span-render-plan §12f-ii).  Three arms:
-#   LOWWIDE=1  40 cells, longword fill   ph33 24.61   the wide machinery costs 5 ms at ~5-cell
-#                                                     segments — a wide store pays over a SPAN
-#   LOWWIDE=2  40 cells, byte stores     ph33 19.62   +4.86 ms of extra cells for ~2.3 of saved
-#                                                     machinery: painting the car's cells LOSES
-#   LOWWIDE=3  ~18 cells, no composites  ph33 14.76   ⭐ THE SHAPE TO SHIP — Σ−ph28 157.82,
-#                                                     i.e. §2a nets −4.25 ms
-# ⇒ clipping is NOT the expensive part (the silhouette is a static table); COMPOSING is.  All
-# three arms are CEILING probes until the cockpit layer paints the dash pixels of each run's
-# first and last cell from the same static view_*_mask/fill tables the composite used.
-ifneq ($(LOWWIDE),)
-EXTRA_DEFINES += -DREVS_LOW_WIDE=$(LOWWIDE)
-endif
+# ⛔⛔ THE THREE CEILING ARMS THAT SETTLED THE SHAPE ARE GONE, their result is the shape above
+# (span-render-plan §12f-ii).  `LOWWIDE=1` painted all forty cells with a longword fill (ph33
+# 24.61), `=2` all forty with byte stores (19.62), `=3` the two clipped runs with no composites
+# (14.76 — shipped).  ⇒ painting the car's own cells LOSES (+4.86 ms of extra cells against ~2.3
+# of saved machinery) and a wide store pays over a SPAN, never over a ~5-cell SEGMENT.
 ifeq ($(LOWOWNCHECK),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN_CHECK
 PROBE_SYMS_LOWOWN = g_lowOwnChecks g_lowOwnMismatch g_lowOwnMismatchAt

@@ -18,6 +18,8 @@
 #include "RevsTyres.h"
 #endif
 #include "../probe.h"              /* phase brackets: DECODESPLIT's carve, and the cockpit's */
+#include "../../gen/mem.h"        /* MEM_<name> offsets — the cockpit layer reads the game's own
+                                    silhouette and dash-edge tables, and they deserve names */
 #ifdef REVS_PLOT_ONLY
 extern "C" volatile unsigned char g_plotLineLo, g_plotLineHi;
 #endif
@@ -260,6 +262,11 @@ volatile unsigned long g_cockpitFulls      = 0;  /* decodes that had to re-expan
    PF1 holds the same art — it stops being right the moment the terrain painter ignores the
    silhouette, which is the next step.  Must read 0. */
 volatile unsigned long g_cockpitPen3       = 0;
+/* ⚠⚠ MUST BE 0 — the boundary cells' masks are PIXEL masks ($88/$CC/$EE/$FF and their mirrors,
+   symbols.csv), i.e. both of a pixel's two bits move together, which is what lets one AND split a
+   cell into "PF1's terrain" and "PF2's dashboard".  A mask whose two nibbles disagree would be a
+   PLANE mask instead and the split would be wrong; this counts them rather than assuming. */
+volatile unsigned long g_cockpitMaskBad    = 0;
 /* A silhouette table entry that did not decode to a chain slot: the layer degrades to "no car
    on this line" (PF1 shows, i.e. today's picture) rather than masking the wrong cells. */
 volatile unsigned long g_cockpitBadSlot    = 0;
@@ -1532,10 +1539,25 @@ static int revs_cockpit_runs(void)
    so they are the bound PF2 must keep out of; a hand-written 129..157 x 16..23 was short on
    both axes. */
 static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
-    { REVS_NEEDLE_Y0, COCK_Y1,                    /* the rev-counter / steering mark column   */
+    /* ⭐ THE REV-COUNTER / STEERING COLUMN stays transparent because a PAINTER owns it: the
+       needle writes these plane bytes itself, in both buffers, over a cached clean-cockpit base
+       (§12d) — and with §2a's rows owned that base is now laid down in full at every rebase
+       (RevsPlot.cpp §ndlBaseBlitBoth), which is what keeps the art the needle never sweeps. */
+    { REVS_NEEDLE_Y0, COCK_Y1,
       REVS_NEEDLE_C0, REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS - 1u },
-    { 133, 140,  0,  1 }, { 133, 140, 38, 39 },   /* the front-wheel dither                   */
-    { 154, 157,  0,  2 }, { 154, 157, 37, 39 },   /* the wing mirrors, where they reach here  */
+    /* ⭐⭐ THE FRONT-WHEEL DITHER IS NOT DYNAMIC ANY MORE — `TYRESPRITE=1` makes the wheels a
+       SPRITE, so `tick_wheel_spin` no longer EORs `mem[]` (revs_native.c §tick_wheel_spin) and
+       the art underneath is static like the rest of the car.  ⇒ the layer PAINTS it, and two of
+       the five holes in §2a's entry fee close for nothing.  ⚠ Without the sprite arm they must
+       stay transparent, which is also why `LOWOWN=1` #errors unless `TYRESPRITE=1`. */
+#ifndef REVS_TYRE_SPRITES
+    { 133, 140,  0,  1 }, { 133, 140, 38, 39 },
+#endif
+    /* ⏳ THE WING MIRRORS, where they reach into this band — the ONE hole left.  They are
+       genuinely dynamic (another car's reflection) and `mirror_draw_car` writes `mem[]`, so with
+       these rows owned nobody paints them; its store site already carries a `REVS_PLOT_BYTE`
+       (docs/open-work.md entry 2a). */
+    { 154, 157,  0,  2 }, { 154, 157, 37, 39 },
 };
 #define COCK_DYNS (sizeof s_cockDyn / sizeof s_cockDyn[0])
 
@@ -1577,6 +1599,51 @@ static void revs_cock_line(const uint8_t* base, uint8_t* cock, unsigned char mod
         q[c]             = lo;
         q[c + kPlaneGap] = hi;
         s_cockCells++;
+    }
+
+    /* ⭐⭐⭐ THE BOUNDARY CELLS — the last thing the terrain painter had to know about the car
+       (§12f-ii, and §12's directive: "if the original has complex logic to render only to the
+       edges of the car outline, all that can go").  Each run's first and last cell was composed
+       as `(source & mask) | fill`: the terrain pixels the mask KEEPS, plus the dashboard's own
+       pixels the fill supplies.  Those dash pixels are this layer's, so take them here — from the
+       game's own static tables, once, in the same rebuild that found the silhouette — and the
+       painter drops four composites, two clip lookups and eight table reads A LINE.
+       ⚠ The two CLIP-GATED ones only exist on phase 3's lines: a phase-2 line reaches the screen
+       edge on its outside, so its run has no entry (A) / exit (B) composite even though the
+       edge-phase table still holds a value for it.  Painting them anyway would punch the
+       dashboard's pixels into the grass at the screen edge.
+       ⚠ A mask of $FF keeps every pixel, so `dash` is 0 and the cell stays transparent — the
+       identity composite needs no special case.
+       ⭐ Harmless and identical on the non-LOWOWN arm, which is why there is ONE path: PF1 still
+       holds the composed byte there, and an opaque PF2 pixel carrying the same BBC pen shows the
+       same colour (COLOR09/10/11 are PF1's pens 1/2/0). */
+    if (live) {
+        const unsigned X    = 160u - y;
+        const unsigned edge = mem[MEM_view_edge_phase + X];
+        const int      clip = (y >= COCK_PHASE3_Y0);
+        struct { unsigned char cell, mask, fill; } b[4];
+        unsigned n = 0;
+        if (clip) { b[n].cell = r[0];
+                    b[n].mask = mem[MEM_view_left_start_mask + edge];
+                    b[n].fill = mem[MEM_view_left_start_fill + edge]; n++; }
+        b[n].cell = r[1];
+        b[n].mask = mem[MEM_view_left_end_mask + X];
+        b[n].fill = mem[MEM_view_left_end_fill + X];  n++;
+        b[n].cell = r[2];
+        b[n].mask = mem[MEM_view_right_start_mask + X];
+        b[n].fill = mem[MEM_view_right_start_fill + X]; n++;
+        if (clip) { b[n].cell = r[3];
+                    b[n].mask = mem[MEM_view_right_end_mask + edge];
+                    b[n].fill = mem[MEM_view_right_end_fill + edge]; n++; }
+        for (i = 0; i < n; i++) {
+            const unsigned m = b[i].mask, f = b[i].fill;
+            const uint8_t  keep = s_expandLo[m];              /* plane bits the terrain keeps */
+            const uint8_t  dash = (uint8_t)~keep;             /* ...and the ones the dash owns */
+            if (s_expandHi[m] != keep) { g_cockpitMaskBad++; continue; }
+            if (b[i].cell >= BBC_SCREEN_CELLS) continue;
+            q[b[i].cell]             = (uint8_t)((uint8_t)~s_expandHi[f] & dash);
+            q[b[i].cell + kPlaneGap] = (uint8_t)((uint8_t)~s_expandLo[f] & dash);
+        }
     }
 }
 

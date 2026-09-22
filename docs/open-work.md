@@ -306,17 +306,25 @@ renderer's SHAPE — it still paints two runs clipped to the car's silhouette wi
 boundary cell each, ~4 cells a segment, and `LOWDOUBLE=1` puts 22.06 of ph33's 24.63 in that
 painting. The dual playfield licenses one contiguous fill a line instead (§12f-i), which is the
 next step and is worth more than everything above it.
-⭐⭐⭐ **AND −4.25 ms IS AVAILABLE, MEASURED (`make LOWWIDE=3`, §12f-ii): delete the four composed
-boundary cells and the clip lookups and ph33 goes 17.08 → 14.76 at the same cell count** — the
-painter then costs what the `mem[]` one it replaces did while the decode stays −4.59. Its fee is
-one more thing for the cockpit layer to paint ONCE: the dash pixels of each run's first and last
-cell, from the same static `view_*_mask`/`fill` tables. ⛔ Do NOT reach for "paint all forty cells
-as if the car wasn't there" — built and measured, it LOSES (+4.86 ms of extra cells against ~2.3
-of saved machinery), and the longword fill loses a further 5 ms at ~5-cell segments.
-⚠ **Still default OFF**: the five `s_cockDyn` rectangles (412 cells — the needle column, the tyre
-strips, the mirror corners) are painted by nobody with the rows owned. §12f-i enumerates the fee:
-the tyre strips are free under `TYRESPRITE=1`, the needle rectangle needs the static dash art laid
-into both PF1 buffers once, and the mirrors need the delta domain widened over 154..157.
+⭐⭐⭐ **BUILT AND MEASURED AT −4.76 ms (§12f-iii)**: the four composed boundary cells and the two
+clip lookups left the terrain painter and their dash pixels became the cockpit layer's, out of the
+same static mask tables — ph33 17.08 → 14.71, ph30 0.95 → 0.72, Σ(1..39)−ph28 **157.31** against
+the control's 162.07. `LOWOWNCHECK=1` reads 22656 checks / 0 mismatches and `DUALPFCHECK=1` 0/32.
+⛔ Do NOT reach for "paint all forty cells as if the car wasn't there" — built and measured, it
+LOSES (+4.86 ms of extra cells against ~2.3 of saved machinery), and a longword fill loses a
+further 5 ms at ~5-cell segments (§12f-ii).
+
+⏳ **STILL DEFAULT OFF, AND NOW FOR EXACTLY ONE REASON: THE WING MIRRORS.** Display lines 154..157,
+cells 0..2 and 37..39 — 24 cells where the mirrors reach into the owned band. They are genuinely
+dynamic (another car's reflection) and `mirror_draw_car` writes `mem[]`, so with the rows owned
+nobody paints them; its store site already carries a `REVS_PLOT_BYTE`, so widening the delta domain
+over those four lines is the whole of it.
+⚠⚠ **It cannot be seen in a practice measurement** — a `STRAIGHT_TO_RACE` lap reflects nothing, so
+the stale content matches and every pixel diff this session took reads clean there. Gate it on a
+real race (`RACEPROPER=1`) or by argument, never on the picture.
+✅ The other four rectangles are closed: `TYRESPRITE=1` makes the wheel art static so the layer
+paints it (two of them, for nothing), and the needle's cached clean column is now laid into both
+PF1 buffers at every rebase (`ndlBaseBlitBoth`).
 
 ⭐⭐⭐ **UNBLOCKED, 2026-09-21: the cockpit is now its own PLAYFIELD (`make DUALPF=1`,
 `docs/span-render-plan.md` §12e).** The car body used to belong to nobody once the sweep claimed

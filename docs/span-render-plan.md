@@ -2532,3 +2532,56 @@ enough for a wide store to pay. ⚠ Two constraints the redesign must respect:
   Painting wider is free; CONSUMING wider is not.
 - **the boundary cell's car pixels must move to PF2**, using the game's own `view_*_end_mask`
   tables, or the blend they carry is lost when the composite goes.
+
+#### §12f-iii — the shape that shipped: −4.76 ms, and the boundary cells moved to PF2
+
+`make DUALPF=1 LOWOWN=1 NEEDLE=1 TYRESPRITE=1`, against the same control, 3000 fields:
+
+| | ph27 decode | ph30 layer | ph33 painter | Σ(1..39)−ph28 |
+|---|---|---|---|---|
+| control | 16.30 | 0.95 | 14.54 | 162.07 |
+| §2a with the composites | 11.71 | 0.95 | 17.08 | 160.15 |
+| **§2a, composites on PF2** | **11.87** | **0.72** | **14.71** | **157.31** |
+
+Three pieces, each small, and the last two were free:
+
+1. **The terrain painter drops the four composites and the two clip lookups** (`LOW_ENTRY_*` /
+   `LOW_MASK_*` / `LOW_FILL_*`, one definition per arm). The `mem[]` arm keeps them — it is the
+   faithful path `validate` and `determinism` compare, and there is no second playfield on the
+   host. ⚠ So does the SURFACE PROBE, on both arms: the physics reads display line 149 cells 7
+   and 32, which are two of these very boundary cells, and what a BBC's frame buffer held there is
+   the composed byte.
+2. **The cockpit layer paints their dash pixels instead**, from the same static
+   `view_*_start/end_mask` + `fill` tables, in the rebuild that already finds the silhouette —
+   so the layer still delivers zero bytes a frame. The masks are PIXEL masks (`$88/$CC/$EE/$FF`
+   and their mirrors), so one AND splits a cell into "PF1's terrain" and "PF2's dashboard";
+   `g_cockpitMaskBad` asserts that rather than assuming it, and reads 0 on target.
+   ⚠ The two clip-gated composites exist only on phase 3's lines — a phase-2 line reaches the
+   screen edge, and painting its edge-phase entry anyway would punch the dashboard into the grass.
+3. **`TYRESPRITE=1` retires two of the five transparent rectangles for nothing** —
+   `tick_wheel_spin` no longer EORs `mem[]`, so the art under the wheels is static like the rest
+   of the car and the layer simply paints it. That is where ph30's 0.95 → 0.72 comes from.
+4. **The needle's base is now laid into both buffers at every rebase** (`ndlBaseBlitBoth`). Its
+   erase only ever restored the rectangles it had dirtied, which is right while the decode paints
+   everything else; with the rows owned, the art the needle never sweeps had no writer at all.
+   `s_ndlBase` already holds the clean column out of `mem[]`, so this is one full-rectangle
+   restore per rebase and no new expansion path.
+
+⭐⭐ **THE GATE IS THE IN-PROCESS ORACLE, NOT THE PICTURE** — and I had to be reminded of
+CLAUDE.md's own rule after diffing two builds' frames: a render-speed change moves the painted
+moment, so two arms are never on the same scene. Two runs of the SAME build are bit-identical
+(0 pixels), which makes a cross-build diff look trustworthy right up to the point it isn't.
+`LOWOWNCHECK=1` reads **22656 checks, 0 mismatches** — every cell of both runs, boundary cells
+included, against the run's own colour walk, in process and on the same data — and
+`DUALPFCHECK=1` 0/32 for the layer.
+⚠ Its scope needed narrowing with the dual playfield: cells in NEITHER run are PF2's now, so
+comparing PF1 against `mem[]` there reported ~5200 working-as-designed cells a frame. The check
+that found the furniture hole in the first place is kept for the non-DUALPF arm.
+
+⏳ **THE ONE HOLE LEFT is the wing mirrors** where they reach into this band (display lines
+154..157, cells 0..2 and 37..39 — 24 cells). They are genuinely dynamic and `mirror_draw_car`
+writes `mem[]`, so with the rows owned nobody paints them; its store site already carries a
+`REVS_PLOT_BYTE`. ⚠⚠ **And it is invisible in every practice measurement** — a `STRAIGHT_TO_RACE`
+lap reflects nothing, so the cross-build pixel diff above does NOT show those cells: the stale
+content happens to match. That is the trap already written at `mirror_draw_car`, met from the
+other side.

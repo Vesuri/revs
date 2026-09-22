@@ -1471,12 +1471,43 @@ static void ndlBaseRow(unsigned y)
     }
 }
 
+static void ndlRestoreRect(uint8_t* plane, NdlRect* r);
+
+/* ⭐⭐⭐ §12f-iii — LAY THE WHOLE CLEAN COLUMN INTO BOTH BUFFERS, ONCE PER REBASE.  The needle's
+   own erase only restores the rectangles it DIRTIED, which is right while the decode owns these
+   rows and paints everything else.  Once §2a claims display lines 117..157 the decode stops, and
+   then nobody paints the part of the column the needle never reached — the dash art around the
+   rev counter goes stale in whatever the buffers last held.
+   ⭐ The cache is already the answer: `s_ndlBase` is the CLEAN cockpit for the whole column,
+   expanded from `mem[]` (which the dashboard painter still fills), so one full-rectangle restore
+   into each buffer is the base — no new expansion path, no second copy of the geometry.
+   ⚠ Per REBASE, not per frame: `ndlBase` runs on the first paint and when the band schedule moves
+   the column's MODE, so this is ~2 KB a few times a session against 480 cells a frame if the
+   whole rectangle were repainted.
+   ⚠ BOTH BUFFERS, because the needle's erase is cross-frame stateful (revs_plot.h §delta): a base
+   in one buffer only would leave the other showing two-frame-old art wherever the needle has not
+   swept. */
+static void ndlBaseBlitBoth(void)
+{
+    unsigned b;
+    for (b = 0; b < 2u; b++) {
+        NdlRect all;
+        if (!s_plane[b]) continue;
+        all.y0 = (unsigned char)NDL_Y0;
+        all.y1 = (unsigned char)(NDL_Y0 + NDL_YN - 1u);
+        all.g0 = 0u;
+        all.g1 = (unsigned char)(NDL_GROUPS - 1u);
+        ndlRestoreRect(s_plane[b], &all);        /* ⚠ takes a LOCAL: it empties the rect it copies */
+    }
+}
+
 static void ndlBase(void)
 {
     unsigned y;
     for (y = 0; y < NDL_YN; y++) ndlBaseRow(NDL_Y0 + y);
     s_ndlBased = 1;
     NDL_STAT(g_needleBases++);
+    ndlBaseBlitBoth();
 }
 
 /* ⭐⭐ THE ERASE — the whole of it.  `move.l` out of the clean cockpit and nothing else: no undo
