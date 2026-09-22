@@ -576,6 +576,12 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_PLANES(a, b)   ((void)0)
 #define REVS_PLOT_BANDS(l, m, n) ((void)0)
 #define REVS_PLOT_BYTE(a, v)     ((void)0)
+/* ⚠ THE SECOND FALLBACK THIS MACRO NEEDS, and the host build is the only thing that reads it:
+   the dual-playfield definitions live inside `REVS_DIRECT_PLOT`, so a `mirror_draw_car_core`
+   store site compiled WITHOUT the direct plotter — i.e. every host build, i.e. `make validate`
+   and `make determinism` — saw no declaration at all.  A missing no-op here is a broken host
+   build, not a missing feature. */
+#define REVS_COCKPIT_BYTE(a, v)  ((void)0)
 #define REVS_PLOT_RUN(a, v, n)   ((void)0)
 #define REVS_PLOT_SPAN(a, v)     ((void)0)
 #define REVS_PLOT_CHAIN(a, v, s, t)  ((unsigned char)(v))
