@@ -306,6 +306,13 @@ renderer's SHAPE — it still paints two runs clipped to the car's silhouette wi
 boundary cell each, ~4 cells a segment, and `LOWDOUBLE=1` puts 22.06 of ph33's 24.63 in that
 painting. The dual playfield licenses one contiguous fill a line instead (§12f-i), which is the
 next step and is worth more than everything above it.
+⭐⭐⭐ **AND −4.25 ms IS AVAILABLE, MEASURED (`make LOWWIDE=3`, §12f-ii): delete the four composed
+boundary cells and the clip lookups and ph33 goes 17.08 → 14.76 at the same cell count** — the
+painter then costs what the `mem[]` one it replaces did while the decode stays −4.59. Its fee is
+one more thing for the cockpit layer to paint ONCE: the dash pixels of each run's first and last
+cell, from the same static `view_*_mask`/`fill` tables. ⛔ Do NOT reach for "paint all forty cells
+as if the car wasn't there" — built and measured, it LOSES (+4.86 ms of extra cells against ~2.3
+of saved machinery), and the longword fill loses a further 5 ms at ~5-cell segments.
 ⚠ **Still default OFF**: the five `s_cockDyn` rectangles (412 cells — the needle column, the tyre
 strips, the mirror corners) are painted by nobody with the rows owned. §12f-i enumerates the fee:
 the tyre strips are free under `TYRESPRITE=1`, the needle rectangle needs the static dash art laid

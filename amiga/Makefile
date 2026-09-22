@@ -977,6 +977,23 @@ endif
 LOWOWN ?= 0
 ifeq ($(LOWOWN),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN
+# ⭐⭐⭐ `make LOWOWN=1 LOWWIDE=1` — §12f-i: ONE CONTIGUOUS FILL A LINE instead of two clipped
+# runs.  With the cockpit on PF2 every cell outside the runs is don't care, so the clip bounds,
+# the four composed boundary cells and the two-run threading have nothing left to decide, and a
+# segment becomes long enough for a longword fill to pay (g_bbcExpand4, one table lookup).
+# ⛔⛔ MEASURED AND THE LITERAL READING LOSES (span-render-plan §12f-ii).  Three arms:
+#   LOWWIDE=1  40 cells, longword fill   ph33 24.61   the wide machinery costs 5 ms at ~5-cell
+#                                                     segments — a wide store pays over a SPAN
+#   LOWWIDE=2  40 cells, byte stores     ph33 19.62   +4.86 ms of extra cells for ~2.3 of saved
+#                                                     machinery: painting the car's cells LOSES
+#   LOWWIDE=3  ~18 cells, no composites  ph33 14.76   ⭐ THE SHAPE TO SHIP — Σ−ph28 157.82,
+#                                                     i.e. §2a nets −4.25 ms
+# ⇒ clipping is NOT the expensive part (the silhouette is a static table); COMPOSING is.  All
+# three arms are CEILING probes until the cockpit layer paints the dash pixels of each run's
+# first and last cell from the same static view_*_mask/fill tables the composite used.
+ifneq ($(LOWWIDE),)
+EXTRA_DEFINES += -DREVS_LOW_WIDE=$(LOWWIDE)
+endif
 ifeq ($(LOWOWNCHECK),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN_CHECK
 PROBE_SYMS_LOWOWN = g_lowOwnChecks g_lowOwnMismatch g_lowOwnMismatchAt

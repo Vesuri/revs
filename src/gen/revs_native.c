@@ -2812,6 +2812,79 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
     return ev;
 }
 
+#if defined(LOW_PLANES) && defined(REVS_LOW_WIDE)
+/* ⭐⭐⭐ §12f-i — ONE CONTIGUOUS FILL A LINE, BECAUSE THE CAR IS ON ITS OWN PLAYFIELD (§12, user
+   directive: *"the terrain should be rendered as if the car wasn't there … If the original has
+   complex logic to render only to the edges of the car outline, all that can go"*).
+   ============================================================================================
+   The shipping painter walks TWO runs clipped to the dashboard's silhouette, each with a composed
+   `(source & mask) | fill` boundary cell, and `LOWDOUBLE=1` puts 22.06 ms of ph33's 24.63 in that
+   walk — ~4 cells a segment, where the per-segment set-up costs more than the bytes.  With PF2
+   holding the cockpit opaquely, every cell outside the runs is DON'T CARE, so the clip bounds,
+   the composites and the two-run threading have nothing left to decide: paint cells 0..39 from
+   the same event list, switching once to chain B's entry colour where its run starts.
+   ⚠⚠ PAINTING wider is free; CONSUMING wider is NOT — `view_consume` is destructive and a cell
+   the runs never visit keeps producer state `span_plot_core` composes into (see `s_lowConsume`).
+   This function does not consume; the scan's range is unchanged.
+   ⏳ CEILING ARM AS IT STANDS (`make LOWWIDE=1`): the two boundary cells of each run are painted
+   as plain terrain, so their DASH pixels are missing until the cockpit layer takes them over from
+   the same static mask tables.  The picture is therefore wrong at four cells a line and the COST
+   is the redesign's cost, which is what this arm is for. */
+static inline __attribute__((always_inline)) void low_fill_wide(unsigned char* p, unsigned n,
+                                                                unsigned value)
+{
+    /* ENDIAN-OK: a uniform-byte broadcast — every byte of each longword is the same, so no byte
+       order can tell the difference, and this is the BITPLANE buffer, never an alias of mem[].
+       ⚠ Both planes share the alignment because REVS_PLOT_PLANE_GAP is 40, a multiple of 4. */
+    const unsigned long lo4 = g_bbcExpand4[value][0];
+    const unsigned long hi4 = g_bbcExpand4[value][1];
+    const unsigned char lo  = g_bbcExpandLo[value];
+    const unsigned char hi  = g_bbcExpandHi[value];
+
+#if REVS_LOW_WIDE == 2
+    /* ⭐ THE SEPARATOR ARM (`make LOWWIDE=2`): the same forty cells, BYTE stores only.  It tells
+       "more cells" apart from "wide fill", which no single number can. */
+    (void)lo4; (void)hi4;
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC unroll 1
+#endif
+    while (n--) { p[0] = lo; p[REVS_PLOT_PLANE_GAP] = hi; p++; }
+#else
+    while (n && (((unsigned long)(unsigned char*)p) & 3u)) {
+        p[0] = lo; p[REVS_PLOT_PLANE_GAP] = hi; p++; n--;
+    }
+    while (n >= 4u) {
+        *(unsigned long*)(void*)p                          = lo4;
+        *(unsigned long*)(void*)(p + REVS_PLOT_PLANE_GAP)  = hi4;
+        p += 4; n -= 4;
+    }
+    while (n--) { p[0] = lo; p[REVS_PLOT_PLANE_GAP] = hi; p++; }
+#endif
+}
+
+static inline __attribute__((always_inline)) void view_low_line_wide(unsigned char* plane,
+                                                    const ViewSpan* ev, unsigned entryA,
+                                                    unsigned entryB, unsigned bStart)
+{
+    unsigned c     = 0;
+    unsigned value = entryA;
+
+    if (bStart > VIEW_SPAN_CELLS) bStart = VIEW_SPAN_CELLS;   /* no chain B on this line */
+    while (c < VIEW_SPAN_CELLS) {
+        unsigned end = ev->start;                    /* the next event, or the $FF sentinel */
+        if (end > VIEW_SPAN_CELLS) end = VIEW_SPAN_CELLS;
+        if (bStart > c && bStart < end) end = bStart; /* ...or where chain B takes over */
+
+        low_fill_wide(plane + c, end - c, value);
+        c = end;
+
+        if (c >= VIEW_SPAN_CELLS) break;
+        if (c == bStart) { value = entryB; bStart = VIEW_SPAN_CELLS; }
+        else             { value = ev->colour; ev++; }
+    }
+}
+#endif  /* LOW_PLANES && REVS_LOW_WIDE */
+
 /* ⭐⭐⭐ THE SURFACE PROBE — the physics stops reading the picture (user directive, 2026-09-21).
    ============================================================================================
    `update_grip_limits` asks what colour the road is under the car's left and right wheels by
@@ -3054,6 +3127,32 @@ static void view_own_low(ViewState* v)
             }
 #endif
             if (LOW_PAINTABLE(lowPlane)) {
+#if defined(LOW_PLANES) && REVS_LOW_WIDE == 3
+                /* ⭐ THE THIRD ARM (`make LOWWIDE=3`) — the SAME two clipped runs and the same
+                   cell count as the shipping painter, with the four composed boundary cells and
+                   the clip lookups DELETED (PF2 would own those pixels).  It prices the per-line
+                   machinery on its own, which neither of the other two arms can: LOWWIDE=1/2
+                   change the cell count at the same time. */
+                ev = view_low_run(base, lowPlane, ev, s_lowA0[line], s_lowA1[line],
+                          mem[MEM_surface_colours
+                              + (mem[MEM_view_line_surface + line] & 3u)],
+                          0xFFu, 0x00u, line);
+                (void)view_low_run(base, lowPlane, ev, s_lowB0[line], s_lowB1[line],
+                          mem[MEM_view_right_start_src + line],
+                          0xFFu, 0x00u, line);
+#elif defined(LOW_PLANES) && defined(REVS_LOW_WIDE)
+                view_low_line_wide(lowPlane, ev,
+                          clip ? view_compose(mem[MEM_view_left_start_src  + line],
+                                              mem[MEM_view_left_start_mask + edge],
+                                              mem[MEM_view_left_start_fill + edge])
+                               : mem[MEM_surface_colours
+                                     + (mem[MEM_view_line_surface + line] & 3u)],
+                          view_compose(mem[MEM_view_right_start_src  + line],
+                                       mem[MEM_view_right_start_mask + line],
+                                       mem[MEM_view_right_start_fill + line]),
+                          s_lowB0[line]);
+                (void)ev;
+#else
                 ev = view_low_run(base, lowPlane, ev, s_lowA0[line], s_lowA1[line],
                           clip ? view_compose(mem[MEM_view_left_start_src  + line],
                                               mem[MEM_view_left_start_mask + edge],
@@ -3072,6 +3171,7 @@ static void view_own_low(ViewState* v)
                            /* phase 2 runs to the screen edge: the identity composite */
                            clip ? mem[MEM_view_right_end_mask + edge] : 0xFFu,
                            clip ? mem[MEM_view_right_end_fill + edge] : 0x00u, line);
+#endif
 
                 LOW_OWN_CHECK(lowPlane, &g_viewEv[line][0], line, edge, clip, base);
             }

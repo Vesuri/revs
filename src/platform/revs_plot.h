@@ -203,6 +203,10 @@ unsigned char* revs_plot_low_line(unsigned short addr);
 /* The MODE 5 byte -> plane byte expansion tables, published by `RevsScreen::initialize()`.  A
    painter that writes the planes from a colour byte needs them; nothing else does. */
 extern unsigned char g_bbcExpandLo[256], g_bbcExpandHi[256];
+/* ⭐ THE SAME TWO BYTES BROADCAST ACROSS A LONGWORD, one interleaved {lo4, hi4} entry per BBC
+   colour byte — built once beside the expansion tables (RevsPlot.cpp §the broadcast as a table)
+   because `0x01010101 * b` is ~64 cycles of shift synthesis on a 68000 and a fill needs two. */
+extern unsigned long g_bbcExpand4[256][2];
 
 /* ⭐⭐ IS THERE A BUFFER TO PAINT INTO THIS FRAME?  Asked ONCE PER SWEEP, not per line — the
  * target is set once per painted frame in `present()` — and the answer is what licenses ownership

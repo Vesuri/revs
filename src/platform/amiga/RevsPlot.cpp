@@ -63,7 +63,9 @@ static uint8_t s_deltaBased;
    value with 256 possible answers: build them once, beside the expansion tables they come from.
    ⚠ The pair is INTERLEAVED — one entry is {lo4, hi4} — so a span pays ONE address computation
    for both planes instead of two indexed longword loads off two different bases. */
-static uint32_t s_expand4[256][2];
+/* ⭐ EXPORTED (`g_bbcExpand4`, revs_plot.h) because §2a's low-block painter is in the NATIVE TU
+   and needs the same two longwords — the alternative is a second copy of the synthesis. */
+uint32_t g_bbcExpand4[256][2];
 
 /* ⭐⭐ THE DIAGNOSTIC COUNTERS ARE A MEASURABLE TAX, SO THEY HAVE A SWITCH (`make SPANSTAT=0`).
    Each one is a `volatile` RMW on an absolute address — 32..50 cycles that cannot be coalesced —
@@ -120,8 +122,8 @@ static void buildMap()
         uint32_t lo = g_bbcExpandLo[v], hi = g_bbcExpandHi[v];
         lo |= lo << 8;  lo |= lo << 16;
         hi |= hi << 8;  hi |= hi << 16;
-        s_expand4[v][0] = lo;
-        s_expand4[v][1] = hi;
+        g_bbcExpand4[v][0] = lo;
+        g_bbcExpand4[v][1] = hi;
     }
     s_mapBuilt = 1;
 }
@@ -252,7 +254,7 @@ typedef char revs_plot_own_size_check[(sizeof g_plotOwn == 208) ? 1 : -1];
        are longword aligned: no alignment step, no count split, no byte tail.
      - the two planes are ADJACENT — p2 = p1 + 40 — so a display line is ONE 80-byte block:
        forty `lo` bytes then forty `hi`.  Twenty `move.l Dn,(An)+`, straight line, no loop.
-     - the broadcasts are a table lookup now (s_expand4), not ~128 cycles of shift synthesis.
+     - the broadcasts are a table lookup now (g_bbcExpand4), not ~128 cycles of shift synthesis.
      - `off` dies before the first store, so the fill's only live values are the pointer and the
        two longwords — all in the call-clobbered set, so there is no movem and no stack slot.
        (CLAUDE.md: a hot loop's state lives in memory if anything keeps it alive across it.)
@@ -291,8 +293,8 @@ extern "C" void revs_plot_span(unsigned short addr, unsigned char value)
        reads as bits; it is never an alias of mem[]. */
     {
         uint32_t* q        = (uint32_t*)(void*)(s_target + s_planeOff[off]);
-        const uint32_t lo4 = s_expand4[value][0];
-        const uint32_t hi4 = s_expand4[value][1];
+        const uint32_t lo4 = g_bbcExpand4[value][0];
+        const uint32_t hi4 = g_bbcExpand4[value][1];
 
         *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4;
         *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4;
@@ -374,8 +376,8 @@ volatile unsigned short g_terrainMismatchAt = 0;  /* (addr << 8) | cell of the f
    `g_bbcExpandLo/Hi` are never consulted here at all. */
 #define TERRAIN_GROUP(K)  do {                                                          \
         if (ev->start == (K) * 4u) {                                                    \
-            lo4 = s_expand4[ev->colour][0];                                             \
-            hi4 = s_expand4[ev->colour][1];                                             \
+            lo4 = g_bbcExpand4[ev->colour][0];                                             \
+            hi4 = g_bbcExpand4[ev->colour][1];                                             \
             ev++;                                                                       \
         }                                                                               \
         if (ev->start >= (K) * 4u + 4u) {                                               \
@@ -390,8 +392,8 @@ volatile unsigned short g_terrainMismatchAt = 0;  /* (addr << 8) | cell of the f
                 b2[j] = (uint8_t)hi4;                                                   \
                 if (++j == 4u) break;                                                   \
                 if (ev->start == (K) * 4u + j) {                                        \
-                    lo4 = s_expand4[ev->colour][0];                                     \
-                    hi4 = s_expand4[ev->colour][1];                                     \
+                    lo4 = g_bbcExpand4[ev->colour][0];                                     \
+                    hi4 = g_bbcExpand4[ev->colour][1];                                     \
                     ev++;                                                               \
                 }                                                                       \
             }                                                                           \
@@ -412,8 +414,8 @@ static inline void plot_terrain_line(unsigned short addr, unsigned background, c
     if (off >= FB_BYTES) return;
     g_plotOwn[s_lineOf[off]] = 1;
     p1  = s_target + s_planeOff[off];
-    lo4 = s_expand4[background][0];
-    hi4 = s_expand4[background][1];
+    lo4 = g_bbcExpand4[background][0];
+    hi4 = g_bbcExpand4[background][1];
 
 #if defined(REVS_TERRAIN_CARVE)
     /* ⚠⚠ `make TERRAIN=1 TERRAINCARVE=N` — PICTURE WRONG BY CONSTRUCTION.  The line is still
@@ -770,7 +772,7 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
    fault on the 68000.
 
    ⚠ ENDIAN-OK on both counts, for the two reasons already argued in this file: the plane bytes are
-   the bitplane buffer (bits to the Amiga, never an alias of `mem[]`), and `s_expand4`'s longwords
+   the bitplane buffer (bits to the Amiga, never an alias of `mem[]`), and `g_bbcExpand4`'s longwords
    are uniform-byte broadcasts, so no byte order can tell them apart. */
 extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* spans,
                                          unsigned nSpans,
@@ -803,7 +805,7 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
         uint8_t* p1 = s_target + s_planeOff[off];
         uint8_t* p2 = p1 + kPlaneGap;
         /* ⭐⭐ THE CARRIED BYTE LIVES AS ITS TWO BROADCAST LONGWORDS, AND THAT IS WHAT MAKES
-           THE WHOLESALE ARM CHEAPER THAN FOUR CELLS.  `s_expand4[v][n]` holds the plane byte in
+           THE WHOLESALE ARM CHEAPER THAN FOUR CELLS.  `g_bbcExpand4[v][n]` holds the plane byte in
            all four positions, so the low byte of `lo4` IS the byte a single cell stores and no
            second pair of variables is needed: a byte store is `move.b d3,-40(a0)` (12) and a
            group store `move.l d3,-40(a0)` (16) out of the SAME register.  Reading the pair out
@@ -812,8 +814,8 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
            the wholesale counter then had to spend a stack slot for.
            ⚠ ENDIAN-OK, and the uniformity is the reason: every byte of the longword is the same,
            so which one `(uint8_t)` takes cannot be told apart. */
-        uint32_t lo4 = s_expand4[byte][0];
-        uint32_t hi4 = s_expand4[byte][1];
+        uint32_t lo4 = g_bbcExpand4[byte][0];
+        uint32_t hi4 = g_bbcExpand4[byte][1];
         unsigned si    = 1u;                              /* the next span to open           */
         unsigned brk   = (nSpans > 1u) ? spans[1].start : BBC_SCREEN_CELLS;
         unsigned scol  = spans[0].colour;                 /* this group's fill colour        */
@@ -830,7 +832,7 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
 
         /* ⭐ THE EVENT — a producer-written cell, ~1.95 a line.  It is the only thing that can
            change the carried byte, so it is also the only place the two expansions and the
-           wholesale longword pair are recomputed.  `s_expand4[byte]` was a `lsl.l #3` + an
+           wholesale longword pair are recomputed.  `g_bbcExpand4[byte]` was a `lsl.l #3` + an
            `adda.l #imm` inside the group loop for a value that changes twice a line: 34 cycles
            a group, and the group is 10 a line. */
 #ifdef REVS_SPAN_VERIFY
@@ -841,7 +843,7 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
 #define SPANS_EVENT(SOFF)  do {                                                 \
             SPANS_NZ(); SPANS_CONSUME(SOFF);                                    \
             byte = cellBytes[s_];                                               \
-            lo4 = s_expand4[byte][0]; hi4 = s_expand4[byte][1];                 \
+            lo4 = g_bbcExpand4[byte][0]; hi4 = g_bbcExpand4[byte][1];                 \
         } while (0)
 
         /* ⭐⭐⭐ A CELL INSIDE A RUN — byte for byte `PLOT_CHAIN_CELL`, AND NOT ONE INSTRUCTION

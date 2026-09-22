@@ -2477,7 +2477,46 @@ column (128..157 × 12..27), the tyre strips (133..140 × 0..1 / 38..39) and the
 - **the mirrors are the one real item**, and `mirror_draw_car` already carries a `REVS_PLOT_BYTE`
   at its store site — extending the delta domain over 154..157 is the whole of it.
 
-⭐⭐⭐ **AND THE REAL LEVER IS NOW THE TERRAIN RENDERER'S SHAPE, NOT ITS LOOP.** `LOWDOUBLE=1`
+#### §12f-ii — ⛔ "PAINT AS IF THE CAR WASN'T THERE" TAKEN LITERALLY IS A LOSS, AND THE COMPOSITES ARE THE PRIZE
+
+Three arms, same session, same 3000 fields, all against the `DUALPF=1 NEEDLE=1 TYRESPRITE=1`
+control at 162.07 ms (`make LOWOWN=1 LOWWIDE=<n>`):
+
+| arm | cells a line | shape | ph33 | Σ(1..39)−ph28 |
+|---|---|---|---|---|
+| shipping | ~18 (two clipped runs) | byte stores, four composed boundary cells | 17.08 | 160.15 |
+| `LOWWIDE=1` | 40 | **longword** fill, no composites | 24.61 | 168.67 |
+| `LOWWIDE=2` | 40 | byte stores, no composites | 19.62 | 162.54 |
+| **`LOWWIDE=3`** | **~18** | **byte stores, no composites** | **14.76** | **157.82** |
+
+⛔⛔ **Painting the car's own cells costs more than the machinery it deletes** — 22 extra cells a
+line is +4.86 ms of byte stores against the ~2.3 ms of per-line apparatus that goes with them. So
+the literal reading of §12 ("render the terrain as if the car wasn't there") is a **net loss** on
+this machine, and the reason is that the runs are only 18 of 40 cells while the silhouette bounds
+are a STATIC TABLE (§12's own measurement) that costs nothing to consult. Clipping is not the
+expensive part; **composing is**.
+
+⛔ **And the longword fill LOSES by a further 5 ms at this segment length** — events are dense
+enough that a segment is ~5 cells, where the alignment head, the count split and the two
+broadcast loads outweigh two or three longword stores. This is `revs_plot_run`'s own finding
+reached from the other side ("still 4.05 ms of preamble at 80 bytes"), and it is now measured at
+both ends: **a wide store pays over a SPAN, never over a SEGMENT.**
+
+⭐⭐⭐ **WHAT DOES PAY IS DELETING THE FOUR COMPOSED BOUNDARY CELLS AND THE CLIP LOOKUPS —
+ph33 17.08 → 14.76 at the SAME cell count, and §2a then nets −4.25 ms** (the painter costs what
+the `mem[]` one it replaces did, 14.76 against 14.54, while the decode stays −4.59). That is the
+shape to ship, and its remaining fee is one more thing for the cockpit layer to paint ONCE: the
+dash pixels of each run's first and last cell, from the same static `view_*_start/end_mask` +
+`fill` tables the composite used. Which is §12's steer in substance — the edge logic does leave
+the terrain renderer — while the way it leaves is PF2 taking the pixels, not the terrain painting
+over them.
+
+⭐⭐ **AND THE THREE ARMS ARE THE METHOD, NOT A DETAIL: two of them change TWO things at once**
+(cell count and machinery), so neither can price either. The third holds the cell count fixed and
+that is the one that produced a number worth shipping. Same rule as §11e — a measured delta
+belongs to everything that changed between its two arms.
+
+⭐⭐⭐ **AND THE REAL LEVER WAS THE TERRAIN RENDERER'S SHAPE, NOT ITS LOOP.** `LOWDOUBLE=1`
 splits ph33 into painting and driver, and the painting is where it all is — mem[] arm 13.84 ms of
 painting against 0.81 of driver, plane arm 22.06 against 2.58. A line is painted as TWO runs
 clipped to the car's silhouette, with a composed `(value & mask) | fill` boundary cell each, ~4
