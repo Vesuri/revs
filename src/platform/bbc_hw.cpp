@@ -413,33 +413,62 @@ volatile unsigned long g_bandHorizonMoves  = 0;
 /* $3458 band 2 (16) · $3468 band 0 (16) · $3478 band 3 (4) · $347C band 4 (4) ·
    the horizon (2) · the entry state (1).  Band 1's palette is a computed constant
    sequence and its mode writes are literals, so neither is an input. */
-enum { BAND_INPUT_BYTES = 43 };
-static unsigned char s_bandInputs[BAND_INPUT_BYTES];
+/* ⭐ The first FORTY are one contiguous run, $3458..$347F, which is what lets the gate below
+   compare them ten longwords at a time instead of forty-three bytes at a time. */
+enum { BAND_INPUT_BYTES = 43, BAND_INPUT_RUN = 40 };
+static unsigned char s_bandInputs[BAND_INPUT_BYTES] __attribute__((aligned(4)));
 static bool          s_bandInputsValid = false;
 static unsigned char s_bandCachedCount = 0;
 
+/* ⭐⭐ THE REUSE GATE, and it was 5.4 ms of a 154 ms frame — for a test whose entire job is to
+   AVOID work.  It used to stage all 43 bytes into a local with four byte loops and then compare
+   them one at a time: 603 us a band cycle, ~4270 cycles, 99 cycles PER BYTE, and the drain runs
+   8.96 band cycles per painted frame (amiga/bodysplit.gdb, the instrument this row never had).
+   The GATE ITSELF is load-bearing and stays — it skips a 5.2 ms band cycle on 96.7% of ticks —
+   but there was never a reason to stage the bytes.  Compare them where they live.
+   ⚠⚠ ENDIAN-OK: aliasing mem[] as uint32_t* is legal HERE, and the argument is EQUALITY rather
+   than the usual "every byte of the wide value is the same": both operands are byte arrays of
+   IDENTICAL layout, so any consistent byte order returns the same verdict and the wide read
+   never becomes a value.  mem[] is __attribute__((aligned(4))) (src/cpu/cpu.c), $3458 is
+   4-aligned and s_bandInputs is aligned above, so the 68000 cannot take an address error.
+   ⚠ Semantics are byte-for-byte those of the loop it replaces: `same` still starts at
+   s_bandInputsValid, every differing byte is still written back, and g_bandHorizonMoves still
+   counts the horizon pair only.
+   ⭐⭐ SABOTAGED, and two of the three survived — with an argument, not a shrug.  `make
+   BANDCHECK=1` reads 0 of 12629 predicted reuses here, 65 when the HORIZON PAIR is dropped from
+   the verdict (so the oracle does bite this code), and 0 when either end of the 40-byte palette
+   RUN is dropped.  That third result is "no change at all", the benign one of the three
+   explanations: on a Silverstone practice lap the band palettes and control bytes ARE constant,
+   which is exactly why the horizon is the input that makes this test worth running.  ⇒ a palette
+   sabotage is unreachable on this trajectory and proves nothing either way.
+   ⚠ So do NOT conclude from those two that the run may be dropped from the digest — a circuit or
+   a session that repaints a band would then reuse a stale record. */
 static bool band_inputs_unchanged(void)
 {
-    unsigned char buf[BAND_INPUT_BYTES];
-    unsigned n = 0, i;
-    for (i = 0; i < 16; i++) buf[n++] = mem[0x3458 + i];
-    for (i = 0; i < 16; i++) buf[n++] = mem[0x3468 + i];
-    for (i = 0; i < 4;  i++) buf[n++] = mem[0x3478 + i];
-    for (i = 0; i < 4;  i++) buf[n++] = mem[0x347C + i];
-    buf[n++] = mem[0x4F1F];
-    buf[n++] = mem[0x4F20];
-    buf[n++] = mem[0x4F43];
-
     bool same = s_bandInputsValid;
-    for (i = 0; i < n; i++) {
-        if (buf[i] != s_bandInputs[i]) {
-            /* The horizon pair sits at the end, just before the entry state — count it on its
-               own, because it is the input that makes this test worth running (see the counter). */
-            if (i == BAND_INPUT_BYTES - 3 || i == BAND_INPUT_BYTES - 2) g_bandHorizonMoves++;
-            same = false;
-            s_bandInputs[i] = buf[i];
-        }
+    unsigned i;
+
+    /* $3458..$347F — band 2, band 0, band 3, band 4, contiguous.  Ten longwords; a group that
+       differs is rewritten wholesale, because no caller cares WHICH byte inside it moved. */
+    {
+        const uint32_t* src = (const uint32_t*)(const void*)(mem + 0x3458);  /* ENDIAN-OK: equality only */
+        uint32_t*       ref = (uint32_t*)(void*)s_bandInputs;                /* ENDIAN-OK: equality only */
+        for (i = 0; i < BAND_INPUT_RUN / 4u; i++)
+            if (src[i] != ref[i]) { ref[i] = src[i]; same = false; }
     }
+
+    /* ...and the three strays.  The horizon pair gets its own counter, because it is the input
+       that makes this test worth running at all (see g_bandHorizonMoves). */
+    if (mem[0x4F1F] != s_bandInputs[40]) {
+        s_bandInputs[40] = mem[0x4F1F]; g_bandHorizonMoves++; same = false;
+    }
+    if (mem[0x4F20] != s_bandInputs[41]) {
+        s_bandInputs[41] = mem[0x4F20]; g_bandHorizonMoves++; same = false;
+    }
+    if (mem[0x4F43] != s_bandInputs[42]) {
+        s_bandInputs[42] = mem[0x4F43]; same = false;
+    }
+
     s_bandInputsValid = true;
     return same;
 }
