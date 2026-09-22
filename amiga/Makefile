@@ -760,12 +760,18 @@ endif
 # autorun script is the shared one (src/platform/autorun.cpp §STRAIGHT TO THE RACE PROPER) that
 # answers the championship menus, sits out one qualifying session and answers START RACE, so this
 # is a define and nothing else.
-# ⚠⚠ AND IT IS FAR LONGER ON THE TARGET THAN ON THE HOST — MEASURED, so nobody sizes it from the
-# host figure again.  The qualifying session ends on `tick_race_timers`, which advances the clock
-# once per GAME FRAME, not per field; the host reaches the deadline at ~12000 frames, but this
-# port paints ~6 a second, so the same deadline is ~100 000 FIELDS here (`session_is_race` still
-# read $28 — qualifying — at vbi 15200, painted=1793).  Budget ~10 minutes of host time under
-# warp and break on a high `g_vbiCount`, or drive the menus by hand.
+# ⚠⚠ IT COSTS ~100 000 FIELDS — ~22 MINUTES of host time under warp — AND THAT IS MEASURED, not
+# modelled.  The qualifying session ends on `tick_race_timers`, which advances the clock once per
+# GAME FRAME; the host reaches the deadline at ~12000 frames, and this port paints 2066 of them by
+# vbi 17503 (0.118 a field), so the same deadline is ~101 700 fields here.  Break on
+# `g_vbiCount >= 105000` and give `diag_run.sh` ~1500 seconds.
+# ⚠ THE TWO THINGS TO SAMPLE, because the state alone is ambiguous: `session_is_race` ($006C, and
+# $006D takes the same value at the same instruction) reads $28 through practice AND qualifying,
+# so $28 does not distinguish "still qualifying" from "stuck"; the AUTORUN CURSOR does.
+# `s_platform->autoRun.m_step` == the `{KEY_2, 0, 2}` START RACE step means the walk is healthy
+# and simply waiting — that step is the one step in any script with its poll timeout DISABLED,
+# because what bounds it is the game's own clock (src/platform/autorun.cpp says why).
+# ⚠ A driving screen is NOT evidence of the race: qualifying drives too, and looks the same.
 # ⚠ Do not combine with STRAIGHT_TO_RACE: autorun picks ONE script, and this one wins.
 # ⭐ It is the only way to exercise what a practice lap cannot: the object plotter with a real
 # field (open-work 5a) and the WING MIRRORS, which reflect nothing when you are alone.

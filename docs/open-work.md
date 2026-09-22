@@ -485,7 +485,34 @@ every one of them leaves 144 against a 48 ms target.** It is worth doing because
 certain, not because it changes the arithmetic — that still rests on `draw_road` (34) and
 `build_track_geometry` (26).
 
-### 5b. ⭐⭐ THE DECODE'S BOOKKEEPING — 5 ms around 7.2 ms of real work, never looked inside
+### 5b. ⭐⭐⭐ THE DECODE IS NOW *ONLY* BOOKKEEPING — 10.4 ms of it, around 2.2 ms of real work
+**MEASURED 2026-09-22 with §2a's stack on (`make DECODESPLIT=1`, `amiga/decodesplit.gdb`),
+control-corrected, and the split closes at 12.79 ms:**
+
+| ms | slot | |
+|---:|---|---|
+| 0.94 | `snapshotBands` | ⛔ must survive — `m_plan` is the COPPER's palette schedule |
+| 1.66 | `buildLineModes` | ⛔ must survive, same reason |
+| 2.47 | ownership / carve loops | a per-frame scan of all 208 display lines |
+| 2.19 | dynamic rectangles | §12c's re-expansion |
+| 2.19 | `convertRace` | **was 17.09 before ownership** |
+| 3.19 | phase-27 remainder | never attributed |
+
+⭐⭐⭐ **THE CONVERSION IS DONE: `convertRace` converts FOUR CELLS A FRAME.** 145 of the 208 lines
+are owned and 64 more are the flat sky band the decode skips by design, so essentially every
+visible line is already somebody's. What is left is the machinery around a pass with nothing to do,
+and **~10.4 of the 12.79 ms is collectable** — everything except the two slots that feed the
+copper.
+
+⇒ **The step is to stop CALLING the conversion at all** when no line is both unowned and non-flat
+(§11a always said the end state was two steps, and this is the second). The test is cheap — the
+same `g_plotOwn` groups plus the five band modes — but ⚠ it must not simply move the 2.47 ms scan
+somewhere else: read that loop's objdump FIRST, because 2.47 ms for 52 longword tests and 145 byte
+writes is ~3x what the operation count says, which is the tell this file keeps meeting.
+⚠ And the 3.19 ms remainder is still unattributed — it is the largest single row here and nobody
+has split it.
+
+### 5b-old. (the pre-§2a framing, kept only for its numbers) 5 ms around 7.2 ms of real work
 `make DECODESPLIT=1` now carves `decode()` SIX ways (§12c added the rect slot). The shipping
 15.04 ms is **0.92 `snapshotBands` + 1.63 `buildLineModes` + 2.00 own/carve + 7.22 `convertRace`
 + 3.02 remainder + 0.11 bracket**. `snapshotBands` + `buildLineModes` must survive forever
