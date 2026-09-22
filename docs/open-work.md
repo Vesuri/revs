@@ -26,12 +26,17 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **172.93 ms bracketed** (Σ phases 1..39 = wall − phase 0) for the
-SHIPPING DEFAULT, and **172.40** with §2a's stack on (`DUALPF=1 TYRESPRITE=1 LOWOWN=1`) — measured
-2026-09-22 at `04a34c8`, `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1
-PROBEFIELDS=3000`, warp, driving (`frozen=240432684`, `loopFrames=333`).
-⚠ **Compare the two arms as Σ(1..39) − ph28**, not as the raw total: the vblank spin absorbs a
-compute win (CLAUDE.md), and on that measure the stack is **160.90 → 157.38, i.e. −3.52 ms**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 153.78 ms** for the SHIPPING DEFAULT — measured
+2026-09-22 at `51108ca` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240439838`, `loopFrames=340`,
+`FRAME = 169 ms` wall − phase 0).
+⭐⭐⭐ **THE DEFAULT NOW CARRIES THE WHOLE STACK — `DUALPF`, `TYRESPRITE` and `LOWOWN` are on, and
+there is no per-frame `mem[]` → bitplane conversion left (§5b).** Against the previous default
+(`DUALPF=0 TYRESPRITE=0`, which turned ownership of 117..157 off with them) that is
+**179.83 → 153.78, i.e. −26.05 ms**, of which `ph27` is 32.82 → 8.52. A plain `make clean && make`
+reproduces the 153.78 arm bit for bit.
+⚠ **Compare arms as Σ(1..39) − ph28**, never as the raw total: the vblank spin absorbs a compute
+win (CLAUDE.md), and a faster build paints more frames so it meets more of phase 0's crash holds.
 **Target is ~48 ms** (2× the original game; stretch **40 ms**, where the `50/N` display ladder
 actually steps to 25 fps), and an entry worth under ~1 ms is not where the answer is.
 
@@ -328,17 +333,20 @@ oracle both re-expand a `mem[]` that is frozen for those rows' terrain cells).
 the `$3000` source blocks, not the frame buffer — so an opponent reaches the screen through the
 same painter as the terrain (§12f-iii). The practice-only census was not the risk it looked like.
 
-⏳ **WHAT IS OWED BEFORE THE DEFAULT FLIPS** is a target-side RACE, and `RACEPROPER=1` is now
-plumbed into `amiga/Makefile` for it. ⚠⚠ MEASURED: it is far longer on the target than the host
+✅ **THE DEFAULT HAS FLIPPED (2026-09-22, user's call): `DUALPF`, `TYRESPRITE` and `LOWOWN` are
+ON in a plain `make`**, `LOWOWN` derived from the other two so every control arm (`DUALPF=0`,
+`TYRESPRITE=0`, `NEEDLE=0`) still builds instead of hitting a wall of `#error`s. Worth
+**−26.05 ms** against the old default once the conversion deletion (§5b) is counted with it.
+⏳ **WHAT IS STILL OWED IS THE TARGET-SIDE RACE**, and `RACEPROPER=1` is plumbed into
+`amiga/Makefile` for it. ⚠⚠ MEASURED: it is far longer on the target than the host
 figure suggests — qualifying ends on `tick_race_timers`, which advances once per GAME FRAME, and
 this port paints ~6 a second, so the host's ~12000 frames are ~100 000 FIELDS here
 (`session_is_race` still read `$28` at vbi 15200). Budget ~10 minutes of warp. What it would
 exercise: the mirrors with a real reflection (`g_cockpitDeltaBytes` reads 26 in a practice lap —
 the path fires, the content is barely stressed) and the object plotter with a real field (5a).
-⏳ **The flip itself is three defaults together** — `DUALPF`, `TYRESPRITE`, `LOWOWN` (`LOWOWN`
-`#error`s without the other two) — worth **−3.52 ms** against what ships today (160.90 → 157.38),
-and it includes a faithfulness-seam default (the tyre dither becoming a sprite), so it is the
-user's call rather than a measurement's.
+⚠ **The flip includes a FAITHFULNESS-SEAM default** — the front-wheel dither is now drawn by two
+hardware sprites rather than plotted into the frame buffer (§12's own directive). The pixels are
+the game's; what changed is who puts them on screen. `make TYRESPRITE=0` is the control.
 
 ⭐⭐⭐ **UNBLOCKED, 2026-09-21: the cockpit is now its own PLAYFIELD (`make DUALPF=1`,
 `docs/span-render-plan.md` §12e).** The car body used to belong to nobody once the sweep claimed

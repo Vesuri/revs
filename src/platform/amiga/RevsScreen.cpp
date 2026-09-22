@@ -1603,8 +1603,16 @@ static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
        needle writes these plane bytes itself, in both buffers, over a cached clean-cockpit base
        (§12d) — and with §2a's rows owned that base is now laid down in full at every rebase
        (RevsPlot.cpp §ndlBaseBlitBoth), which is what keeps the art the needle never sweeps. */
+#ifdef REVS_NEEDLE_PLANES
     { REVS_NEEDLE_Y0, COCK_Y1,
       REVS_NEEDLE_C0, REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS - 1u },
+#else
+    /* ⚠ `NEEDLE=0` — the needle is back in `mem[]`, so the column is not a painter's and the
+       layer must PAINT it rather than leave it transparent.  The rectangle is the DDA's own clip
+       bound either way; without the geometry painter those constants do not exist, and a
+       hand-written substitute would be the very census-derived guess the comment above rejects.
+       The control arm therefore simply has no dynamic needle rectangle. */
+#endif
     /* ⭐⭐ THE FRONT-WHEEL DITHER IS NOT DYNAMIC ANY MORE — `TYRESPRITE=1` makes the wheels a
        SPRITE, so `tick_wheel_spin` no longer EORs `mem[]` (revs_native.c §tick_wheel_spin) and
        the art underneath is static like the rest of the car.  ⇒ the layer PAINTS it, and two of

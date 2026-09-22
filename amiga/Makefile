@@ -903,7 +903,11 @@ endif
 # mirrors must each write PF2 instead.
 # ⚠ SCOPE: display lines 117..157 only.  Rows 158..207 stay wholly on PF1, so DELTAOWN's glyph
 # rows (192..207), the needle painter (158..191) and the rectangle painter are untouched.
-DUALPF ?= 0
+# ⭐⭐⭐ DEFAULT ON.  The cockpit's own playfield is the architecture now, not an experiment: it is
+# what lets the terrain painter own display lines 117..157 (LOWOWN, below) and it is what §12's
+# directive asked for — "we could even use dual playfield so that the car is a separate playfield
+# altogether".  `make DUALPF=0` is the single-playfield control.
+DUALPF ?= 1
 ifeq ($(DUALPF),1)
 EXTRA_DEFINES += -DREVS_DUAL_PLAYFIELD
 PROBE_SYMS_DUALPF = g_cockpitCells g_cockpitCellsTotal g_cockpitPen3 g_cockpitRuns g_cockpitBadSlot g_cockpitFulls g_cockpitMaskBad g_cockpitDeltaBytes
@@ -929,7 +933,14 @@ PROBE_SYMS_DUALPFCHK = g_cockpitChecks g_cockpitMismatch g_cockpitMismatchAt g_c
 endif
 endif
 
-TYRESPRITE ?= 0
+# ⭐⭐⭐ DEFAULT ON, and it is a FAITHFULNESS SEAM, stated plainly (docs/faithfulness-seam.md):
+# the front-wheel tread is drawn by two hardware SPRITES switched between, instead of the game's
+# own dither being plotted into the frame buffer — §12's directive ("even the tires don't need to
+# be drawn; the tire animation can be achieved with pre-made sprites").  The pixels are the game's
+# own pattern; what changes is who puts them on screen.  It is also a PRECONDITION of owning
+# display lines 117..157, because `tick_wheel_spin` writes 133..140 and an owned line is painted
+# by the renderer alone.  `make TYRESPRITE=0` is the control.
+TYRESPRITE ?= 1
 ifeq ($(TYRESPRITE),1)
 EXTRA_DEFINES += -DREVS_TYRE_SPRITES
 PROBE_SYMS_TYRE = g_tyreBuilds g_tyrePeriodBad g_tyrePhase g_tyreZeroAnim
@@ -1032,7 +1043,12 @@ endif
 # ⭐ The remaining lever is the DESIGN, not the loop: the car is on PF2 now, so the terrain need
 # not stop at its outline — one contiguous fill a line instead of two clipped runs with composed
 # boundary cells (§12 user directive, docs/span-render-plan.md §12f).
-LOWOWN ?= 0
+# ⭐⭐⭐ DEFAULT ON — but DERIVED, not a bare 1.  It `#error`s without TERRAINLOW, NEEDLE,
+# TYRESPRITE and (for the plane arm) DUALPF, because an owned display line is painted by the
+# renderer ALONE and a writer still storing into `mem[]` there would freeze invisibly.  Deriving
+# it means `make DUALPF=0` or `make TYRESPRITE=0` still builds — the control arms stay usable
+# instead of hitting a wall of `#error`s.
+LOWOWN ?= $(if $(filter 111,$(DUALPF)$(TYRESPRITE)$(NEEDLE)),1,0)
 ifeq ($(LOWOWN),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN
 # ⛔⛔ THE THREE CEILING ARMS THAT SETTLED THE SHAPE ARE GONE, their result is the shape above
