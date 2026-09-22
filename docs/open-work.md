@@ -26,11 +26,14 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **192.64 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
-FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving, at the domain-A
-commit (`frozen=240410697`, `loopFrames=298`, `build=1d`, `probe-audit` 173 symbols). **Target is ~48 ms** (2× the original game; stretch **40 ms**, where the
-`50/N` display ladder actually steps to 25 fps), and an entry worth under ~1 ms is not where the
-answer is.
+**Where the frame stands:** **172.93 ms bracketed** (Σ phases 1..39 = wall − phase 0) for the
+SHIPPING DEFAULT, and **172.40** with §2a's stack on (`DUALPF=1 TYRESPRITE=1 LOWOWN=1`) — measured
+2026-09-22 at `04a34c8`, `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1
+PROBEFIELDS=3000`, warp, driving (`frozen=240432684`, `loopFrames=333`).
+⚠ **Compare the two arms as Σ(1..39) − ph28**, not as the raw total: the vblank spin absorbs a
+compute win (CLAUDE.md), and on that measure the stack is **160.90 → 157.38, i.e. −3.52 ms**.
+**Target is ~48 ms** (2× the original game; stretch **40 ms**, where the `50/N` display ladder
+actually steps to 25 fps), and an entry worth under ~1 ms is not where the answer is.
 
 ⭐⭐⭐ **AND THE REAL BBC RUNS THIS SAME SCENE AT 97.0 ms A FRAME — 10.31 fps, measured, `make
 refloop` prints it.** So the port is **1.96× the original hardware**, not 5-10× off a reasonable
@@ -49,13 +52,14 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 
 | ms/frame | phase(s) | what |
 |---:|---|---|
-| 53.5 | 24+33+34+32 | `view_paint_lines` — the consumer |
+| 40.8 | 24+33+32 | `view_paint_lines` — the consumer (20.55 scan + 14.56 low + 5.70) |
 | 34.4 | 11 | `draw_road` |
-| 26.7 | 5 | `build_track_geometry` |
-| 17.2 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart (was 20.0; 34 rows are OWNED) |
-| 14.1 | 28 | the vblank spin — the `50/N` pad, not a target |
-| 12.5 | 26 | the 50 Hz drain |
-| 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
+| 26.6 | 5 | `build_track_geometry` |
+| 15.8 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart; **11.9 with §2a on** |
+| 12.0 | 28 | the vblank spin — the `50/N` pad, not a target |
+| 11.3 | 26 | the 50 Hz drain |
+| 6.0 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
+| 5.1 | 3 | one of entry 7's never-profiled rows |
 
 ### 1. ⛔ The TRANSPOSED SCAN — **10.00 ms, and BOTH routes to it are now CLOSED**
 `docs/perf-method.md` §the transposed scan is at its floor, and §producer-emitted source events.
