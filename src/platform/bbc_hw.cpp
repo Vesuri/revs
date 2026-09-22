@@ -452,7 +452,10 @@ unsigned Platform::fireIrq1vField(void)
        fireIrq1v apply the gate internally, so the clock ticked through the pre-claim fields
        too.  Hoisting the gate above it looked like a tidy-up and silently re-seeded the RNG:
        the whole-corpus differential diverged at mem[$0004] within 300 frames. */
+    BODY_PHASE(BODY_PHASE_NULL);        /* the CONTROL: one transition, nothing inside it */
+    BODY_PHASE(BODY_PHASE_BEGIN);
     bbc_begin_band_cycle();
+    BODY_PHASE(PROBE_PHASE_DRAIN);
 
     /* The same gate fireIrq1v applies, hoisted out of the loop: until the game has claimed
        IRQ1V there is no cycle to run and no record worth caching. */
@@ -502,7 +505,10 @@ unsigned Platform::fireIrq1vField(void)
 #endif
 
 #ifndef REVS_NO_BANDSKIP
-    if (s_bandCachedCount == 5 && band_inputs_unchanged()) {
+    BODY_PHASE(BODY_PHASE_GATE);
+    const bool bandReuse = (s_bandCachedCount == 5 && band_inputs_unchanged());
+    BODY_PHASE(PROBE_PHASE_DRAIN);
+    if (bandReuse) {
         /* The record in g_band* is still the right answer; only its count was just zeroed. */
         g_bandCount = s_bandCachedCount;
 
@@ -527,11 +533,13 @@ unsigned Platform::fireIrq1vField(void)
     /* ⚠ Bounded, because an unbounded loop over a state machine the game can change is how a
        frame gets eaten.  8 = the five real bands plus slack; overrunning drops the rest of
        this field's bands rather than hanging. */
+    BODY_PHASE(BODY_PHASE_IRQ);
     for (int band = 0; band < 8; band++) {
         fireIrq1v();
         dispatched++;
         if (mem[0x4F43] == 0) break;      /* $4F43 = irq_band_state; 0 = cycle complete */
     }
+    BODY_PHASE(PROBE_PHASE_DRAIN);
     s_bandCachedCount = g_bandCount;
     g_bandRuns++;
     return dispatched;

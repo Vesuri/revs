@@ -208,6 +208,16 @@ ifdef VIEWCAL
 EXTRA_DEFINES += -DREVS_VIEWCAL=$(VIEWCAL)
 endif
 
+# ⭐⭐ `make BODYSPLIT=1 PROBES=1` — split the 50 Hz DRAIN (phases 26+29) into the band cycle's
+# four parts (src/platform/probe.h §BODYSPLIT): the 43-byte reuse GATE (59), the game's own IRQ1V
+# chain (60), an EMPTY control at the gate's rate (61) and bbc_begin_band_cycle (62).  The drain is
+# the third-largest block in the frame and had no instrument at all.  ⚠ Quote the PER-CYCLE us from
+# it, never ph26 — the row is (cycles per frame) x (cost per cycle) and the frame time sets the
+# first factor, so it falls when the frame falls whatever the cycle costs.  amiga/bodysplit.gdb.
+ifdef BODYSPLIT
+EXTRA_DEFINES += -DREVS_BODY_SPLIT
+endif
+
 # ⭐⭐ `make GEOSPLIT=1 PROBES=1` — split build_track_geometry (phase 5) into its sub-phases
 # (ids 40-43: the near-point reuse, the two distance walks, the horizon tail) AND count the tree's
 # transforms/divides per frame.  The "why is phase 5 ~16%" instrument — src/platform/probe.h

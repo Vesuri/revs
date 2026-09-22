@@ -121,7 +121,7 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
    plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry, 44-49
    ROADSPLIT's of draw_road and 50-58 DECODESPLIT's of RevsScreen::prepareFrame() (see the bottom of
    this file), so the table must be sized past them. */
-#define PROBE_PHASES 59
+#define PROBE_PHASES 63
 
 /* ⭐ The DISPLAY-frame wait, bracketed on its own.
  *
@@ -282,6 +282,14 @@ extern volatile unsigned long g_probeFrozenUnits[3], g_probeFrozenRuns[3], g_pro
 
 #define PROBE_PHASE(id) do { REVS_CANARY(id); probe_phase(id); } while (0)
 
+/* ⭐ The BODYSPLIT brackets (§BODYSPLIT).  A no-op unless `make BODYSPLIT=1`, so the shipping
+   band cycle carries no transitions and the host build is untouched. */
+#ifdef REVS_BODY_SPLIT
+#define BODY_PHASE(id) PROBE_PHASE(id)
+#else
+#define BODY_PHASE(id) ((void)0)
+#endif
+
 #else
 #define PROBE_PHASE(id) REVS_CANARY(id)
 #define PROBE_VBI()     ((void)0)
@@ -311,6 +319,11 @@ extern volatile unsigned long g_probeFrozenUnits[3], g_probeFrozenRuns[3], g_pro
 #define PROBE_PHASE_COCKPIT   30
 #define PROBE_PHASE_SPIN      28
 #define PROBE_PHASE_BODYARM   29
+#define BODY_PHASE_GATE       59
+#define BODY_PHASE_IRQ        60
+#define BODY_PHASE_NULL       61
+#define BODY_PHASE_BEGIN      62
+#define BODY_PHASE(id)        ((void)0)
 #endif
 
 /* ===========================================================================
@@ -485,3 +498,33 @@ extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points st
 #define DEC_PHASE_ENTRY   56   /* decode() entry: the teletext test and the bitmap fetch     */
 #define DEC_PHASE_POST    57   /* after the conversion: the cockpit counters and the oracles */
 #define DEC_PHASE_TAIL    58   /* after the rectangles: DIRTYCHECK / FILLWATCH and m_ready   */
+
+/* ===========================================================================
+ * ⭐⭐ `make BODYSPLIT=1 PROBES=1` — WHAT IS THE 50 Hz DRAIN (phases 26+29) SPENDING 12.5 ms ON?
+ * ---------------------------------------------------------------------------
+ * The third-largest block in the frame and the only one that has never had an instrument.  Its
+ * shape makes a single row actively misleading: the drain runs `ceil(frame / 20 ms)` band cycles
+ * per painted frame — 8.78 of them at a 154 ms frame — so `ph26` is a PRODUCT of the frame time
+ * and the per-cycle cost, and neither factor is visible in it.  ⚠ That also means a win here is
+ * NOT proportional to the row: halving the frame halves the tick count too, so the row falls
+ * whether or not the cycle got cheaper.  ⭐ Quote the PER-CYCLE µs from this split, never ph26.
+ *
+ * What one cycle does, and the split follows it exactly (src/platform/bbc_hw.cpp):
+ *   59  GATE   band_inputs_unchanged() — the 43-byte digest of the band record's inputs, copied
+ *              into a local and compared.  Pure port machinery: the BBC re-ran the cycle.
+ *   60  IRQ    the bounded `fireIrq1v()` loop — the game's OWN IRQ1V band chain, i.e. the only
+ *              part of the cycle the 6502 also paid.  Runs only when the gate says "changed".
+ *   61  NULL   THE CONTROL, read first: an empty bracket at the same rate as the gate.
+ *   62  BEGIN  bbc_begin_band_cycle() — zeroes the record and advances the 1 MHz field clock.
+ *              Two stores, so it is really a second control; if it is not ~= 61 the split lies.
+ * Phase 26 keeps the remainder (drainTicks' loop, the A/X/Y save, the IRQ1V claim test) and
+ * phase 29 stays `tick_wheel_spin`, the one part of the cycle that SIMULATES and DRAWS.
+ *
+ * ⚠ An in-code comment on Revs::runBandCycle has claimed "96% of this row is machinery, 233 us a
+ * field is game work" for months with no doc and no run behind it; this instrument exists to
+ * replace it with a measurement.  Read it with amiga/bodysplit.gdb.
+ * ⚠ A measurement build only: up to four extra transitions per band cycle. */
+#define BODY_PHASE_GATE  59
+#define BODY_PHASE_IRQ   60
+#define BODY_PHASE_NULL  61
+#define BODY_PHASE_BEGIN 62
