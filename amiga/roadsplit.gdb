@@ -79,19 +79,29 @@ end
 # ⭐⭐ THE PER-SPAN PRICE OF EACH HALF — this is what the 45/47 split exists to print.  Setup is
 # a fixed cost per span; the walk's is (lines x 8 column steps) + (plots x the out-of-line
 # sw_plot_N).  Whichever number is big is the one a rewrite has to delete.
-if g_roadSpans > 0
+# ⚠⚠ THE PARTIAL-FREEZE TRAP — every per-unit line below used to read ~4.9x LOW.  g_phaseTicks
+# stops at the PROBEFIELDS freeze; g_roadSpans / g_roadColSteps / g_roadCols do NOT (probe.cpp
+# keeps no shadow for them), so ticks/count divided a FROZEN numerator by a LIVE one.  A 60 s run
+# past a 3000-field window said 80 us per span where the truth is ~390.
+# ⇒ every line divides TICKS-PER-PAINTED-FRAME (frozen/frozen) by COUNT-PER-CALL (live/live).
+set $spf = g_roadSpans/$f
+set $stf = g_roadColSteps/$f
+set $clf = g_roadCols/$f
+if $spf > 0
   printf "  => per span: SETUP %lu us, WALK %lu us   (cycles at 7.09 MHz: %lu / %lu)\n", \
-    (g_phaseTicks[45]/g_roadSpans)*1000/4006, (g_phaseTicks[47]/g_roadSpans)*1000/4006, \
-    ((g_phaseTicks[45]/g_roadSpans)*1000/4006)*709/100, ((g_phaseTicks[47]/g_roadSpans)*1000/4006)*709/100
+    ((g_phaseTicks[45]/g_phaseFrames)*1000/4006)/$spf, ((g_phaseTicks[47]/g_phaseFrames)*1000/4006)/$spf, \
+    (((g_phaseTicks[45]/g_phaseFrames)*1000/4006)/$spf)*709/100, \
+    (((g_phaseTicks[47]/g_phaseFrames)*1000/4006)/$spf)*709/100
 end
-if g_roadColSteps > 0
+if $stf > 0
   printf "  => per DDA step (scaffolding only, 47): %lu us = %lu cycles\n", \
-    (g_phaseTicks[47]/g_roadColSteps)*1000/4006, ((g_phaseTicks[47]/g_roadColSteps)*1000/4006)*709/100
+    ((g_phaseTicks[47]/g_phaseFrames)*1000/4006)/$stf, \
+    (((g_phaseTicks[47]/g_phaseFrames)*1000/4006)/$stf)*709/100
 end
-if g_roadCols > 0
+if $clf > 0
   printf "  => per plotted column: PLOT %lu us, control %lu us  =>  %lu cycles of real plot\n", \
-    (g_phaseTicks[48]/g_roadCols)*1000/4006, (g_phaseTicks[49]/g_roadCols)*1000/4006, \
-    (((g_phaseTicks[48]-g_phaseTicks[49])/g_roadCols)*1000/4006)*709/100
+    ((g_phaseTicks[48]/g_phaseFrames)*1000/4006)/$clf, ((g_phaseTicks[49]/g_phaseFrames)*1000/4006)/$clf, \
+    ((((g_phaseTicks[48]-g_phaseTicks[49])/g_phaseFrames)*1000/4006)/$clf)*709/100
 end
 
 # --- per-column time from the span stage (the bulk of the pass) -------------------------------
@@ -99,7 +109,8 @@ end
 # road_span_plot with its three bus accesses — the number docs/perf-method.md asserted was small.
 if g_roadFillLines > 0
   printf "fill stage: %lu ms/frame over %lu fill lines/frame  =>  ~%lu us per line->point store\n", \
-    (g_phaseTicks[44]/g_phaseFrames)/4006, g_roadFillLines/$f, (g_phaseTicks[44]/g_roadFillLines)*1000/4006
+    (g_phaseTicks[44]/g_phaseFrames)/4006, g_roadFillLines/$f, \
+    ((g_phaseTicks[44]/g_phaseFrames)*1000/4006)/(g_roadFillLines/$f)
 end
 detach
 quit

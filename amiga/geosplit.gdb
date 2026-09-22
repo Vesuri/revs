@@ -63,10 +63,17 @@ end
 set $wt = g_phaseTicks[41] + g_phaseTicks[42]
 if g_geoDiv > 0
   printf "\nwalks: %lu ms/frame over %lu divides/frame  =>  ~%lu us per div16by8 (incl. its callers)\n", \
-    ($wt/g_phaseFrames)/4006, g_geoDiv/$f, ($wt/g_geoDiv)*1000/4006
+    ($wt/g_phaseFrames)/4006, g_geoDiv/$f, (($wt/g_phaseFrames)*1000/4006)/(g_geoDiv/$f)
 end
+# ⚠⚠ THE PARTIAL-FREEZE TRAP, and it made this line read 4.7x LOW for as long as it existed:
+# g_phaseTicks stops at the PROBEFIELDS freeze, g_geoPoints does NOT (probe.cpp has no shadow for
+# it), so ticks/points divided a frozen numerator by a live denominator.  A 60 s run past a
+# 3000-field window reported 199 us per edge point where the truth is ~930.
+# ⇒ divide TICKS-PER-PAINTED-FRAME (both frozen) by POINTS-PER-CALL (both live).  Never mix.
 if $pts > 0
-  printf "walks: %lu us per edge point (bearing+hypot+project+emit)\n", ($wt/$pts)*1000/4006
+  printf "walks: %lu us per edge point (bearing+hypot+project+emit)  [%lu cycles]\n", \
+    (($wt/g_phaseFrames)*1000/4006)/($pts/$f), \
+    ((($wt/g_phaseFrames)*1000/4006)/($pts/$f))*709/100
 end
 detach
 quit
