@@ -359,7 +359,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: todo cpu-lint macro-lint all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
+.PHONY: todo cpu-lint macro-lint all clean gen validate image runtime dashcode sweep endian-lint refloop bbcprof refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
         trackmenu trackmenu-fixture titlescreen \
@@ -1056,6 +1056,17 @@ TRACK  ?= 5
 refloop:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --dump=tmp/bbcref
+
+# ⭐⭐⭐ WHERE THE REAL BBC'S 97 ms GOES, PER ROUTINE — the denominator every "the port is Nx the
+# original" claim in docs/ has been dividing by a GUESS.  Brackets the engine's own routines on a
+# real BBC under jsbeeb, BY STACK POINTER (exact and nest-safe: the routine has returned when S
+# rises back past its entry value), and reports subtree cycles per frame beside the port's phase
+# row.  Same semantics as an Amiga phase bracket, which is what makes the two comparable.
+# ⚠ Read it against `make refloop`'s own frame median, printed directly above it, and remember
+# the nested rows are INSIDE build_track_geometry's — do not add the column up.
+bbcprof:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --profile --dump=tmp/bbcprof
 
 # ⭐⭐ THE ONE GATE ON A HOOK SEAM'S PATCHED ARM.  `validate`, `determinism` and `-drive` all race
 # SILVERSTONE, and Silverstone patches nothing; `tracks` proves an expansion circuit's bytes land

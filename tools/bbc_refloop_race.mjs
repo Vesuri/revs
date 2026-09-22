@@ -387,6 +387,40 @@ let sessionEntries = 0,
     frames = 0,
     spacebarPrompts = 0;
 const frameCycles = [];
+
+/* ── ⭐⭐⭐ `--profile` : WHERE THE REAL BBC'S 97 ms ACTUALLY GOES, PER ROUTINE ──────────────
+   The frame cost above has been the campaign's yardstick for days, but every "the port is N x
+   the original" claim divides one of OUR per-routine numbers by a GUESSED share of it.  This
+   measures the share.
+
+   ⭐ Bracketed BY STACK POINTER, which makes it exact and nest-safe without a return-address
+   table: at the entry PC the JSR's return address is already pushed, so the routine has
+   returned exactly when S has risen back past its entry value.  The cost is therefore the
+   SUBTREE — the same thing an Amiga phase bracket measures, which is what makes the two
+   columns comparable at all.
+   ⚠ An interrupt taken inside the routine pushes 3 bytes (S falls) so it cannot close the
+   bracket early, and its time lands in the subtree — again exactly as the Amiga side charges
+   the VERTB ISR to whatever phase it preempted.  Symmetric, and stated rather than hidden.
+   ⚠ Reported as a MEDIAN over settled frames for the same reason the frame cost is: the
+   drive-in and the engine's crash holds are a different workload. */
+const PROFILE_ROUTINES = [
+    [0x24f6, "build_track_geometry", "ph5"],
+    [0x1a20, "draw_road",            "ph11"],
+    [0x7be2, "view_paint_lines",     "ph24+33+32"],
+    [0x22ff, "road_edge_start",      "(inside ph5)"],
+    [0x2145, "bearing_to_section",   "(inside ph5)"],
+    [0x2285, "project_point",        "(inside ph5)"],
+    [0x0ca5, "point_distance_hypot", "(inside ph5)"],
+    [0x1e15, "fill_dash_edge_columns", "ph18"],
+    [0x46a1, "apply_driving_model",  "ph4"],
+    [0x2637, "move_and_draw_cars",   "ph17"],
+];
+const profileOn = argv.includes("--profile");
+/* pc -> {name, note, open:[{sp,t0}], frameCycles:<cycles this frame>, per:[] , calls:[] } */
+const profState = new Map();
+if (profileOn)
+    for (const [pc, name, note] of PROFILE_ROUTINES)
+        profState.set(pc, { name, note, open: [], cur: 0, curCalls: 0, per: [], calls: [] });
 let numAsks = 0,
     numValidations = 0,
     numRejects = 0,
@@ -402,6 +436,21 @@ let ringAt = 0,
     engineInsns = 0;
 
 tm.processor.debugInstruction.add((addr) => {
+    if (profileOn) {
+        /* close first: an entry PC reached while a frame of the SAME routine is open is a
+           genuine re-entry, and closing on this instruction would swallow it. */
+        for (const st of profState.values()) {
+            while (st.open.length && tm.processor.s >= st.open[st.open.length - 1].sp + 2) {
+                const fr = st.open.pop();
+                if (st.open.length === 0) st.cur += cpuCycles() - fr.t0;   /* subtree, once */
+            }
+        }
+        const st = profState.get(addr);
+        if (st) {
+            if (st.open.length === 0) st.curCalls++;
+            st.open.push({ sp: tm.processor.s, t0: cpuCycles() });
+        }
+    }
     if (traceEdge && addr === 0x23c0 && frames === memAtFrame) {
         const pk = (a) => tm.processor.peekmem(a);
         const w = (a) => pk(a) | (pk(a + 1) << 8);
@@ -475,6 +524,11 @@ tm.processor.debugInstruction.add((addr) => {
             // the 50 Hz body and all.  Everything else this project measures is the port's
             // cost with nothing to compare it to.
             frameCycles.push(cpuCycles());
+            if (profileOn)
+                for (const st of profState.values()) {
+                    st.per.push(st.cur); st.calls.push(st.curCalls);
+                    st.cur = 0; st.curCalls = 0;
+                }
             // ⭐ --peek=a,b,... : the TUPLE of those cells sampled once a frame, histogrammed.
             // --watch answers "who wrote it"; this answers "did these two ever hold X at the same
             // time", which no per-address watch can (surface_change_0 AND _1 both $FF is what
@@ -1772,6 +1826,29 @@ if (frameCycles.length > 12) {
                 `   (mean ${ms(mean)} ms, p10 ${ms(gaps[Math.floor(gaps.length * 0.1)])}, ` +
                 `p90 ${ms(gaps[Math.floor(gaps.length * 0.9)])})`);
     console.log(`   ⭐ This is the number the Amiga port's bracketed frame must be quoted against.`);
+
+    // ── the per-routine share of that frame ───────────────────────────────────────────────
+    if (profileOn) {
+        const med = (a) => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+        const frameMed = med(gaps);
+        console.log(`\nWHERE THAT FRAME GOES — per routine, SUBTREE cycles, median over the same window:`);
+        console.log(`   ${"routine".padEnd(24)} ${"calls/f".padStart(8)} ${"cyc/frame".padStart(10)}` +
+                    ` ${"ms".padStart(6)} ${"% frame".padStart(8)}  ${"cyc/call".padStart(9)}  port row`);
+        for (const [pc] of PROFILE_ROUTINES) {
+            const st = profState.get(pc);
+            const per = st.per.slice(8), cl = st.calls.slice(8);
+            if (!per.length) continue;
+            const m = med(per), c = med(cl);
+            console.log(`   ${st.name.padEnd(24)} ${String(c).padStart(8)} ${String(m).padStart(10)}` +
+                        ` ${ms(m).padStart(6)} ${((m / frameMed) * 100).toFixed(1).padStart(7)}%` +
+                        `  ${String(c ? Math.round(m / c) : 0).padStart(9)}  ${st.note}`);
+        }
+        console.log(`   ⚠ SUBTREE cost, so the nested rows (road_edge_start, bearing_to_section,`);
+        console.log(`     project_point, point_distance_hypot) are already INSIDE`);
+        console.log(`     build_track_geometry's row — do not add the column up.`);
+        console.log(`   ⚠ An interrupt taken inside a routine is charged to it, exactly as the`);
+        console.log(`     Amiga side charges the VERTB ISR to whatever phase it preempted.`);
+    }
 
     // The calibration, printed beside it so the figure is never read without it.
     if (paintCycles.length > 20) {
