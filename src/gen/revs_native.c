@@ -3064,6 +3064,15 @@ static void view_own_low(ViewState* v)
 }
 #endif /* REVS_TERRAIN_LOW */
 
+#ifndef SURFACE_BYTE_0
+/* ⚠ `make TERRAINLOW=0` LEAVES THE CHAIN IN CHARGE and compiles the whole low block out —
+   SURFACE_BYTE_* with it — but `update_grip_limits` reads the road surface unconditionally, so
+   that arm failed to compile with eight cascading "undeclared" errors a long way from the cause.
+   On the chain's arm the frame-buffer byte IS the only copy, which is the pre-§2a behaviour. */
+#define SURFACE_BYTE_0  surface_change_0
+#define SURFACE_BYTE_1  surface_change_1
+#endif
+
 /* ⭐⭐⭐ THE SHORT PHASES' DRIVERS, WITHOUT THE CHAIN AND WITHOUT THE CALL (§10p, `make VIEWOWN=1`)
    ============================================================================================
    `view_own_run` above deleted `paint_cells`'s frame from the four chain entries phases 2 and 3
