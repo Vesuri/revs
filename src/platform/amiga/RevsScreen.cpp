@@ -1549,7 +1549,16 @@ static void revs_cock_line(const uint8_t* base, uint8_t* cock, unsigned char mod
     uint8_t* const q = cock + revs_mulu16((uint16_t)y, kRowBytes);
     const uint8_t* const r = s_cockRun[y - COCK_Y0];
     const unsigned a0 = r[0], a1 = r[1], b0 = r[2], b1 = r[3];
+    /* ⭐⭐⭐ AN OWNED LINE IS STILL A RACE-VIEW LINE.  Ownership expresses itself as
+       `m_lineMode = 0` — the decode's "write nothing" — so a bare `mode == 5` test reads every
+       row §2a claims as "not the race view" and leaves the WHOLE layer transparent: PF2 came
+       back all-zero over 117..157 and the cockpit vanished into the road behind it.  The band
+       schedule and the ownership map are two different questions and this one needs both. */
+#ifdef REVS_SPAN_OWN
+    const int live = (mode == 5u) || g_plotOwn[y] != 0u;
+#else
     const int live = (mode == 5u);
+#endif
     unsigned c, i;
     for (c = 0; c < BBC_SCREEN_CELLS; c++) {
         uint8_t lo = 0, hi = 0;                        /* transparent: PF1 shows through */
