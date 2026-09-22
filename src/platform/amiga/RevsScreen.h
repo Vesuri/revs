@@ -176,4 +176,5 @@ private:
        ⚠ `aligned(4)` is load-bearing, not a hint: buildLineModes fills this table a LONGWORD at
        a time (208 byte stores measured 1.64 ms/frame — probe.h §DECODESPLIT). */
     unsigned char m_lineMode[208] __attribute__((aligned(4)));
+
 };

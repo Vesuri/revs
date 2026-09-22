@@ -286,6 +286,28 @@ endif
 # re-expands it (RevsScreen.cpp says it at the skip).
 # ⚠ `g_decodeSkips` must be non-zero or the arm is doing nothing; `g_decodeCells` reads 0 on a
 # skipped frame, so read `g_decodeCellsTotal` instead when checking the conversion still happens.
+# ⭐⭐⭐ `make DECODEFULL=1` — THE CONTROL ARM FOR A DELETED CONVERSION.  By default the frame
+# buffer -> bitplane conversion is a COLD-START path: it runs twice per entry into the race view
+# and never again, because every display line has a painter and the 64-line sky band is flat
+# (RevsScreen.cpp states it block by block at the conversion).  This restores the per-frame
+# conversion and the ownership walk that fed it — the A/B control, and the fallback if a circuit
+# ever reports a late hole.
+# ⚠ THE GATE IS `DECODEHOLES=1` BELOW, not an eyeball: it counts the lines that are neither owned
+# nor flat.  Measured on a 337-frame driving run: 2 hole frames, both cold, none after.
+ifdef DECODEFULL
+EXTRA_DEFINES += -DREVS_DECODE_FULL
+endif
+
+# ⭐⭐⭐ `make DECODEHOLES=1` — THE GATE ON THAT DELETION.  Counts the display lines that are
+# neither owned by a painter nor inside a flat band, per frame, and records the LAST frame one
+# appeared at.  Cold frames at the top of a run own nothing, so the licensing answer is "holes
+# stop at frame N and never come back"; a hole late in a run is a region with no painter and
+# forbids DECODENOCONV.  A check build: this walk IS the ~1 ms the deletion collects.
+ifdef DECODEHOLES
+EXTRA_DEFINES += -DREVS_DECODE_HOLES
+PROBE_SYMS_DECODEHOLES = g_decodeHoleFrames g_decodeHoles g_decodeHoleLastAt g_decodeHoleLine
+endif
+
 ifdef DECODESKIP
 EXTRA_DEFINES += -DREVS_DECODE_SKIP
 PROBE_SYMS_DECODESKIP = g_decodeSkips
@@ -1428,7 +1450,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
+PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEHOLES) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)

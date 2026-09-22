@@ -271,6 +271,28 @@ volatile unsigned long g_cockpitMaskBad    = 0;
    conversion has nothing to do this frame.  `g_decodeSkips` counts the frames it saved. */
 static unsigned char   g_decodeNothingToDo = 0;
 volatile unsigned long g_decodeSkips       = 0;
+/* ⭐⭐⭐ THE GATE ON DELETING THE CONVERSION ALTOGETHER (`DECODEHOLES=1`).  A HOLE is a display
+   line that is neither OWNED by a painter nor inside a FLAT band — i.e. the one thing the
+   conversion still had to do, and the only way `DECODENOCONV` can show stale pixels.  Counted
+   rather than assumed, with the LAST frame a hole appeared at: the cold frames at the top of a
+   run have no ownership yet, so "holes only before frame N" is the answer that licenses the
+   deletion and "holes at frame 3000" is the answer that forbids it.
+   ⚠ A check build only — this walk is precisely the ~1 ms the deletion collects. */
+volatile unsigned long g_decodeHoleFrames  = 0;
+volatile unsigned long g_decodeHoles       = 0;
+volatile unsigned long g_decodeHoleLastAt  = 0;   /* this pass's own frame count at the last one */
+static   unsigned long g_decodeHolesSeenFrames = 0;
+/* ⭐⭐⭐ HOW MANY MORE FRAMES MUST BE EXPANDED OUT OF `mem[]` — normally ZERO, because every
+   display line has a painter (see the conversion below).  Armed to 2, once per BUFFER, whenever
+   the front end is up: the race view's bitplanes are nobody's while MODE 7 is showing, so the
+   first frames after it comes down have no painted picture to keep.
+   ⚠ Starts armed, for the first entry into the race — a `STRAIGHT_TO_RACE` build has no teletext
+   frame before its first decode.
+   ⚠ File-static rather than a member: the one RevsScreen lives inside a function-local static,
+   and a member initialiser there makes GCC emit `__cxa_guard_acquire`, which this freestanding
+   link has no runtime for. */
+static   unsigned char s_coldConvert = 2u;
+volatile unsigned short g_decodeHoleLine   = 0xFFFFu;
 /* A silhouette table entry that did not decode to a chain slot: the layer degrades to "no car
    on this line" (PF1 shows, i.e. today's picture) rather than masking the wrong cells. */
 volatile unsigned long g_cockpitBadSlot    = 0;
@@ -1858,7 +1880,23 @@ void RevsScreen::decode()
     /* ⭐ MODE 7 IS A DIFFERENT PASS ENTIRELY, and it must come first: the race decode below
        reads the BBC frame buffer $5A80-$7AFF, which out of a race holds nothing it should be
        drawing, while $7C00-$7FFF holds the teletext page instead of the dashboard overlay. */
-    if (tt_active()) { decodeTeletext(); return; }
+    if (tt_active()) {
+        /* ⭐⭐⭐ RE-ARM THE COLD CONVERSION.  While the front end is up the race view's bitplanes
+           are not being painted by anybody, so the first frames after it comes down must be
+           expanded out of `mem[]` once per BUFFER — the painters only claim a line once they
+           have run, and the measured hole census says that is exactly two decodes (below). */
+        s_coldConvert = 2u;
+        decodeTeletext();
+        return;
+    }
+#ifdef REVS_DECODE_SPLIT
+    /* ⚠ AFTER the teletext test, and that placement is the measurement.  Bracketed BEFORE it,
+       this row read 2.72 ms with calls=345 against 337 frames: the front-end frames at the top of
+       the window return early, so a whole `decodeTeletext()` landed in it eight times and was
+       amortised over every race frame.  The `phase 27 remainder` it explains was never race
+       work. */
+    PROBE_PHASE(DEC_PHASE_ENTRY);
+#endif
 
     Bitmap* bm = m_bitmap[m_back];
     if (!bm) return;
@@ -1886,7 +1924,24 @@ void RevsScreen::decode()
     PROBE_PHASE(DEC_PHASE_OWN);
 #endif
 
-#ifdef REVS_SPAN_OWN
+#ifdef REVS_DECODE_HOLES
+    {
+        unsigned y, holes = 0;
+        g_decodeHolesSeenFrames++;
+        for (y = 0; y < kH; y++)
+            if (m_lineMode[y] != 0u && !g_plotOwn[y]) {
+                if (!holes && g_decodeHoleLine == 0xFFFFu) g_decodeHoleLine = (unsigned short)y;
+                holes++;
+            }
+        if (holes) {
+            g_decodeHoleFrames++;
+            g_decodeHoles     += holes;
+            g_decodeHoleLastAt = g_decodeHolesSeenFrames;
+        }
+    }
+#endif
+
+#if defined(REVS_SPAN_OWN) && defined(REVS_DECODE_FULL)
     /* ⭐⭐⭐ THE SPAN EMITTER OWNS THESE DISPLAY LINES — EXPRESSED AS MODE 0, WHICH THE DECODE
      * ALREADY UNDERSTANDS AS "WRITE NOTHING" (revs_expand_cell's `if (!uniform && m == 0)
      * continue`).  Four properties fall out of the existing machinery for free, and each one is
@@ -2099,10 +2154,29 @@ void RevsScreen::decode()
        conversion runs — the mode-change bitmask then sees `s_shadowMode` disagree and re-expands
        the row, which is the owned -> not-owned transition already written and already tested
        (§SPAN_OWN's fourth property). */
-#ifdef REVS_DECODE_SKIP
-    if (g_decodeNothingToDo) { g_decodeSkips++; g_decodeCells = 0; }
-    else
-#endif
+#ifndef REVS_DECODE_FULL
+    /* ⭐⭐⭐ THE CONVERSION IS A COLD-START PATH NOW, NOT A PER-FRAME PASS.  Every display line has
+       a PAINTER: 0..18 and 192..207 the glyph delta base, 83..116 the span sweep, 117..157 the low
+       painter plus the cockpit layer, 158..191 the dash base and its rectangles — and the 64-line
+       sky band is FLAT, i.e. its four palette entries are equal, so no plane bit in it is
+       observable.  What is left for `mem[]` to supply is the frames BEFORE any painter has run,
+       once per buffer.
+       ⚠⚠ MEASURED, NOT ASSUMED, and the instrument is `make DECODEHOLES=1`: it counts the lines
+       that are neither owned nor flat, per frame, and records the last frame one appeared at.
+       Over a 337-frame driving run it reads `hole frames=2, holes=276, last at decode #2` — the
+       two cold frames and nothing after them.  A hole late in a run is a region with no painter
+       and this arm would show it stale pixels; that is what the check build is for.
+       ⚠ `make DECODEFULL=1` restores the per-frame conversion and the ownership walk that fed
+       it — the control arm for the A/B, and the fallback if a circuit ever reports a late hole. */
+    if (s_coldConvert) {
+        s_coldConvert--;
+        g_decodeCells       = (uint16_t)convertRace(dst, 0, 0);
+        g_decodeCellsTotal += g_decodeCells;
+        g_decodeFullFrames++;
+    } else {
+        g_decodeCells = 0;
+    }
+#else
     {
 #ifdef REVS_NO_DIRTY
         const unsigned cells = convertRace(dst, 0, 0);
@@ -2114,8 +2188,9 @@ void RevsScreen::decode()
         if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
         if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
     }
+#endif
 #ifdef REVS_DECODE_SPLIT
-    PROBE_PHASE(PROBE_PHASE_DECODE);   /* the remainder goes back on the original row */
+    PROBE_PHASE(DEC_PHASE_POST);       /* the counters and the oracles get their own row */
 #endif
 
 #if defined(REVS_DUAL_PLAYFIELD) && !defined(REVS_DUAL_NOCONVERT)
@@ -2123,7 +2198,11 @@ void RevsScreen::decode()
        same mem[] and this is where mem[] is final for the frame. */
     PROBE_PHASE(PROBE_PHASE_COCKPIT);
     revs_cockpit_paint(base, (uint8_t*)m_cockpit->data, m_lineMode);
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(DEC_PHASE_POST);
+#else
     PROBE_PHASE(PROBE_PHASE_DECODE);
+#endif
     g_cockpitCells       = (uint16_t)s_cockCells;
     g_cockpitCellsTotal += s_cockCells;
 
@@ -2178,6 +2257,7 @@ void RevsScreen::decode()
         for (y = COCK_Y0; y <= COCK_Y1; y++) {
             const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
             const unsigned lo  = revs_mulu16((uint16_t)y, kRowBytes);
+            const uint8_t* const r = s_cockRun[y - COCK_Y0];
             unsigned c;
             if (m_lineMode[y] != 5u) continue;
             for (c = 0; c < BBC_SCREEN_CELLS; c++) {
@@ -2191,6 +2271,26 @@ void RevsScreen::decode()
                    rather than being widened. */
                 if (y >= REVS_NEEDLE_Y0 &&
                     c >= REVS_NEEDLE_C0 && c < REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS) continue;
+#endif
+                /* ⭐⭐⭐ ...AND THE SECOND PLACE `mem[]` STOPS BEING THE REFERENCE, which is the
+                   whole terrain half of this band.  PF1's cells inside the two runs are painted
+                   by the SPAN SWEEP, which runs after present()'s flip — so the bytes in this
+                   buffer describe an earlier `mem[]` than the one being read here.  While the
+                   conversion still ran every frame it re-expanded them and hid the skew; with
+                   the conversion gone (see it, above) the skew is the design, and comparing them
+                   reads a moving road as 3430 wrong pixels.  What this oracle still covers is
+                   what it was written for: the CAR — PF2's own cells, painted from the same
+                   `mem[]` this decode is reading.
+                   ⚠ Measured before narrowing it, so the exclusion is a fact and not a hope:
+                   of 3498 mismatching pixels 3430 were inside a run, and every one of the other
+                   68 was in the needle column or the tyre-sprite footprint below. */
+                if (c >= r[0] && c <= r[1]) continue;
+                if (c >= r[2] && c <= r[3]) continue;
+#ifdef REVS_TYRE_SPRITES
+                /* The tread is masked out of BOTH planes and drawn by a SPRITE, so `mem[]`'s own
+                   dither is left in the reference with nothing to match it (RevsTyres.h). */
+                if (y >= REVS_TYRE_Y0 && y < REVS_TYRE_Y0 + REVS_TYRE_LINES &&
+                    (c <= REVS_TYRE_L_CELL + 1u || c >= REVS_TYRE_R_CELL)) continue;
 #endif
                 const uint8_t b     = cbase[off + c * 8u];
                 const uint8_t p1lo  = dst[lo + c],        p1hi = dst[lo + c + kPlaneGap];
@@ -2270,7 +2370,7 @@ void RevsScreen::decode()
 #endif
 #endif
 #ifdef REVS_DECODE_SPLIT
-    PROBE_PHASE(PROBE_PHASE_DECODE);
+    PROBE_PHASE(DEC_PHASE_TAIL);
 #endif
 
 #ifdef REVS_DIRTYCHECK
@@ -2399,4 +2499,7 @@ void RevsScreen::decode()
 #endif  /* REVS_FILLWATCH */
 
     m_ready = true;
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(PROBE_PHASE_DECODE);   /* what is left on 27 is the switches and render() */
+#endif
 }

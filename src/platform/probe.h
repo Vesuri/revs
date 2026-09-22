@@ -121,7 +121,7 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
    plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry, 44-49
    ROADSPLIT's of draw_road and 50-54 DECODESPLIT's of RevsScreen::decode() (see the bottom of
    this file), so the table must be sized past them. */
-#define PROBE_PHASES 56
+#define PROBE_PHASES 59
 
 /* ⭐ The DISPLAY-frame wait, bracketed on its own.
  *
@@ -475,3 +475,10 @@ extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points st
 #define DEC_PHASE_MODES   53   /* buildLineModes — us -> display lines, 208 mode bytes       */
 #define DEC_PHASE_OWN     54   /* the ownership/carve loops over the 208 display lines       */
 #define DEC_PHASE_RECTS   55   /* §12c's dynamic-rectangle re-expand over the owned band     */
+/* ⭐ ...AND THE THREE THAT CARVE THE `phase 27 remainder` ROW, which was 3.14 ms and the biggest
+   unattributed block left in the decode once the conversion stopped being called.  Everything in
+   decode() is inside SOME bracket now, so 27 keeps only the render()-level code around the call
+   and the switches' own cost — i.e. a 27 that does NOT fall to ~0 is the instrument, not code. */
+#define DEC_PHASE_ENTRY   56   /* decode() entry: the teletext test and the bitmap fetch     */
+#define DEC_PHASE_POST    57   /* after the conversion: the cockpit counters and the oracles */
+#define DEC_PHASE_TAIL    58   /* after the rectangles: DIRTYCHECK / FILLWATCH and m_ready   */
