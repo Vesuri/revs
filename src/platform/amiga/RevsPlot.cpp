@@ -1027,8 +1027,11 @@ static const unsigned char kDeltaBlock[2][2] = { { 0u, 18u }, { 192u, 208u } };
 
 /* ⭐⭐⭐ THE OWNED-ROW KIND TABLE — the domain's whole per-row state, and it is ONE byte load on
    every path that used to ask a question:
-     0    this row is the decode's.
-     4/5  the renderer owns it, and this is the MODE its bytes expand under.
+     0    NOT THIS DOMAIN'S ROW — nothing here paints it.  (It used to read "the decode's", and
+          that vocabulary is dead: there is no per-frame conversion any more, so a row this
+          table calls 0 while `revs_plot_own_reset` claims it is painted by NOBODY.  That
+          disagreement is exactly the bug the signed clamp below fixes.)
+     4/5  this domain owns it, and this is the BBC MODE its bytes expand under.
    It replaces three separate lookups, two of them measured expensive: a block test per mirrored
    byte, `plotModeOf`'s backwards band scan per mirrored byte, and a staleness test that asked the
    band record twice per OWNED ROW (two five-entry scans a row — +2.1 ms in phase 24 at 34 owned
@@ -1051,12 +1054,23 @@ static int deltaKindRebuild(void)
         const unsigned lo = kDeltaBlock[blk][0], hi = kDeltaBlock[blk][1];
         for (n = 0; n < s_bandCount; n++) {
             const uint8_t kind = (s_bandMode[n] == 4u) ? 4u : 5u;
-            unsigned bs = (unsigned)(int)s_bandFirst[n];
-            unsigned be = (n + 1u < s_bandCount) ? (unsigned)(int)s_bandFirst[n + 1u]
-                                                 : (unsigned)BBC_SCREEN_HEIGHT;
-            unsigned y;
-            if (bs < lo) bs = lo;
-            if (be > hi) be = hi;
+            /* ⚠⚠⚠ SIGNED, AND THAT IS THE WHOLE BUG THIS ONCE WAS: A BAND MAY START ABOVE THE
+               TOP OF THE DISPLAY.  Band 0 is the pre-display band and its first line is a
+               NEGATIVE display line — measured `first = -26` in a Silverstone race.  Clamped in
+               UNSIGNED space, `(unsigned)-26` is 0xFFFFFFE6, `if (bs < lo)` with `lo = 0` is
+               FALSE, and the span collapses to nothing: display lines 0..18 got NO kind at all,
+               so `plotDeltaBaseRow` took its MODE 5 arm on a MODE 4 row and the lap-time text at
+               the top of the screen came out at DOUBLE WIDTH, while `revs_plot_byte`'s `if
+               (!kind) return` stopped mirroring the glyphs into the planes entirely.
+               ⚠ It was invisible until row ownership stopped the conversion re-expanding those
+               rows every frame — `revs_plot_own_reset` claims 0..18 whatever this table says, so
+               the two disagreed and the conversion was covering for it. */
+            int bs = (int)s_bandFirst[n];
+            int be = (n + 1u < s_bandCount) ? (int)s_bandFirst[n + 1u]
+                                            : (int)BBC_SCREEN_HEIGHT;
+            int y;
+            if (bs < (int)lo) bs = (int)lo;
+            if (be > (int)hi) be = (int)hi;
             for (y = bs; y < be; y++)
                 if (s_deltaKind[y] != kind) { s_deltaKind[y] = kind; changed = 1; }
         }
@@ -1196,7 +1210,7 @@ static void plotDynRects(void)
                                   + (y & 7u) + (c0 << 3);                  /* + cell * 8 */
             uint8_t* const p = s_target + rowOff;
             unsigned c;
-            if (!kind) continue;                       /* still the decode's row */
+            if (!kind) continue;                       /* not this domain's row      */
             if (kind == 4u) {
                 for (c = c0; c <= c1; c++, src += BBC_SCREEN_LINES) {
                     p[c] = 0; p[c + kPlaneGap] = *src;
@@ -1357,7 +1371,7 @@ extern "C" void revs_plot_byte(unsigned short addr, unsigned char value)
        map is built: only `revs_plot_own_reset` writes this table, under the same two conditions
        (`s_plane[]` set, which is what builds the map) and immediately before laying the base. */
     kind = s_deltaKind[s_lineOf[off]];
-    if (!kind) return;                                        /* the decode's row */
+    if (!kind) return;                                        /* not this domain's row */
     po = s_planeOff[off];
     if (kind == 4u) { lo = 0; hi = value; }
     else { lo = g_bbcExpandLo[value]; hi = g_bbcExpandHi[value]; }
