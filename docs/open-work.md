@@ -26,10 +26,22 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 153.78 ms** for the SHIPPING DEFAULT — measured
-2026-09-22 at `51108ca` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
-HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240439838`, `loopFrames=340`,
-`FRAME = 169 ms` wall − phase 0).
+**Where the frame stands:** **Σ(1..39) − ph28 = 154.16 ms** for the SHIPPING DEFAULT — measured
+2026-09-22 at `6b7365c` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
+`FRAME = 169 ms` wall − phase 0). ⚠ `ph34` is a ONE-SHOT (`calls=1`), so the RECURRING frame is
+**151.5 ms**.
+⭐⭐⭐ **AND THE PRODUCERS ARE NOW 61 OF IT AGAINST THE REAL BBC'S 97 ms WHOLE FRAME — which is
+what bounds every plan below.** `build_track_geometry` + `draw_road` = **61.14 ms** to turn 27 edge
+points into 42 spans, and the 6502 did geometry, road AND painting in 97. Delete every millisecond
+the port adds that the BBC never paid (the consumer's 41.7, `prepareFrame`'s 8.5, the MOS input
+dispatch, the dash-edge walk) and the frame lands at **~90 ms, i.e. 0.93× the original**. ⇒ **48 ms
+needs the producers roughly halved and 40 ms needs them at a third — there is no arrangement of
+port-side work that reaches either.** That is entry 3, and it is a VISUAL-FIDELITY decision
+(fewer than 27 points, fewer than 42 spans), not an optimisation.
+⭐ **And `ph26`+`ph29` (12.47 ms, the 50 Hz drain) SELF-HEALS as the frame shrinks** — the body is
+a 50 Hz tick, so a 154 ms frame drains 8.78 of them and a 40 ms frame would drain 2. Never count it
+as a target; never count its disappearance as a win either.
 ⭐⭐⭐ **THE DEFAULT NOW CARRIES THE WHOLE STACK — `DUALPF`, `TYRESPRITE` and `LOWOWN` are on, and
 there is no per-frame `mem[]` → bitplane conversion left (§5b).** Against the previous default
 (`DUALPF=0 TYRESPRITE=0`, which turned ownership of 117..157 off with them) that is
@@ -55,16 +67,28 @@ the framerate is quantised to `50/N` and cannot see it.
 is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phases 1..5 AND the
 `frozen=` gate line, and a total summed from it reads ~36 ms low. It has now cost two bad diffs.
 
-| ms/frame | phase(s) | what |
-|---:|---|---|
-| 40.8 | 24+33+32 | `view_paint_lines` — the consumer (20.55 scan + 14.56 low + 5.70) |
-| 34.4 | 11 | `draw_road` |
-| 26.6 | 5 | `build_track_geometry` |
-| 15.8 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart; **11.9 with §2a on** |
-| 12.0 | 28 | the vblank spin — the `50/N` pad, not a target |
-| 11.3 | 26 | the 50 Hz drain |
-| 6.0 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
-| 5.1 | 3 | one of entry 7's never-profiled rows |
+| ms/frame | phase(s) | what | split instrument |
+|---:|---|---|---|
+| 34.47 | 11 | `draw_road` — 84% the span rasteriser | `ROADSPLIT=1` ✓ current |
+| 26.67 | 5 | `build_track_geometry` — 94% the two distance walks | `GEOSPLIT=1` ✓ current |
+| 20.58 | 24 | `view_paint_lines` phase 1 — the scan | `VIEWSPLIT=1` ⚠ **predates DUALPF/LOWOWN** |
+| 15.59 | 28 | the vblank spin — the `50/N` pad, not a target | — |
+| 14.76 | 33 | ...phase 2, the low block | ⚠ **never split since `LOWOWN`** |
+| 12.47 | 26+29 | the 50 Hz drain — 8.78 body ticks a frame, 1.42 ms each | ⛔ **NONE, ever** |
+| 8.53 | 27+30 | `RevsScreen::prepareFrame()` — all that is left of the decode (§5b) | `DECODESPLIT=1` ✓ current |
+| 5.93 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED | — |
+| 5.65 | 32 | ...the consumer's tail | ⚠ with 24/33 |
+| 5.11 | 14+15 | `build_road_sign` + `draw_track_object` — ONE billboard | — |
+| 5.10 | 3 | `read_driving_controls` — 7 MOS key tests; **a named unbuilt fix, §7** | — |
+| 3.61 | 4 | `apply_driving_model` — real 6502 arithmetic, the BBC paid it too | — |
+| ~7 | rest | twenty rows under 1.3 ms each (§7) | — |
+
+⭐⭐ **WHICH SPLITS ARE WORTH RE-READING, and it is not the big two.** The producers were not
+touched by the ownership campaign and their splits still describe them; the CONSUMER's do not —
+`VIEWSPLIT` was last read before the cockpit became a playfield and before `LOWOWN` moved the
+boundary cells out of the terrain painter, and its 41.0 ms is the block §12's directive says should
+now be *simple*. And `ph26`+`ph29` is the third-largest block in the frame with **no instrument at
+all**. Those two, in that order.
 
 ### 1. ⛔ The TRANSPOSED SCAN — **10.00 ms, and BOTH routes to it are now CLOSED**
 `docs/perf-method.md` §the transposed scan is at its floor, and §producer-emitted source events.
