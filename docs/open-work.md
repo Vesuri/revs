@@ -628,12 +628,18 @@ BBC's frame (65%) against **101.9 ms of ours (68%), = 1.61×**.
 rather than a wall, and ⛔ **entry 3 is NOT forced: "fewer points / fewer spans" is no longer the
 only route and must not be proposed as one.**
 
-⚠⚠ **ONE DISCREPANCY THIS TURNED UP AND DID NOT EXPLAIN — it is the next thing to settle.**
-`move_and_draw_cars` is **13094 cycles (6.5 ms) on the BBC** where the port's ph17 is **0.14 ms**.
-Its own `symbols.csv` note says it returns immediately during practice. So EITHER the reference
-session is not a practice session — which would contaminate every row above, and the three view
-rows most — OR the port skips work the real machine does. Settle it before quoting the table
-again: check `qualify_minutes` in the reference at a frame boundary.
+⚠⚠⚠ **AND ONE DISCREPANCY IT TURNED UP THAT IS NOW A FAITHFULNESS ITEM, NOT A PERF ONE.**
+`move_and_draw_cars` is **13094 cycles (6.5 ms) on the real BBC** where the port's ph17 is
+**0.14 ms** — 46×. The contamination theory is **refuted**: `--peek=0x5f3b` reads `qualify_minutes
+= $FF for all 157 settled frames`, so the reference is a PRACTICE session exactly like the port's
+baseline, and every row in the table above is comparable. ⇒ the 6.5 ms is real practice-session
+work, and either `symbols.csv`'s note is wrong (it says the routine "returns immediately when
+qualify_minutes is negative", and `$FF` is negative) or **the port skips ~6.5 ms of work the real
+machine does every frame.**
+⚠ `make viewdiff` would not see it: it gates display lines 82..166, and an empty practice grid
+puts no car there — the same blind spot §2c already names for the object plotter. **Read the real
+BBC's path through `$2637` before trusting either the note or the port's early return**, and fix
+whichever is wrong; a port that is fast because it does less is not a port.
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
