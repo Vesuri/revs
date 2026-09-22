@@ -597,24 +597,43 @@ per-frame scan over all 208 display lines that exists only because ownership exi
 **3.02 ms remainder is unattributed**. Neither has ever been read. Cheap and certain, unlike the
 rows.
 
-### 8. ⭐⭐⭐ PROFILE THE REAL BBC PER ROUTINE — the measurement every size in this file rests on
-`make refloop` races a real BBC under jsbeeb and measures its **frame** (97.0 ms, calibrated to
-0.16%). It has never been asked **where that frame goes.** Every "the port is Nx the original"
-claim in this project, including today's producer-parity reading above, divides our per-routine
-number by a GUESSED share of the 6502's frame — so the whole ranking rests on an [INFERRED]
-denominator.
-**What it would settle, and nothing else can:** whether `build_track_geometry`'s 26.6 ms and
-`draw_road`'s 34.4 have any headroom at all, or whether they are already at the 6502's own cost
-for the same 27 points and 42 spans. Those two rows are **61 of the frame's 149 ms**, so the
-answer decides whether the queue has 60 ms of possible work in it or ~0.
-**Shape:** jsbeeb already executes every instruction with the PC in hand; sample or bracket it at
-`$24F6` (build_track_geometry) and `$1A20` (draw_road) and report 6502 cycles per call, the same
-way `make fbwrites` already attributes every frame-buffer store to its PC. The per-routine counts
-are already known on our side (27 points, 42 spans, 58 columns), so the comparison is per UNIT,
-not per frame.
-⚠ Do this BEFORE any further producer work. If the 6502 spent 50 ms on the same two passes, the
-producers are closed for good and the port's remaining 88 ms is entirely port-added; if it spent
-20, there is a 40 ms defect in them that no objdump has found because every body reads clean.
+### 8. ✅ CLOSED — THE REAL BBC IS PROFILED PER ROUTINE (`make bbcprof`), AND IT RANKS EVERYTHING
+`make refloop` had measured the BBC's FRAME for days; this asks where that frame goes. Routines
+bracketed on a real BBC under jsbeeb **by stack pointer** (at the entry PC the return address is
+already pushed ⇒ returned exactly when S rises back past its entry value: exact, nest-safe, no
+return-address table), subtree cost, median over the same settled window. Same semantics as an
+Amiga phase bracket, which is what makes the columns comparable; an interrupt inside a routine is
+charged to it, exactly as the VERTB ISR is charged to whatever phase it preempts.
+
+| routine | BBC ms | port ms | ratio |
+|---|---:|---:|---:|
+| `build_track_geometry` (ph5) | 21.3 | 26.64 | 1.25× |
+| `draw_road` (ph11) | 18.6 | 34.41 | **1.85×** |
+| `view_paint_lines` (ph24+33+32) | 23.2 | 40.81 | **1.76×** |
+| `fill_dash_edge_columns` (ph18) | 7.0 | 5.94 | **0.85× — the port is FASTER** |
+| `apply_driving_model` (ph4) | 7.8 | 3.61 | **0.46× — 2.2× FASTER** |
+
+⭐⭐⭐ **THE PORT ALREADY BEATS THE 6502 BY UP TO 2.2× WHERE IT DOES ARITHMETIC IN NATIVE C, AND
+LOSES ONLY IN THE THREE ROUTINES THAT WALK `mem[]` BYTE BY BYTE.** ⇒ "a 68000 cannot beat a 6502
+per byte touched" is true and **irrelevant**: the machine was never the constraint, the
+byte-at-a-time REPRESENTATION is. ⛔ And the parity claim one commit earlier is retracted with it —
+it inferred the producers were at parity from an *assumed* 20-30% share; geometry is close at
+1.25×, `draw_road` is not.
+
+**The headroom, and it needs no visual-fidelity trade at all:** the view pipeline is 63.1 ms of the
+BBC's frame (65%) against **101.9 ms of ours (68%), = 1.61×**.
+- at mere 6502 PARITY on those three: **frame ~110 ms**
+- at the 2.16× the driving model already demonstrates: **frame ~77 ms**
+⇒ **48 ms needs ~3× the 6502 on the view pipeline** — hard, but it is an engineering number now
+rather than a wall, and ⛔ **entry 3 is NOT forced: "fewer points / fewer spans" is no longer the
+only route and must not be proposed as one.**
+
+⚠⚠ **ONE DISCREPANCY THIS TURNED UP AND DID NOT EXPLAIN — it is the next thing to settle.**
+`move_and_draw_cars` is **13094 cycles (6.5 ms) on the BBC** where the port's ph17 is **0.14 ms**.
+Its own `symbols.csv` note says it returns immediately during practice. So EITHER the reference
+session is not a practice session — which would contaminate every row above, and the three view
+rows most — OR the port skips work the real machine does. Settle it before quoting the table
+again: check `qualify_minutes` in the reference at a frame boundary.
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
