@@ -298,7 +298,19 @@ scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
 ⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
 `copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
-### 2a. ⭐⭐⭐ ROWS 117..157 — THE BIGGER OF THE DECODE'S TWO REMAINING PRIZES, ~7.2 ms
+### 2a. ⭐⭐⭐ ROWS 117..157 — MEASURED AT −1.92 ms AS BUILT, AND THE REST IS THE PAINTER'S SHAPE
+⭐⭐⭐ **MEASURED 2026-09-22 (`docs/span-render-plan.md` §12f): the decode gives −4.59 ms and the
+painter takes +2.54, net −1.92.** So the row-ownership half of this entry is DONE and behaves
+exactly as §12c's ceiling predicted; what is left is not ownership at all but the terrain
+renderer's SHAPE — it still paints two runs clipped to the car's silhouette with a composed
+boundary cell each, ~4 cells a segment, and `LOWDOUBLE=1` puts 22.06 of ph33's 24.63 in that
+painting. The dual playfield licenses one contiguous fill a line instead (§12f-i), which is the
+next step and is worth more than everything above it.
+⚠ **Still default OFF**: the five `s_cockDyn` rectangles (412 cells — the needle column, the tyre
+strips, the mirror corners) are painted by nobody with the rows owned. §12f-i enumerates the fee:
+the tyre strips are free under `TYRESPRITE=1`, the needle rectangle needs the static dash art laid
+into both PF1 buffers once, and the mirrors need the delta domain widened over 154..157.
+
 ⭐⭐⭐ **UNBLOCKED, 2026-09-21: the cockpit is now its own PLAYFIELD (`make DUALPF=1`,
 `docs/span-render-plan.md` §12e).** The car body used to belong to nobody once the sweep claimed
 these rows — the terrain painter clips to the silhouette and never paints inside it — and the

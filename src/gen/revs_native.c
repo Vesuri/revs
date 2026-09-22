@@ -2717,6 +2717,9 @@ static void revs_report_low(void)
             g_lowMismatch++;                                                    \
         }                                                                       \
     } while (0)
+#define LOW_DECL     unsigned lowV_ = 0
+#define LOW_PREP(V)  (lowV_ = (unsigned)(V) & 0xFFu)
+#define LOW_STORE()  LOW_PUT(lowV_)
 #elif defined(LOW_PLANES)
 /* ⭐⭐⭐ §2a — THE RUN'S STORE GOES STRAIGHT TO THE TWO BITPLANES, and the `mem[]` store is GONE.
    Display lines 117..157 are then OWNED (revs_plot.h §2a) and the decode stops scanning them,
@@ -2729,13 +2732,26 @@ static void revs_report_low(void)
    measured +3.45 ms (span-render-plan §11e).  Only the per-line setup calls out.
    ⚠ The two expansion tables are the decode's own (`RevsScreen::initialize`), so an owned row's
    bytes are bit-identical to what the conversion would have produced from the same colour. */
-#define LOW_PUT(V)  do {                                                        \
-        const unsigned lowV_ = (unsigned)(V) & 0xFFu;                           \
-        d[0]                   = g_bbcExpandLo[lowV_];                          \
-        d[REVS_PLOT_PLANE_GAP] = g_bbcExpandHi[lowV_];                          \
-    } while (0)
+/* ⭐⭐⭐ AND THE EXPANSION IS HOISTED OUT OF THE FILL, WHICH IS WORTH MILLISECONDS: a segment
+   between two events is ONE colour, so its two plane bytes are loop invariants — but they are
+   read out of two GLOBAL tables and the loop STORES THROUGH A `unsigned char*`, so GCC must
+   assume `d[0]` can alias `g_bbcExpandLo` and reloads both every cell.  Measured as four chip
+   accesses a cell instead of two: the per-cell form cost ph33 +10.47 ms against the decode's
+   −4.34, i.e. the retarget LOST, and the whole difference was this.  `LOW_PREP` does the two
+   lookups once per SEGMENT into locals whose address never escapes; `LOW_STORE` is then two
+   `move.b`s off a register pair.  (CLAUDE.md §a hot loop's state lives in memory if anything
+   takes its address — the same class, reached through aliasing rather than through `&`.) */
+#define LOW_DECL     unsigned char plo_ = 0, phi_ = 0
+#define LOW_PREP(V)  do { const unsigned v_ = (unsigned)(V) & 0xFFu;             \
+                          plo_ = g_bbcExpandLo[v_]; phi_ = g_bbcExpandHi[v_];    \
+                     } while (0)
+#define LOW_STORE()  do { d[0] = plo_; d[REVS_PLOT_PLANE_GAP] = phi_; } while (0)
+#define LOW_PUT(V)   do { LOW_PREP(V); LOW_STORE(); } while (0)
 #else
 #define LOW_PUT(V)  (*d = (unsigned char)(V))
+#define LOW_DECL     unsigned char memV_ = 0
+#define LOW_PREP(V)  (memV_ = (unsigned char)(V))
+#define LOW_STORE()  (*d = memV_)
 #endif
 
 /* How far one cell is from the next in the destination: EIGHT bytes in the BBC frame buffer, ONE
@@ -2759,6 +2775,7 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
        boundary cell — the only composed one — is lifted out of the loop entirely. */
     unsigned                c     = first;
     unsigned                value = entry;
+    LOW_DECL;
 #ifdef LOW_PLANES
     unsigned char*          d     = plane + first;
 #else
@@ -2778,10 +2795,15 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
            ~16 ms of phase 33's 16.12, i.e. 164 cycles per byte STORED where the loop body is
            ~52.  CLAUDE.md §a bounded loop over a short list is a code-size trap, and the cost
            here is the PEEL rather than the call it caused there. */
+        LOW_PREP(value);                        /* once per SEGMENT, never per cell */
+        /* ⚠⚠ AND `LOW_PREP` GOES ABOVE THE PRAGMA, NOT BELOW IT: `#pragma GCC unroll` binds to
+           the NEXT loop statement, and a `do { ... } while (0)` macro IS one — put between them,
+           it swallows the pragma and the fill quietly gets its eight-way peel back.  Measured:
+           ph33 26.20 against 25.11, i.e. the hoist looked worthless. */
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC unroll 1
 #endif
-        while (c < end) { LOW_PUT(value); d += LOW_STEP; c++; }
+        while (c < end) { LOW_STORE(); d += LOW_STEP; c++; }
         if (c < last) { value = ev->colour; ev++; }
     }
     if (ev->start == last) { value = ev->colour; ev++; }

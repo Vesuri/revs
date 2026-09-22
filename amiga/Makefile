@@ -953,10 +953,27 @@ endif
 # ⛔ `TERRAINLOWCHECK=1` is INVALID with this (it leaves the chain in charge and stores nothing,
 # so an owned line would be painted by nobody); the `#error` in revs_native.c states the
 # TERRAINLOW dependency.
-# ⚠⚠⚠ AND IT IS STILL BLOCKED, ON THE FURNITURE: the sweep paints TWO RUNS a line and the car
-# body between them is painted by nobody, so an owned row loses it.  The fix is `DUALPF=1` — the
-# car moves to its own playfield and the terrain layer's car cells become don't care
-# (docs/span-render-plan.md §12e).  Its three transparent strips must be retargeted to PF2 first.
+# ⚠⚠ THE FURNITURE BLOCKER IS LIFTED BY `DUALPF=1` and the fee is now ENUMERATED rather than
+# guessed: with the car on its own playfield the only cells of 117..157 that disagree with mem[]
+# are the five `s_cockDyn` rectangles — the needle column (128..157 x 12..27), the tyre strips
+# (133..140 x 0..1 / 38..39) and the mirror corners (154..157 x 0..2 / 37..39), 412 cells.
+# The tyre strips are free (TYRESPRITE makes that art static), the needle rectangle needs only
+# the static dash art laid into both PF1 buffers once, and `mirror_draw_car` already carries a
+# `REVS_PLOT_BYTE` at its store site.
+#
+# ⭐⭐⭐ MEASURED END TO END, 3000 fields an arm, `frozen` equal, against `DUALPF=1 NEEDLE=1
+# TYRESPRITE=1` — and the prize is REAL but the painter eats most of it:
+#     ph27 decode    16.30 -> 11.71   -4.59   the 41 rows stop being scanned (§12c's ceiling: -5.07)
+#     ph33 painter   14.54 -> 17.08   +2.54   the same walk, two plane bytes instead of one mem[]
+#     Σ(1..39)-ph28 162.07 -> 160.15  -1.92   NET
+# ⚠⚠ AND GETTING ph33 THERE TOOK TWO COMPILER DECISIONS, not a better algorithm — the first
+# working version cost +10.47 ms.  See the flags on obj/revs_native.o below and the note at
+# `LOW_PUT`: the expansion must be hoisted out of the fill (it aliases the store), the fill must
+# not become a `memset` per segment (+10.75) and it must not be VECTORISED either (+7.55, by
+# spilling the table addresses into the frame per run).
+# ⭐ The remaining lever is the DESIGN, not the loop: the car is on PF2 now, so the terrain need
+# not stop at its outline — one contiguous fill a line instead of two clipped runs with composed
+# boundary cells (§12 user directive, docs/span-render-plan.md §12f).
 LOWOWN ?= 0
 ifeq ($(LOWOWN),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN
@@ -1444,7 +1461,28 @@ obj/%.o : %.c
 # <__wrap_memset>` INSIDE __wrap_memset in the objdump; no test would have reached it, because the
 # short path only runs on a fill this port does not currently do.
 obj/fastmem.o : CORE_CFLAGS += -fno-unroll-loops -fno-tree-loop-distribute-patterns
-obj/revs_native.o : CORE_CFLAGS += $(NATIVE_OPT)
+# ⚠⚠ -fno-tree-loop-distribute-patterns ON THE NATIVE SURFACE, AND IT IS A MEASUREMENT.
+# §2a's low-block fill writes one constant byte per cell into each of two planes, and with the
+# expansion hoisted out of the loop (the only shape that is not four chip accesses a cell) GCC
+# recognises the result as two `memset`s and emits a CALL PER SEGMENT — ~200 segments a frame,
+# 368 cycles a call, ph33 25.11 -> 35.38 ms.  The segments average ~12 cells, where a call's
+# preamble is bigger than the stores it replaces; `revs_plot_run`'s own note measures the same
+# thing from the other side (a hand longword fill is still 4.05 ms of preamble at 80 bytes).
+# ⚠ `#pragma GCC unroll 1` does NOT cover this: the pattern recogniser runs before unrolling.
+# ⚠⚠ TWO PATTERN-RECOGNISERS OFF ON THE NATIVE SURFACE, AND BOTH ARE MEASUREMENTS.  §2a's low
+# block fills one constant byte per cell into each of two planes, and GCC will "improve" that
+# loop in two different ways, each worse than the byte store it replaces:
+#   -fno-tree-loop-distribute-patterns : else each segment becomes two `memset` CALLS — ~200
+#     segments a frame at ~368 cycles a call, ph33 24.63 -> 35.38.  The segments average ~4 cells,
+#     where a call's preamble dwarfs its stores (`revs_plot_run`'s own note measures the same
+#     thing from the other end: still 4.05 ms of preamble at 80 bytes).
+#   -fno-tree-loop-vectorize : else GCC widens the fill itself — a longword broadcast synthesised
+#     per segment out of swap/clr.w/lsl.l/or.l, an alignment head and a byte tail — and the extra
+#     live values push `view_paint_lines_core` over its register budget, so the two EXPANSION
+#     TABLE ADDRESSES get spilled into the frame and reloaded per run.  ph33 24.63 -> 17.08 with
+#     it off, i.e. the widening cost 7.55 ms.  (CLAUDE.md §a hot loop's state lives in memory.)
+# ⚠ Neither flag costs the control anything: the mem[] arm re-measured 162.07 against 162.32.
+obj/revs_native.o : CORE_CFLAGS += $(NATIVE_OPT) -fno-tree-loop-distribute-patterns -fno-tree-loop-vectorize
 obj/revs_native_seam.o : CORE_CFLAGS += $(NATIVE_OPT)
 obj/revs_native_abi.o : CORE_CFLAGS += $(NATIVE_OPT)
 

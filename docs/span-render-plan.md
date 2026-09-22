@@ -2420,3 +2420,76 @@ stale. Measured: 198 mismatches, every one of them in that column, first at line
 The cockpit oracle therefore steps around the column under `REVS_NEEDLE_PLANES` and
 `NEEDLECHECK=1` covers it instead. **An oracle whose reference is `mem[]` has to be told every
 time a writer leaves `mem[]`.**
+
+### §12f — §2a TURNED ON: the decode prize is real, the painter eats most of it, and the fix is the DESIGN
+
+`make DUALPF=1 LOWOWN=1 NEEDLE=1 TYRESPRITE=1` against `DUALPF=1 NEEDLE=1 TYRESPRITE=1`, 3000
+fields an arm (`PROBEFIELDS=3000`, `frozen` equal to 0.02%, so the trajectories are identical):
+
+| | ph27 decode | ph33 painter | Σ(1..39)−ph28 |
+|---|---|---|---|
+| control | 16.30 | 14.54 | 162.07 |
+| §2a, first working version | 11.92 | 25.11 | 169.83 |
+| §2a, expansion hoisted, `memset` per segment | 12.12 | 35.38 | 181.04 |
+| §2a, `memset` off | 12.02 | 26.20 | 170.85 |
+| **§2a, vectoriser off as well** | **11.71** | **17.08** | **160.15** |
+
+⭐ **The decode prize is exactly what §12c's ceiling predicted** — −4.59 against `VIEWCARVE`'s
+−5.07, i.e. the usual ~10% ledger discount, for the third time.
+
+⚠⚠⚠ **AND THE PAINTER'S COST WAS NOT THE STORE — IT WAS THREE COMPILER DECISIONS IN A ROW, EACH
+WORSE THAN THE BYTE IT REPLACED.** The retarget's whole premise (§10n: a bitplane pair costs about
+what the `mem[]` byte cost) holds only if the emitted loop is the loop you wrote:
+
+1. **The expansion aliases the store.** `d[0] = g_bbcExpandLo[v]` — a `unsigned char` store may
+   alias a `unsigned char` table, so GCC reloads BOTH tables every cell. Hoisting them per
+   SEGMENT is correct but bought only 0.5 ms on its own, because of (2) and (3).
+2. **A constant-byte fill becomes a `memset` CALL per segment** — ~200 segments a frame at
+   ~368 cycles, +10.75 ms. The segments average ~4 cells. (`revs_plot_run` measures the same
+   thing from the other end: a hand longword fill is still 4.05 ms of preamble at 80 bytes.)
+3. **With `memset` off, GCC vectorises the fill ITSELF** — a longword broadcast synthesised per
+   segment out of `swap`/`clr.w`/`lsl.l`/`or.l`, an alignment head, a byte tail — and the extra
+   live values push `view_paint_lines_core` past its register budget, so the two expansion table
+   ADDRESSES are spilled into the stack frame and reloaded per run (`move.l #g_bbcExpandLo,-48(a5)`).
+   **+7.55 ms**, which is the biggest single term in the whole exercise.
+
+⇒ both flags are pinned on `obj/revs_native.o` with the numbers at the rule, and neither costs
+the control anything (162.07 against 162.32).
+
+⚠⚠ **A `#pragma GCC unroll` BINDS TO THE NEXT LOOP STATEMENT, AND A `do { } while (0)` MACRO IS
+ONE.** Putting the hoist between the pragma and the fill let the macro swallow the pragma, the
+fill quietly got its eight-way peel back, and the hoist measured as worthless (ph33 26.20 against
+25.11). Same family as the `#ifdef` that is always true: the build succeeds, the A/B lies.
+
+#### §12f-i — the entry fee, enumerated, and what is left
+
+With the cockpit layer's liveness fixed (ownership is `m_lineMode = 0`, which the layer read as
+"not the race view" and blanked PF2 entirely), the ONLY cells of 117..157 that disagree with
+`mem[]` are the five `s_cockDyn` rectangles: 2542 pixels in 412 cells, all of them the needle
+column (128..157 × 12..27), the tyre strips (133..140 × 0..1 / 38..39) and the mirror corners
+(154..157 × 0..2 / 37..39). Nothing else in the band is wrong, so:
+
+- **the tyre strips are free** — `TYRESPRITE=1` stops `tick_wheel_spin` XORing `mem[]`, so that
+  art is static and the layer can simply paint it;
+- **the needle rectangle needs no new painter** — the terrain runs never reach cells 12..27 on
+  those lines, so PF1 there is untouched by the sweep; it needs the static dash art laid into both
+  PF1 buffers once, which is `revs_plot_own_reset`'s existing job;
+- **the mirrors are the one real item**, and `mirror_draw_car` already carries a `REVS_PLOT_BYTE`
+  at its store site — extending the delta domain over 154..157 is the whole of it.
+
+⭐⭐⭐ **AND THE REAL LEVER IS NOW THE TERRAIN RENDERER'S SHAPE, NOT ITS LOOP.** `LOWDOUBLE=1`
+splits ph33 into painting and driver, and the painting is where it all is — mem[] arm 13.84 ms of
+painting against 0.81 of driver, plane arm 22.06 against 2.58. A line is painted as TWO runs
+clipped to the car's silhouette, with a composed `(value & mask) | fill` boundary cell each, ~4
+cells a segment. With the car on its own playfield none of that is needed (§12, user directive:
+*"the terrain should be rendered as if the car wasn't there … If the original has complex logic to
+render only to the edges of the car outline, all that can go"*) — one contiguous fill of up to 40
+cells a line, no clip tables, no mask/fill reads, no boundary composition, and segments long
+enough for a wide store to pay. ⚠ Two constraints the redesign must respect:
+
+- **`view_consume` may still only consume INSIDE the runs** (`s_lowConsume`): a cell the runs never
+  visit keeps producer state that `span_plot_core` composes into, and zeroing all forty destroys
+  it — which surfaces two frames later as the car leaving the track, not as a wrong pixel.
+  Painting wider is free; CONSUMING wider is not.
+- **the boundary cell's car pixels must move to PF2**, using the game's own `view_*_end_mask`
+  tables, or the blend they carry is lost when the composite goes.
