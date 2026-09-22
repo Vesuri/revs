@@ -26,19 +26,30 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 154.16 ms** for the SHIPPING DEFAULT — measured
-2026-09-22 at `6b7365c` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+**Where the frame stands:** **Σ(1..39) − ph28 = 149.21 ms** for the SHIPPING DEFAULT — measured
+2026-09-22 at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
-`FRAME = 169 ms` wall − phase 0). ⚠ `ph34` is a ONE-SHOT (`calls=1`), so the RECURRING frame is
-**151.5 ms**.
-⭐⭐⭐ **AND THE PRODUCERS ARE NOW 61 OF IT AGAINST THE REAL BBC'S 97 ms WHOLE FRAME — which is
-what bounds every plan below.** `build_track_geometry` + `draw_road` = **61.14 ms** to turn 27 edge
-points into 42 spans, and the 6502 did geometry, road AND painting in 97. Delete every millisecond
-the port adds that the BBC never paid (the consumer's 41.7, `prepareFrame`'s 8.5, the MOS input
-dispatch, the dash-edge walk) and the frame lands at **~90 ms, i.e. 0.93× the original**. ⇒ **48 ms
-needs the producers roughly halved and 40 ms needs them at a third — there is no arrangement of
-port-side work that reaches either.** That is entry 3, and it is a VISUAL-FIDELITY decision
-(fewer than 27 points, fewer than 42 spans), not an optimisation.
+`FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
+measured against). ⚠ `ph34` is a ONE-SHOT (`calls=1`), so the RECURRING frame is **~146.7 ms**.
+⭐⭐⭐ **AND THE PRODUCERS ARE AT ROUGH 6502 PARITY PER UNIT OF WORK — MEASURED, AND IT
+RETRACTS THE "FEWER POINTS/SPANS IS THE ONLY ROUTE" READING THIS BLOCK CARRIED EARLIER TODAY.**
+`build_track_geometry` costs **7003 cycles per edge point** (26.6 ms / 27 points) and its three
+bodies are **~600 instructions with no `jsr`, no frame operand and a real `divu`** — i.e.
+**11.7 cycles per instruction**, which is simply what a 68000 costs on a mix that is 17% absolute
+`mem[]` operands (16-20 cyc each). At 7.09 MHz that is **988 µs a point**. The 6502, at any
+plausible share of its own 194 000-cycle frame, spent **719-1078 µs a point** (20-30%). ⇒ **the
+68000's 3.5× clock is almost exactly cancelled by its ~3.3× cycles-per-instruction, so the
+producers are NOT where the port loses — and there is no code shape and no fidelity trade that
+changes that.** `draw_road` reads the same way: 5819 cyc/span, 1604 of setup, 400 per DDA step,
+1088 per plotted column, every body clean.
+⇒ **the 1.59× IS THE PORT-ADDED WORK, which is what the campaign has been deleting all along** —
+the consumer's 41.0 ms, `prepareFrame`'s 8.5, the drain's machinery, the MOS input dispatch. The
+producers' 61 ms is the floor the original also paid.
+⚠⚠ **THE ONE ASSUMPTION LEFT IN THAT, AND IT IS THE NEXT MEASUREMENT (entry 8): the BBC's own
+per-routine share is a GUESS, not a number.** Everything above rests on "geometry was 20-30% of
+the 6502's frame". `make refloop` already races a real BBC and measures its FRAME; nobody has ever
+asked it where that frame goes. Until then the parity reading is [INFERRED], not [DERIVED].
+
 ⭐ **And `ph26`+`ph29` (12.47 ms, the 50 Hz drain) SELF-HEALS as the frame shrinks** — the body is
 a 50 Hz tick, so a 154 ms frame drains 8.78 of them and a 40 ms frame would drain 2. Never count it
 as a target; never count its disappearance as a win either.
@@ -74,7 +85,7 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 20.58 | 24 | `view_paint_lines` phase 1 — the scan | `VIEWSPLIT=1` ⚠ **predates DUALPF/LOWOWN** |
 | 15.59 | 28 | the vblank spin — the `50/N` pad, not a target | — |
 | 14.76 | 33 | ...phase 2, the low block | ⚠ **never split since `LOWOWN`** |
-| 12.47 | 26+29 | the 50 Hz drain — 8.78 body ticks a frame, 1.42 ms each | ⛔ **NONE, ever** |
+| 8.05 | 26+29 | the 50 Hz drain — 8.96 body ticks a frame, ~900 µs each | `BODYSPLIT=1` ✓ new |
 | 8.53 | 27+30 | `RevsScreen::prepareFrame()` — all that is left of the decode (§5b) | `DECODESPLIT=1` ✓ current |
 | 5.93 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED | — |
 | 5.65 | 32 | ...the consumer's tail | ⚠ with 24/33 |
@@ -87,8 +98,9 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 touched by the ownership campaign and their splits still describe them; the CONSUMER's do not —
 `VIEWSPLIT` was last read before the cockpit became a playfield and before `LOWOWN` moved the
 boundary cells out of the terrain painter, and its 41.0 ms is the block §12's directive says should
-now be *simple*. And `ph26`+`ph29` is the third-largest block in the frame with **no instrument at
-all**. Those two, in that order.
+now be *simple*. ✅ `ph26`+`ph29` HAS one now (`BODYSPLIT=1`) and it paid at once: the reuse
+gate was **99 cycles per byte** and is **−4.36 ms**. What is left there is the ~442 µs/cycle
+remainder.
 
 ### 1. ⛔ The TRANSPOSED SCAN — **10.00 ms, and BOTH routes to it are now CLOSED**
 `docs/perf-method.md` §the transposed scan is at its floor, and §producer-emitted source events.
@@ -584,6 +596,25 @@ what is left is not a decode.
 per-frame scan over all 208 display lines that exists only because ownership exists**, and the
 **3.02 ms remainder is unattributed**. Neither has ever been read. Cheap and certain, unlike the
 rows.
+
+### 8. ⭐⭐⭐ PROFILE THE REAL BBC PER ROUTINE — the measurement every size in this file rests on
+`make refloop` races a real BBC under jsbeeb and measures its **frame** (97.0 ms, calibrated to
+0.16%). It has never been asked **where that frame goes.** Every "the port is Nx the original"
+claim in this project, including today's producer-parity reading above, divides our per-routine
+number by a GUESSED share of the 6502's frame — so the whole ranking rests on an [INFERRED]
+denominator.
+**What it would settle, and nothing else can:** whether `build_track_geometry`'s 26.6 ms and
+`draw_road`'s 34.4 have any headroom at all, or whether they are already at the 6502's own cost
+for the same 27 points and 42 spans. Those two rows are **61 of the frame's 149 ms**, so the
+answer decides whether the queue has 60 ms of possible work in it or ~0.
+**Shape:** jsbeeb already executes every instruction with the PC in hand; sample or bracket it at
+`$24F6` (build_track_geometry) and `$1A20` (draw_road) and report 6502 cycles per call, the same
+way `make fbwrites` already attributes every frame-buffer store to its PC. The per-routine counts
+are already known on our side (27 points, 42 spans, 58 columns), so the comparison is per UNIT,
+not per frame.
+⚠ Do this BEFORE any further producer work. If the 6502 spent 50 ms on the same two passes, the
+producers are closed for good and the port's remaining 88 ms is entirely port-added; if it spent
+20, there is a 40 ms defect in them that no objdump has found because every body reads clean.
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
