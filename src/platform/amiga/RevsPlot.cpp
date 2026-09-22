@@ -543,6 +543,51 @@ static unsigned plotModeOf(unsigned y)
     return 5u;   /* no record yet — MODE 5 is the race view's own mode */
 }
 
+#ifdef REVS_DUAL_PLAYFIELD
+/* ⭐⭐⭐ §12f-iv — THE WING MIRRORS GO ON THE COCKPIT'S PLAYFIELD, which is where they belong.
+   ============================================================================================
+   The mirrors are the one thing inside display lines 117..157 that genuinely MOVES (another car's
+   reflection), and `mirror_draw_car` writes `mem[]` — so once §2a owns those rows nobody paints
+   them, and the symptom is a frozen reflection that no practice run can show (a
+   `STRAIGHT_TO_RACE` lap reflects nothing).
+   ⭐ The obvious fix is the PF1 delta domain, and it is the wrong one: `plotDeltaBase` and
+   `plotDeltaCheck` re-expand a whole block out of `mem[]`, and on these four lines `mem[]` is
+   FROZEN for the terrain cells the sweep now paints — so the oracle would fire on cells that are
+   working as designed, and the strongest gate this band has would have to be weakened.
+   ⇒ Put them where the rest of the cockpit is: one opaque PF2 byte pair, single-buffered because
+   the layer is, and `DUALPFCHECK`'s composite check then covers them unchanged.  §12's directive
+   in one line — "the cockpit should only be rendered to the second playfield".
+   ⚠ THE REMAP IS THE LAYER'S, not the decode's: BBC pen 0 becomes PF2 pen 3 (opaque) and pen 3
+   becomes transparent, which is `lo = ~expandHi`, `hi = ~expandLo` (RevsScreen.cpp §the two
+   complements).  A second spelling of it here is the thing to watch; it is two lines and the
+   layer's own `g_cockpitPen3` tripwire covers the assumption behind it.
+   ⚠ Rows 158..178, where the rest of each mirror lives, are NOT the layer's — they stay the
+   decode's and this returns without writing, so the mirror is painted by one owner per row. */
+static uint8_t* s_cockPlane;
+/* ⭐ Not behind SPAN_STATS: it is the only evidence the mirrors reach the layer at all, and
+   the writers that feed it fire ~24 times a frame — see the note above on what a `volatile` RMW
+   costs in a HOT loop, which this is not. */
+extern "C" { volatile unsigned long g_cockpitDeltaBytes = 0; }
+
+extern "C" void revs_plot_cockpit_plane(unsigned char* plane)
+{
+    s_cockPlane = plane;
+}
+
+extern "C" void revs_plot_cockpit_byte(unsigned short addr, unsigned char value)
+{
+    const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+    unsigned po, y;
+    if (!s_cockPlane || !s_mapBuilt || off >= (unsigned)FB_BYTES) return;
+    y = s_lineOf[off];
+    if (y < REVS_COCKPIT_Y0 || y > REVS_COCKPIT_Y1) return;   /* not this layer's row */
+    po = s_planeOff[off];
+    s_cockPlane[po]             = (uint8_t)~g_bbcExpandHi[value];
+    s_cockPlane[po + kPlaneGap] = (uint8_t)~g_bbcExpandLo[value];
+    g_cockpitDeltaBytes++;
+}
+#endif /* REVS_DUAL_PLAYFIELD */
+
 extern "C" void revs_plot_planes(unsigned char* planeA, unsigned char* planeB)
 {
     s_plane[0] = planeA;

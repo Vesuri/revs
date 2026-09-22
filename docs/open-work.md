@@ -314,17 +314,27 @@ the control's 162.07. `LOWOWNCHECK=1` reads 22656 checks / 0 mismatches and `DUA
 LOSES (+4.86 ms of extra cells against ~2.3 of saved machinery), and a longword fill loses a
 further 5 ms at ~5-cell segments (§12f-ii).
 
-⏳ **STILL DEFAULT OFF, AND NOW FOR EXACTLY ONE REASON: THE WING MIRRORS.** Display lines 154..157,
-cells 0..2 and 37..39 — 24 cells where the mirrors reach into the owned band. They are genuinely
-dynamic (another car's reflection) and `mirror_draw_car` writes `mem[]`, so with the rows owned
-nobody paints them; its store site already carries a `REVS_PLOT_BYTE`, so widening the delta domain
-over those four lines is the whole of it.
-⚠⚠ **It cannot be seen in a practice measurement** — a `STRAIGHT_TO_RACE` lap reflects nothing, so
-the stale content matches and every pixel diff this session took reads clean there. Gate it on a
-real race (`RACEPROPER=1`) or by argument, never on the picture.
-✅ The other four rectangles are closed: `TYRESPRITE=1` makes the wheel art static so the layer
-paints it (two of them, for nothing), and the needle's cached clean column is now laid into both
-PF1 buffers at every rebase (`ndlBaseBlitBoth`).
+✅ **ALL FIVE RECTANGLES ARE CLOSED and every cell of 117..157 has exactly one owner**: the
+terrain runs are the PF1 painter's, everything else the cockpit layer's, the needle's column its
+own painter's over a base now laid into both buffers (`ndlBaseBlitBoth`), the wheel art static
+under `TYRESPRITE=1`, and the WING MIRRORS painted onto PF2 by `mirror_draw_car`'s own store site
+(`REVS_COCKPIT_BYTE`, §12f-iv — the PF1 delta domain was the wrong home because its base and its
+oracle both re-expand a `mem[]` that is frozen for those rows' terrain cells).
+✅ **And the writer set is provably complete**: the object plotter is a PRODUCER — it composes into
+the `$3000` source blocks, not the frame buffer — so an opponent reaches the screen through the
+same painter as the terrain (§12f-iii). The practice-only census was not the risk it looked like.
+
+⏳ **WHAT IS OWED BEFORE THE DEFAULT FLIPS** is a target-side RACE, and `RACEPROPER=1` is now
+plumbed into `amiga/Makefile` for it. ⚠⚠ MEASURED: it is far longer on the target than the host
+figure suggests — qualifying ends on `tick_race_timers`, which advances once per GAME FRAME, and
+this port paints ~6 a second, so the host's ~12000 frames are ~100 000 FIELDS here
+(`session_is_race` still read `$28` at vbi 15200). Budget ~10 minutes of warp. What it would
+exercise: the mirrors with a real reflection (`g_cockpitDeltaBytes` reads 26 in a practice lap —
+the path fires, the content is barely stressed) and the object plotter with a real field (5a).
+⏳ **The flip itself is three defaults together** — `DUALPF`, `TYRESPRITE`, `LOWOWN` (`LOWOWN`
+`#error`s without the other two) — worth **−3.52 ms** against what ships today (160.90 → 157.38),
+and it includes a faithfulness-seam default (the tyre dither becoming a sprite), so it is the
+user's call rather than a measurement's.
 
 ⭐⭐⭐ **UNBLOCKED, 2026-09-21: the cockpit is now its own PLAYFIELD (`make DUALPF=1`,
 `docs/span-render-plan.md` §12e).** The car body used to belong to nobody once the sweep claimed

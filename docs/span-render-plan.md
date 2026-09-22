@@ -2578,6 +2578,19 @@ included, against the run's own colour walk, in process and on the same data —
 comparing PF1 against `mem[]` there reported ~5200 working-as-designed cells a frame. The check
 that found the furniture hole in the first place is kept for the non-DUALPF arm.
 
+⭐⭐⭐ **AND THE WRITER SET IS COMPLETE AFTER ALL — THE OBJECT PLOTTER IS A *PRODUCER*, NOT A
+FRAME-BUFFER WRITER.** The census that licenses this whole block (§12a) was taken on a *practice*
+lap, alone on track, so `move_and_draw_cars` cannot appear in it — and CLAUDE.md's own warning
+says the baseline trajectory decides which code exists at all, which makes "what draws an opponent
+into 117..157 in a RACE?" the obvious next question. The answer is in the plotter's own addresses:
+`draw_track_object` → `plot_object_core` → `fill_object_gap` compose into the forty `$80`-spaced
+SOURCE blocks at `$3000` (`VIEW_SRC_PAGE`), stepping `plot_ptr` by `$100` — two source blocks —
+never into `$5A80..$8000`. So an opponent reaches the screen through `view_consume`, the event list
+and the SAME painter as the terrain, and owning the rows cannot lose it. That is also why
+`fbwrites` never listed it: it lists frame-buffer writers, and the plotter is not one.
+⇒ **Ask where a writer's pointer is BUILT before concluding a census is incomplete** — the same
+move that retired `bus_write` from the sweep.
+
 ⏳ **THE ONE HOLE LEFT is the wing mirrors** where they reach into this band (display lines
 154..157, cells 0..2 and 37..39 — 24 cells). They are genuinely dynamic and `mirror_draw_car`
 writes `mem[]`, so with the rows owned nobody paints them; its store site already carries a

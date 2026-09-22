@@ -57,6 +57,23 @@ void revs_plot_target(unsigned char* planeBase);
  * painter that repaints a whole row (CLAUDE.md, docs/span-render-plan.md §11b). */
 void revs_plot_planes(unsigned char* planeA, unsigned char* planeB);
 
+/* ⭐⭐⭐ §12f-iv — ONE BYTE ONTO THE COCKPIT'S PLAYFIELD, for a writer inside display lines
+   117..157 whose content genuinely moves: the wing mirrors.  See RevsPlot.cpp for why these do
+   NOT go through the PF1 delta domain (its base and its oracle both re-expand `mem[]`, which is
+   frozen for the terrain cells on those rows once §2a owns them).
+   ⚠ A row outside the layer is ignored, so a writer that straddles the edge — `mirror_draw_car`
+   runs from display line 154 down to 178 — needs no bounds test of its own. */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_DUAL_PLAYFIELD)
+#define REVS_COCKPIT_Y0  117u
+#define REVS_COCKPIT_Y1  157u
+void revs_plot_cockpit_plane(unsigned char* plane);
+void revs_plot_cockpit_byte(unsigned short addr, unsigned char value);
+#define REVS_COCKPIT_BYTE(a, v)  revs_plot_cockpit_byte((unsigned short)(a), (unsigned char)(v))
+extern volatile unsigned long g_cockpitDeltaBytes;
+#else
+#define REVS_COCKPIT_BYTE(a, v)  ((void)0)
+#endif
+
 /* THE BAND RECORD'S MODE PER BAND, published once per decode by `RevsScreen::buildLineModes()`.
  * `firstLine[n]` is band n's first display line (band 0's is NEGATIVE — it starts before the
  * display) and `mode[n]` is 4 or 5.

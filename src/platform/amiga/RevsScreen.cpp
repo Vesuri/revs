@@ -630,6 +630,10 @@ void RevsScreen::initialize()
        ⚠ Here and not in present(): it also builds the 16.6 KB address map, which is free at
        start-up and is a dropped frame inside one. */
     REVS_PLOT_PLANES((unsigned char*)m_bitmap[0]->data, (unsigned char*)m_bitmap[1]->data);
+#ifdef REVS_DUAL_PLAYFIELD
+    /* the cockpit layer's own plane, for the writers that paint onto it (§12f-iv) */
+    revs_plot_cockpit_plane((unsigned char*)m_cockpit->data);
+#endif
 
     /* MODE 7's own configuration.  ⚠ Allocated up front, never on the mode switch: a chip-RAM
        allocation inside a frame is the Atari port's 3.6-second freeze, and a FAILED one at a
@@ -1553,11 +1557,11 @@ static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
 #ifndef REVS_TYRE_SPRITES
     { 133, 140,  0,  1 }, { 133, 140, 38, 39 },
 #endif
-    /* ⏳ THE WING MIRRORS, where they reach into this band — the ONE hole left.  They are
-       genuinely dynamic (another car's reflection) and `mirror_draw_car` writes `mem[]`, so with
-       these rows owned nobody paints them; its store site already carries a `REVS_PLOT_BYTE`
-       (docs/open-work.md entry 2a). */
-    { 154, 157,  0,  2 }, { 154, 157, 37, 39 },
+    /* ⭐⭐ THE WING MIRRORS ARE NOT A HOLE EITHER: a reflection is cockpit, so it is painted ON
+       THIS LAYER — `mirror_draw_car` writes one opaque PF2 byte pair per store through
+       `REVS_COCKPIT_BYTE` (§12f-iv), and the static art around it comes from the rebuild like the
+       rest of the car.  ⇒ every cell of 117..157 now has exactly one owner, and the only
+       transparent window left is the needle's own column above. */
 };
 #define COCK_DYNS (sizeof s_cockDyn / sizeof s_cockDyn[0])
 

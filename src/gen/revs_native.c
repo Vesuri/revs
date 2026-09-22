@@ -17454,6 +17454,12 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
            (display lines 154..178, cells 0..2 and 37..39).  Owning 158..191 without this would
            freeze both wing mirrors in a real race and nothing in a practice run could tell. */
         REVS_PLOT_BYTE((uint16_t)(dst + row), pattern);
+        /* ⭐⭐⭐ ...AND ONTO THE COCKPIT'S PLAYFIELD for the four lines of it that reach display
+           117..157 (§12f-iv).  Once §2a owns that band the decode stops converting it, so a
+           reflection that only ever reached `mem[]` would FREEZE — and freeze invisibly, because
+           a practice lap has nothing to reflect.  Rows 158..178 are still the decode's and the
+           call returns without writing, so every row has exactly one owner. */
+        REVS_COCKPIT_BYTE((uint16_t)(dst + row), pattern);
 
         row--;                                                   /* $7FE1 */
         if ((row & 0x80u) && (row & 7u) == 7u)                   /* $7FE2/$7FE7 — wrapped past a char row */

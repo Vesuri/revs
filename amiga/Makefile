@@ -755,6 +755,24 @@ ifeq ($(EDGEFILL),1)
 EXTRA_DEFINES += -DREVS_EDGE_FILL
 endif
 
+# ⭐⭐⭐ `make RACEPROPER=1` — THE RACE ITSELF ON THE TARGET (session_is_race = $80), which no
+# other build reaches: every `STRAIGHT_TO_RACE` run is a PRACTICE session, alone on track.  The
+# autorun script is the shared one (src/platform/autorun.cpp §STRAIGHT TO THE RACE PROPER) that
+# answers the championship menus, sits out one qualifying session and answers START RACE, so this
+# is a define and nothing else.
+# ⚠⚠ AND IT IS FAR LONGER ON THE TARGET THAN ON THE HOST — MEASURED, so nobody sizes it from the
+# host figure again.  The qualifying session ends on `tick_race_timers`, which advances the clock
+# once per GAME FRAME, not per field; the host reaches the deadline at ~12000 frames, but this
+# port paints ~6 a second, so the same deadline is ~100 000 FIELDS here (`session_is_race` still
+# read $28 — qualifying — at vbi 15200, painted=1793).  Budget ~10 minutes of host time under
+# warp and break on a high `g_vbiCount`, or drive the menus by hand.
+# ⚠ Do not combine with STRAIGHT_TO_RACE: autorun picks ONE script, and this one wins.
+# ⭐ It is the only way to exercise what a practice lap cannot: the object plotter with a real
+# field (open-work 5a) and the WING MIRRORS, which reflect nothing when you are alone.
+ifeq ($(RACEPROPER),1)
+EXTRA_DEFINES += -DREVS_RACE_PROPER
+endif
+
 # ⭐⭐ `make LOWDOUBLE=1` — price the low block's PAINTING against its per-line driver without
 # changing a byte: `view_low_run` is idempotent, so the pair runs twice over the same values.
 # INSTRUMENT ONLY (src/gen/revs_native.c §view_own_low).
@@ -848,7 +866,7 @@ endif
 DUALPF ?= 0
 ifeq ($(DUALPF),1)
 EXTRA_DEFINES += -DREVS_DUAL_PLAYFIELD
-PROBE_SYMS_DUALPF = g_cockpitCells g_cockpitCellsTotal g_cockpitPen3 g_cockpitRuns g_cockpitBadSlot g_cockpitFulls g_cockpitMaskBad
+PROBE_SYMS_DUALPF = g_cockpitCells g_cockpitCellsTotal g_cockpitPen3 g_cockpitRuns g_cockpitBadSlot g_cockpitFulls g_cockpitMaskBad g_cockpitDeltaBytes
 # ⚠ A CEILING PROBE, NEVER A SHIPPING ARM: `make DUALPF=1 DUALPFNOCONV=1` sets the display up as
 # a dual playfield and never fills PF2, so the cockpit layer is blank (transparent) and the
 # picture is the single-playfield one.  It exists to separate the layer's CONVERSION cost from
