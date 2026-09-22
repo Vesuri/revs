@@ -485,35 +485,43 @@ every one of them leaves 144 against a 48 ms target.** It is worth doing because
 certain, not because it changes the arithmetic — that still rests on `draw_road` (34) and
 `build_track_geometry` (26).
 
-### 5b. ⭐⭐⭐ THE DECODE IS NOW *ONLY* BOOKKEEPING — 10.4 ms of it, around 2.2 ms of real work
-**MEASURED 2026-09-22 with §2a's stack on (`make DECODESPLIT=1`, `amiga/decodesplit.gdb`),
-control-corrected, and the split closes at 12.79 ms:**
+### 5b. ✅ CLOSED — THE CONVERSION IS A COLD-START PATH, AND WHAT IS LEFT IS NOT A DECODE
+**The frame-buffer -> bitplane conversion no longer runs per frame.** Every display line has a
+painter (0..18 + 192..207 the glyph delta base, 83..116 the span sweep, 117..157 the low painter
+plus the cockpit layer, 158..191 the dash base and its rectangles) and the 64-line sky band is
+FLAT — its four palette entries are equal, so no plane bit in it is observable. That band is the
+engine's own bytes showing through screen memory, which is why the picture there was always
+arbitrary and why converting it was pure loss. `convertRace` now runs TWICE per entry into the
+race view; `make DECODEFULL=1` restores the old per-frame pass as the A/B control.
 
-| ms | slot | |
+| ms | slot | after |
 |---:|---|---|
-| 0.94 | `snapshotBands` | ⛔ must survive — `m_plan` is the COPPER's palette schedule |
-| 1.66 | `buildLineModes` | ⛔ must survive, same reason |
-| 2.47 | ownership / carve loops | a per-frame scan of all 208 display lines |
-| 2.19 | dynamic rectangles | §12c's re-expansion |
-| 2.19 | `convertRace` | **was 17.09 before ownership** |
-| 3.19 | phase-27 remainder | never attributed |
+| 0.93 | `snapshotBands` | ⛔ survives — `m_plan` is the COPPER's palette schedule |
+| 1.64 | `buildLineModes` | ⛔ survives, same reason |
+| 2.28 | dynamic rectangles | ⛔ survives — it is the PAINTER that owns 158..191 |
+| 1.11 | ownership / carve walk | **deleted** (it existed only to tell the conversion what to skip) |
+| 0.52 | `convertRace` | **deleted from the per-frame path** (was 17.09 before ownership) |
 
-⭐⭐⭐ **THE CONVERSION IS DONE: `convertRace` converts FOUR CELLS A FRAME.** 145 of the 208 lines
-are owned and 64 more are the flat sky band the decode skips by design, so essentially every
-visible line is already somebody's.
-⚠ **CORRECTION to the first reading of this split: the 2.19 ms of dynamic rectangles is a PAINTER,
-not bookkeeping** — it is what owns rows 158..191, and skipping it would freeze the dash. So the
-floor is **4.8 ms** (0.94 + 1.66 + 2.19), the certainly-collectable part is **4.4 ms** (the
-ownership scan 2.47 and `convertRace` 2.19), and the 3.19 ms remainder is the unknown that decides
-whether this entry is worth 4 ms or 8.
+⇒ `ph27` **10.47 -> 7.83**, frame `Σ(1..39)−28` **155.80 -> 152.77**, i.e. **−3.03 ms**.
 
-⇒ **The step is to stop CALLING the conversion at all** when no line is both unowned and non-flat
-(§11a always said the end state was two steps, and this is the second). The test is cheap — the
-same `g_plotOwn` groups plus the five band modes — but ⚠ it must not simply move the 2.47 ms scan
-somewhere else: read that loop's objdump FIRST, because 2.47 ms for 52 longword tests and 145 byte
-writes is ~3x what the operation count says, which is the tell this file keeps meeting.
-⚠ And the 3.19 ms remainder is still unattributed — it is the largest single row here and nobody
-has split it.
+⭐⭐⭐ **AND THE `phase 27 remainder` THAT THREE SESSIONS CALLED "3.1 ms UNATTRIBUTED" WAS NEVER
+RACE WORK — it is eight front-end `decodeTeletext()` calls at the top of the window, amortised
+over 337 race frames.** Bracketing the entry BEFORE the teletext test read 2.72 ms with
+`calls=345` against 337 frames; moving the bracket after it sent the row to 0.13 (the control) and
+the 2.7 ms back to 27. ⚠ The lesson is the calls column: **a bracket whose `calls` exceeds the
+frame count is collecting a different population**, and the excess is where its time is.
+⚠ What remains in `ph27` is therefore ~5.1 ms of real per-frame work — all three survivors above —
+plus that boot artefact. The three small rows (entry, post-convert, tail, 0.13-0.24) sit at the
+instrument's floor: the control bracket is 0.13 and the VERTB ISR lands on whichever phase it
+preempts, so nothing under ~0.5 ms in this split is resolvable.
+
+**What is still owed here (and it is naming, not milliseconds):**
+- ⬜ `RevsScreen::decode()` is not a decode any more — it is the frame's copper schedule plus its
+  painters. Rename it, and with it `DEC_PHASE_*`, `decodesplit.gdb` and `g_decode*`.
+- ⬜ Delete the dirty machinery the cold path does not use: `s_shadow`, `s_shadowMode`, the
+  mode-change bitmask arm of `convertRace`, `DECODESKIP`, `DIRTYCHECK`. **Blocked on** the hole
+  census being green on all five circuits — until then `DECODEFULL=1` is the fallback and it needs
+  them. Silverstone reads `hole frames=2, last at decode #2`.
 
 ### 5b-old. (the pre-§2a framing, kept only for its numbers) 5 ms around 7.2 ms of real work
 `make DECODESPLIT=1` now carves `decode()` SIX ways (§12c added the rect slot). The shipping

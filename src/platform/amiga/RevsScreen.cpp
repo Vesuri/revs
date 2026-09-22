@@ -278,21 +278,9 @@ volatile unsigned long g_decodeSkips       = 0;
    run have no ownership yet, so "holes only before frame N" is the answer that licenses the
    deletion and "holes at frame 3000" is the answer that forbids it.
    ⚠ A check build only — this walk is precisely the ~1 ms the deletion collects. */
-volatile unsigned long g_decodeHoleFrames  = 0;
-volatile unsigned long g_decodeHoles       = 0;
-volatile unsigned long g_decodeHoleLastAt  = 0;   /* this pass's own frame count at the last one */
-static   unsigned long g_decodeHolesSeenFrames = 0;
-/* ⭐⭐⭐ HOW MANY MORE FRAMES MUST BE EXPANDED OUT OF `mem[]` — normally ZERO, because every
-   display line has a painter (see the conversion below).  Armed to 2, once per BUFFER, whenever
-   the front end is up: the race view's bitplanes are nobody's while MODE 7 is showing, so the
-   first frames after it comes down have no painted picture to keep.
-   ⚠ Starts armed, for the first entry into the race — a `STRAIGHT_TO_RACE` build has no teletext
-   frame before its first decode.
-   ⚠ File-static rather than a member: the one RevsScreen lives inside a function-local static,
-   and a member initialiser there makes GCC emit `__cxa_guard_acquire`, which this freestanding
-   link has no runtime for. */
-static   unsigned char s_coldConvert = 2u;
-volatile unsigned short g_decodeHoleLine   = 0xFFFFu;
+volatile unsigned long g_decodeGapFrames   = 0;   /* frames the conversion had to run on   */
+volatile unsigned long g_decodeGapLastAt   = 0;   /* g_decodeFrames at the last of them      */
+volatile unsigned long g_decodeFrames      = 0;   /* race-view frames this pass has prepared */
 /* A silhouette table entry that did not decode to a chain slot: the layer degrades to "no car
    on this line" (PF1 shows, i.e. today's picture) rather than masking the wrong cells. */
 volatile unsigned long g_cockpitBadSlot    = 0;
@@ -990,12 +978,47 @@ static inline void revs_fill_modes(unsigned char* p, int a, int b, unsigned char
     while (a < b) p[a++] = v;
 }
 
+/* ⭐⭐⭐ IS EVERY DISPLAY LINE IN [lo,hi) CLAIMED BY A PAINTER?  This is the whole remaining
+   question the frame-buffer conversion answers, and it is asked HERE — from buildLineModes, per
+   BAND, while the band's line range is already in registers — because a band whose palette is
+   flat need not be asked at all and a band that is wholly owned costs one `cmp.l` per four lines.
+   ⚠ It replaces a FIXED cold-frame count, which was wrong: Silverstone's holes stop at decode #2
+   but Donington's ran to decode #54, so "convert the first two frames" showed ~45 stale lines for
+   ten seconds of a race.  Exactness is cheap here and a guess is not.
+   ⚠ ENDIAN-OK: the wide test is an equality against a byte-uniform constant, which has no byte
+   order.  `g_plotOwn` is `aligned(4)`, so the leading byte loop is the only alignment handling
+   needed. */
+static int own_has_gap(unsigned lo, unsigned hi)
+{
+#ifdef REVS_SPAN_OWN
+    const unsigned char* p = g_plotOwn + lo;
+    unsigned n = hi - lo;
+    while (n && (((unsigned)(p - g_plotOwn)) & 3u)) { if (!*p) return 1; p++; n--; }
+    while (n >= 4u) {
+        if (*(const uint32_t*)(const void*)p != 0x01010101u) return 1;
+        p += 4u; n -= 4u;
+    }
+    while (n) { if (!*p) return 1; p++; n--; }
+    return 0;
+#else
+    (void)lo; (void)hi;
+    return 1;                      /* no ownership in this build: everything is the decode's */
+#endif
+}
+
+/* Set by buildLineModes, read by the conversion below: this frame has at least one display line
+   that is neither owned nor flat, so `mem[]` is the only thing that can supply it. */
+static unsigned char s_frameHasGap = 1u;
+
 void RevsScreen::buildLineModes()
 {
     /* The record must be the game's five bands, identified by the state it wrote them
        under ($4F43): 0,1,2,3 and $FF for the last.  Anything else and the previous
        frame's plan stands — see g_bandRejects. */
     const BandSnapshot& s = m_bandSnap;
+    /* ⚠ AND `s_frameHasGap` KEEPS ITS PREVIOUS VALUE ON THIS PATH, deliberately: the previous
+       frame's plan stands, so the previous frame's answer to "is every line claimed?" describes
+       exactly the modes that are still in the table. */
     if (s.count != 5) { g_bandRejects++; return; }
     unsigned slot[5];
     for (unsigned i = 0; i < 5; i++) slot[i] = 0xFFu;
@@ -1010,6 +1033,7 @@ void RevsScreen::buildLineModes()
        band n+1's, because the 6522 reloads T1 from the latch only at the NEXT timeout.
        So the interval that starts at band n is the one recorded against band n-1. */
     int startUs = (int)BBC_BAND0_ANCHOR_US;
+    unsigned char gap = 0u;
     uint16_t flatLines = 0, flatBands = 0;
     unsigned char bandMode[5];
 
@@ -1056,6 +1080,9 @@ void RevsScreen::buildLineModes()
         }
 #endif
         revs_fill_modes(m_lineMode, a, b, (unsigned char)mode);
+        /* ⭐ THE GAP TEST, per band and only where it can matter: a flat band is unobservable and
+           an empty range has nothing in it. */
+        if (mode != 0u && b > a && own_has_gap((unsigned)a, (unsigned)b)) gap = 1u;
 
         m_plan.line[n] = (short)lineStart;
         m_plan.rec[n]  = (unsigned char)rec;
@@ -1066,6 +1093,9 @@ void RevsScreen::buildLineModes()
     REVS_PLOT_BANDS(m_plan.line, bandMode, 5);
     g_decodeFlatLines = flatLines;
     g_decodeFlatBands = flatBands;
+    s_frameHasGap     = gap;
+    if (gap) { g_decodeGapFrames++; g_decodeGapLastAt = g_decodeFrames; }
+    g_decodeFrames++;
 }
 
 void RevsScreen::buildBands()
@@ -1880,15 +1910,7 @@ void RevsScreen::decode()
     /* ⭐ MODE 7 IS A DIFFERENT PASS ENTIRELY, and it must come first: the race decode below
        reads the BBC frame buffer $5A80-$7AFF, which out of a race holds nothing it should be
        drawing, while $7C00-$7FFF holds the teletext page instead of the dashboard overlay. */
-    if (tt_active()) {
-        /* ⭐⭐⭐ RE-ARM THE COLD CONVERSION.  While the front end is up the race view's bitplanes
-           are not being painted by anybody, so the first frames after it comes down must be
-           expanded out of `mem[]` once per BUFFER — the painters only claim a line once they
-           have run, and the measured hole census says that is exactly two decodes (below). */
-        s_coldConvert = 2u;
-        decodeTeletext();
-        return;
-    }
+    if (tt_active()) { decodeTeletext(); return; }
 #ifdef REVS_DECODE_SPLIT
     /* ⚠ AFTER the teletext test, and that placement is the measurement.  Bracketed BEFORE it,
        this row read 2.72 ms with calls=345 against 337 frames: the front-end frames at the top of
@@ -1922,23 +1944,6 @@ void RevsScreen::decode()
     buildLineModes();
 #ifdef REVS_DECODE_SPLIT
     PROBE_PHASE(DEC_PHASE_OWN);
-#endif
-
-#ifdef REVS_DECODE_HOLES
-    {
-        unsigned y, holes = 0;
-        g_decodeHolesSeenFrames++;
-        for (y = 0; y < kH; y++)
-            if (m_lineMode[y] != 0u && !g_plotOwn[y]) {
-                if (!holes && g_decodeHoleLine == 0xFFFFu) g_decodeHoleLine = (unsigned short)y;
-                holes++;
-            }
-        if (holes) {
-            g_decodeHoleFrames++;
-            g_decodeHoles     += holes;
-            g_decodeHoleLastAt = g_decodeHolesSeenFrames;
-        }
-    }
 #endif
 
 #if defined(REVS_SPAN_OWN) && defined(REVS_DECODE_FULL)
@@ -2155,21 +2160,29 @@ void RevsScreen::decode()
        the row, which is the owned -> not-owned transition already written and already tested
        (§SPAN_OWN's fourth property). */
 #ifndef REVS_DECODE_FULL
-    /* ⭐⭐⭐ THE CONVERSION IS A COLD-START PATH NOW, NOT A PER-FRAME PASS.  Every display line has
-       a PAINTER: 0..18 and 192..207 the glyph delta base, 83..116 the span sweep, 117..157 the low
-       painter plus the cockpit layer, 158..191 the dash base and its rectangles — and the 64-line
-       sky band is FLAT, i.e. its four palette entries are equal, so no plane bit in it is
-       observable.  What is left for `mem[]` to supply is the frames BEFORE any painter has run,
-       once per buffer.
-       ⚠⚠ MEASURED, NOT ASSUMED, and the instrument is `make DECODEHOLES=1`: it counts the lines
-       that are neither owned nor flat, per frame, and records the last frame one appeared at.
-       Over a 337-frame driving run it reads `hole frames=2, holes=276, last at decode #2` — the
-       two cold frames and nothing after them.  A hole late in a run is a region with no painter
-       and this arm would show it stale pixels; that is what the check build is for.
-       ⚠ `make DECODEFULL=1` restores the per-frame conversion and the ownership walk that fed
-       it — the control arm for the A/B, and the fallback if a circuit ever reports a late hole. */
-    if (s_coldConvert) {
-        s_coldConvert--;
+    /* ⭐⭐⭐ THE CONVERSION RUNS ONLY WHEN A DISPLAY LINE HAS NO OWNER — WHICH IS THE COLD FRAMES
+       AND NOTHING ELSE.  Every line has a painter: 0..18 and 192..207 the glyph delta base,
+       83..116 the span sweep, 117..157 the low painter plus the cockpit layer, 158..191 the dash
+       base and its rectangles — and the 64-line sky band is FLAT, i.e. its four palette entries
+       are equal, so no plane bit in it is observable (it is the engine's own bytes showing
+       through screen memory, which is why the picture there was always arbitrary).
+       ⚠⚠ THE TEST IS EXACT AND PER FRAME, and a fixed cold-frame count is NOT a substitute:
+       measured over five circuits, the gap frames stop at frame 2 on four of them and at frame
+       **54** on Donington, where a two-frame guess left ~45 stale lines for ten seconds of race.
+       `own_has_gap` costs one `cmp.l` per four lines of a non-flat band (buildLineModes).
+       ⚠ `g_decodeGapFrames` / `g_decodeGapLastAt` are the census, always compiled in: a gap
+       LATE in a run is a region whose painter stopped painting, and it is the one thing that can
+       put stale pixels on the screen.  `make DECODEFULL=1` restores the per-frame conversion. */
+    if (s_frameHasGap) {
+        /* ⚠ THE OWNED LINES ARE MUTED FIRST, and only on a gap frame.  A painted line must not
+           be re-expanded out of `mem[]` — the span sweep's own bytes are a generation ahead of
+           it — so ownership is still expressed as mode 0, just no longer every frame. */
+#ifdef REVS_SPAN_OWN
+        {
+            unsigned y;
+            for (y = 0; y < kH; y++) if (g_plotOwn[y]) m_lineMode[y] = 0;
+        }
+#endif
         g_decodeCells       = (uint16_t)convertRace(dst, 0, 0);
         g_decodeCellsTotal += g_decodeCells;
         g_decodeFullFrames++;
