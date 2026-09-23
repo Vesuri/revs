@@ -8708,11 +8708,17 @@ static EdgeIndices interp_edge_publish(void)
     return r;
 }
 
+/* ⭐ WRITTEN OVER LOCALS.  Every cell this routine stores it still stores, with the same final
+   value and before anything that could read it (interp_edge_publish, the walk's general
+   fallback, the return) — but it never READS BACK a cell it has itself just written: the clip
+   history, the endpoint, the end line, the deltas, the arm, the step and the patterns are carried
+   in locals from the moment they are computed.  On the 68000 each read-back was a 12-20 cycle
+   memory operand, and the pattern loop re-read surface_style_index from mem[] every iteration
+   because its own stores might have aliased it (docs/open-work.md, step 1: the per-span setup). */
 EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
                                     int publishOnly)
 {
-    unsigned x;
-    int i;
+    uint8_t swapped = 0;
 
     ROAD_COUNT(g_roadSpans);                /* one span pair handed to the rasteriser */
     surface_style_index = styleIndex;
@@ -8720,23 +8726,27 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 
     /* 1 — the clip bit, rotated into span_clip's top: set when the endpoint is off the bottom
        of the view or more than $14 off axis. */
+    const uint8_t nearLine = mem[MEM_edge_y + nearPoint];
+    uint8_t clip;
     {
         uint8_t clipBit;
-        uint8_t line = (uint8_t)(mem[MEM_edge_y + nearPoint] - 1u);
-        if (line >= 0x4Eu) {
+        if ((uint8_t)(nearLine - 1u) >= 0x4Eu) {
             clipBit = 1;
         } else {
             uint8_t angle = mem[MEM_edge_x_hi + farPoint];
             if (angle & 0x80u) angle ^= 0xFFu;      /* |angle|, near enough for a clip test */
             clipBit = (angle >= 0x14u) ? 1u : 0u;
         }
-        mem[SPAN_CLIP] = (uint8_t)((clipBit << 7) | (mem[SPAN_CLIP] >> 1));
+        clip = (uint8_t)((clipBit << 7) | (mem[SPAN_CLIP] >> 1));
+        mem[SPAN_CLIP] = clip;
     }
 
     /* 2 — the endpoint, as a 10-bit x biased by $80 in the high byte. */
-    x = edge_x_word(farPoint);
-    shared_temp_77 = (uint8_t)(((x << 2) >> 8) + 0x80u);
-    mem[SPAN_LINE_END] = mem[MEM_edge_y + nearPoint];
+    const uint16_t farX = edge_x_word(farPoint);
+    uint8_t x77     = (uint8_t)(((unsigned)(farX << 2) >> 8) + 0x80u);
+    uint8_t lineEnd = nearLine;
+    shared_temp_77     = x77;
+    mem[SPAN_LINE_END] = lineEnd;
     saved_slot_index   = farPoint;
     span_saved_index   = nearPoint;
     if (publishOnly) return interp_edge_publish();
@@ -8747,36 +8757,41 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     return interp_edge_publish();
 #endif
 
+    /* The previous span's endpoint, as interp_edge_publish left it. */
+    uint8_t x7e    = shared_temp_7e;
+    uint8_t cursor = span_line_cursor;
+
     /* Both ends have to be usable.  Bit 6 clear means the PREVIOUS point was on screen and
        this one starts a span; bit 6 set with bit 7 set means neither is. */
-    if (mem[SPAN_CLIP] & 0x40u) {
-        if (mem[SPAN_CLIP] & 0x80u) return interp_edge_publish();
+    if (clip & 0x40u) {
+        if (clip & 0x80u) return interp_edge_publish();
         /* $2B69 — walk from the previous endpoint to this one instead. */
-        { uint8_t px = shared_temp_7e, pl = span_line_cursor;
-          shared_temp_7e     = shared_temp_77;
-          span_line_cursor   = mem[SPAN_LINE_END];
-          shared_temp_77     = px;
-          mem[SPAN_LINE_END] = pl; }
-        span_swapped--;                     /* $FF */
+        { uint8_t t;
+          t = x7e;    x7e    = x77;     x77     = t;
+          t = cursor; cursor = lineEnd; lineEnd = t; }
+        shared_temp_7e     = x7e;
+        span_line_cursor   = cursor;
+        shared_temp_77     = x77;
+        mem[SPAN_LINE_END] = lineEnd;
+        swapped      = 0xFFu;
+        span_swapped = swapped;             /* $FF */
     }
 
     /* 3 — the two deltas.  span_dy is |end line - start line|. */
-    uint8_t lineDelta = (uint8_t)(mem[SPAN_LINE_END] - span_line_cursor);
+    const uint8_t lineDelta = (uint8_t)(lineEnd - cursor);
     mem[SPAN_YSTEP] = lineDelta;                 /* the cell is the plotters' input, so it stays */
-    { uint8_t dy = lineDelta;                    /* ...but this reader already has the value */
-      if (dy & 0x80u) dy = (uint8_t)(0u - dy);
-      mem[SPAN_DY] = dy; }
+    uint8_t dy = (lineDelta & 0x80u) ? (uint8_t)(0u - lineDelta) : lineDelta;
+    uint8_t dx, arm;
 
-    if (mem[SPAN_CLIP] & 0xC0u) {
+    if (clip & 0xC0u) {
         /* Both ends on screen: dx is the angle difference (a plain signed 16-bit subtract of
            the two endpoints' x), normalised left until its top byte is below $40, with span_dy
            shifted down by as much.  The PRE-abs high byte selects the plotter arm. */
         /* ⚠ The 6502 loads the two point indices into Y and X ($2B91) and does this in
            byte-pair arithmetic; both registers are reloaded before anything reads them (the
            phase into X at $2C92, the start line into Y at $2C93), so the twin uses a uint16_t. */
-        uint16_t vSaved = edge_x_word(saved_slot_index);
         uint16_t vFar   = edge_x_word(span_index_far);
-        uint16_t dxRaw  = (uint16_t)(vSaved - vFar);
+        uint16_t dxRaw  = (uint16_t)(farX - vFar);          /* farX is saved_slot_index's x */
         uint8_t  armHi  = (uint8_t)(dxRaw >> 8);           /* pre-abs high byte → arm select */
         uint16_t adx    = (dxRaw & 0x8000u) ? (uint16_t)(0u - dxRaw) : dxRaw;
 
@@ -8787,34 +8802,31 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
             else { adx <<= 1; giveBack = ((adx >> 8) & 0x80u) ? 2 : 0; }
         }
         math_lo = (uint8_t)adx;             /* the 6502's ASL_M leaves the shifted low byte here */
-        /* $2C0F/$2C12 — one or two `LSR span_dy`.  Two shifts of a byte are one shift by two,
-           so this is a single read-modify-write instead of up to two. */
-        if (giveBack > 0) mem[SPAN_DY] = (uint8_t)(mem[SPAN_DY] >> giveBack);
-
-        mem[SPAN_DX]  = (uint8_t)(adx >> 8);
-        mem[SPAN_ARM] = (uint8_t)(armHi ^ span_swapped);
+        /* $2C0F/$2C12 — one or two `LSR span_dy`, which is one shift by two. */
+        dy  = (uint8_t)(dy >> giveBack);
+        dx  = (uint8_t)(adx >> 8);
+        arm = (uint8_t)(armHi ^ swapped);
     } else {
         /* One end clipped: dx is just how far the x moved, and the subtract's borrow (carry)
            becomes span_arm's new top bit (the arm-select).  The x-move is negated to |dx| when
            that borrow occurred. */
-        uint8_t carry = (shared_temp_7e >= shared_temp_77) ? 1u : 0u;
-        uint8_t dxv   = (uint8_t)(shared_temp_7e - shared_temp_77);
-        mem[SPAN_ARM] = (uint8_t)((carry << 7) | (mem[SPAN_ARM] >> 1));
-        if (!carry) dxv = (uint8_t)(0u - dxv);
-        mem[SPAN_DX]  = dxv;
+        uint8_t carry = (x7e >= x77) ? 1u : 0u;
+        dx  = (uint8_t)(x7e - x77);
+        arm = (uint8_t)((carry << 7) | (mem[SPAN_ARM] >> 1));
+        if (!carry) dx = (uint8_t)(0u - dx);
     }
-    if (mem[SPAN_DX] == 0 && mem[SPAN_DY] == 0) return interp_edge_publish();  /* no extent */
+    mem[SPAN_DY]  = dy;
+    mem[SPAN_DX]  = dx;
+    mem[SPAN_ARM] = arm;
+    if (dx == 0 && dy == 0) return interp_edge_publish();  /* no extent */
 
     /* Does the abandon path stamp a surface code?  Only when both ends were usable. */
-    if (mem[SPAN_CLIP] & 0xC0u)
-        span_cap_pending = (uint8_t)(mem[SPAN_ARM] & 0x80u);
-    else
-        span_cap_pending = (uint8_t)(mem[SPAN_CLIP] & 0xC0u);
+    span_cap_pending = (clip & 0xC0u) ? (uint8_t)(arm & 0x80u) : (uint8_t)(clip & 0xC0u);
 
     /* A zero line delta borrows its direction from the swap flag. */
-    uint8_t ystep = mem[SPAN_YSTEP];
+    uint8_t ystep = lineDelta;
     if (ystep == 0) {
-        ystep = (uint8_t)(span_swapped ^ 0xFFu);
+        ystep = (uint8_t)(swapped ^ 0xFFu);
         mem[SPAN_YSTEP] = ystep;
     }
 
@@ -8824,12 +8836,21 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     g_spanStepOut = (ystep & 0x80u) ? (SpanStep)-1 : (SpanStep)+1;
     g_spanStepIn  = (SpanStep)0;
 
-    /* 4 — the style record becomes this span's four column patterns. */
-    for (i = 0; i < 4; i++) {
-        uint8_t pat = mem[MEM_surface_style_tbl + (uint8_t)(surface_style_index + i)];
-        mem[MEM_colour_pattern_tbl + i]    = pat;
-        mem[MEM_colour_pattern_or_tbl + i] = (uint8_t)(pat & mem[MEM_colour_pattern_keep_tbl + i]);
-    }
+    /* 4 — the style record becomes this span's four column patterns.  All eight source bytes are
+       read before the eight stores: the style record ($5FD0..$60D2) and the keep mask ($33FC)
+       cannot overlap colour_pattern_tbl / colour_pattern_or_tbl, so the order is not observable. */
+    const uint8_t s0 = mem[MEM_surface_style_tbl + styleIndex];
+    const uint8_t s1 = mem[MEM_surface_style_tbl + (uint8_t)(styleIndex + 1u)];
+    const uint8_t s2 = mem[MEM_surface_style_tbl + (uint8_t)(styleIndex + 2u)];
+    const uint8_t s3 = mem[MEM_surface_style_tbl + (uint8_t)(styleIndex + 3u)];
+    mem[MEM_colour_pattern_tbl + 0]    = s0;
+    mem[MEM_colour_pattern_tbl + 1]    = s1;
+    mem[MEM_colour_pattern_tbl + 2]    = s2;
+    mem[MEM_colour_pattern_tbl + 3]    = s3;
+    mem[MEM_colour_pattern_or_tbl + 0] = (uint8_t)(s0 & mem[MEM_colour_pattern_keep_tbl + 0]);
+    mem[MEM_colour_pattern_or_tbl + 1] = (uint8_t)(s1 & mem[MEM_colour_pattern_keep_tbl + 1]);
+    mem[MEM_colour_pattern_or_tbl + 2] = (uint8_t)(s2 & mem[MEM_colour_pattern_keep_tbl + 2]);
+    mem[MEM_colour_pattern_or_tbl + 3] = (uint8_t)(s3 & mem[MEM_colour_pattern_keep_tbl + 3]);
 
     /* The two surface classes a cap can stamp on the scan line the span ends on.  The style
        record is a boundary RAMP: byte 0 is its no-fill end (a uniform-colour byte, $00/$0F/
@@ -8837,30 +8858,36 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
        the OVER colour and the FILL colour read out whole, and which one caps the line is only
        the walk direction.  $40/$80 tag the writer and never reach a colour — both consumers
        mask the class with 3.  Verified over all ten reachable styles (symbols.csv). */
-    math_lo = (uint8_t)(surface_pass_index << 3);        /* the pass, in bits 3-5 */
+    const uint8_t pass     = surface_pass_index;
+    const uint8_t passBits = (uint8_t)(pass << 3);        /* the pass, in bits 3-5 */
+    math_lo = passBits;
     /* byte 0's colour: column 0's low bit (bit 3) and column 3's high bit (bit 4). */
-    uint8_t pattern0 = mem[MEM_colour_pattern_tbl];    /* byte 0, read once and reused below */
-    span_cap_surface_over = (uint8_t)(((pattern0 >> 3) & 3) | math_lo | 0x40u);
+    uint8_t pattern0 = s0;
+    span_cap_surface_over = (uint8_t)(((pattern0 >> 3) & 3) | passBits | 0x40u);
 
     /* $2C3E — an all-zero pattern is substituted, and the substitution is what byte 0's
-       consumer sees.  The cell write stays (the plotters read it); the reads do not. */
+       consumer sees.  The cell write stays (the plotters and plot_object read it). */
     if (pattern0 == 0) { pattern0 = 0x55u; mem[MEM_colour_pattern_tbl] = pattern0; }
     bearing_hi = pattern0;
 
     /* byte 3's fill colour: column 2's low bit (bit 1) and column 0's high bit (bit 7). */
-    { uint8_t p3 = mem[MEM_colour_pattern_tbl + 3];
-      uint8_t code = (uint8_t)((p3 >> 1) & 1u);
-      if (p3 & 0x80u) code |= 2u;                        /* $2C4C BIT — bit 7 through N */
-      span_cap_surface_fill = (uint8_t)(code | 0x80u | math_lo); }
+    uint8_t capFill;
+    { uint8_t code = (uint8_t)((s3 >> 1) & 1u);
+      if (s3 & 0x80u) code |= 2u;                        /* $2C4C BIT — bit 7 through N */
+      capFill = (uint8_t)(code | 0x80u | passBits);
+      span_cap_surface_fill = capFill; }
 
     /* The LAST span of a pass is clamped to the top or the bottom of the view rather than to
        its own end line, so the walk always terminates on a real scan line. */
-    if ((uint8_t)(span_saved_index + 1) == span_end_index || mem[SPAN_LINE_END] >= 0x50u)
-        mem[SPAN_LINE_END] = (mem[SPAN_YSTEP] & 0x80u) ? 0x00u : 0x4Fu;
+    if ((uint8_t)(nearPoint + 1u) == span_end_index || lineEnd >= 0x50u) {
+        lineEnd = (ystep & 0x80u) ? 0x00u : 0x4Fu;
+        mem[SPAN_LINE_END] = lineEnd;
+    }
 
     /* 6 — the three screen pointers and the source block, all from the endpoint's x. */
-    math_hi = (uint8_t)(shared_temp_7e - 0x30u);
-    uint8_t block = (uint8_t)(math_hi >> 2);
+    const uint8_t mh = (uint8_t)(x7e - 0x30u);
+    math_hi = mh;
+    uint8_t block = (uint8_t)(mh >> 2);
     mem[SPAN_BLOCK] = block;
     if (block >= 0x28u) return interp_edge_publish();   /* off the side */
     /* The three screen pages, from the endpoint's block: (block >> 1) + $30, and plot_ptr3
@@ -8872,40 +8899,37 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 
     /* The span walk takes the entry sub-column phase and the start line as plain C arguments,
        and the cells this routine has just stored as values (span_walk_direct). */
-    uint8_t phase     = (uint8_t)(math_hi & 7u);   /* the sub-column phase, into the entry tables */
-    uint8_t startLine = span_line_cursor;
-    const uint8_t dxv = mem[SPAN_DX], dyv = mem[SPAN_DY], lineEnd = mem[SPAN_LINE_END];
+    uint8_t phase     = (uint8_t)(mh & 7u);        /* the sub-column phase, into the entry tables */
+    uint8_t startLine = cursor;
 
-    if (dxv >= dyv) {
+    if (dx >= dy) {
         /* X-MAJOR.  A solid run needs no terminator, so the two end markers are switched off
            by planting RTS over their first byte. */
-        int wantMarkers = (mem[MEM_colour_pattern_tbl] == 0xFFu)
-                       || ((span_cap_surface_fill & 3u) == 3u);
+        int wantMarkers = (pattern0 == 0xFFu) || ((capFill & 3u) == 3u);
         g_spanMarkOn = wantMarkers ? SPAN_MARK_ON : SPAN_MARK_OFF;  /* $2CAA / $2CB4 */
         if (wantMarkers) {
             /* $2CBC — for two of the four passes the step has to happen on the way IN
                instead, and Y is nudged to match.  The 6502 does CMP #2 / ROR A / EOR span_arm
                and branches on the result's bit 7. */
-            uint8_t pv  = surface_pass_index;
-            uint8_t cin = (pv >= 0x02u) ? 1u : 0u;                  /* CMP #2 carry */
-            uint8_t sel = (uint8_t)(((cin << 7) | (pv >> 1)) ^ mem[SPAN_ARM]);
+            uint8_t cin = (pass >= 0x02u) ? 1u : 0u;                /* CMP #2 carry */
+            uint8_t sel = (uint8_t)(((cin << 7) | (pass >> 1)) ^ arm);
             if (sel & 0x80u) {
                 g_spanStepIn  = g_spanStepOut;   /* four more opcode writes on the 6502 */
                 g_spanStepOut = (SpanStep)0;
-                if (mem[SPAN_YSTEP] & 0x80u) startLine++; else startLine--;
+                if (ystep & 0x80u) startLine++; else startLine--;
             }
         }
         ROAD_PHASE(ROAD_PHASE_WALK);    /* everything above this line is per-span SETUP */
-        if (mem[SPAN_ARM] & 0x80u)
-            span_walk_direct(&ARM_SHALLOW_REV, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, wantMarkers);
+        if (arm & 0x80u)
+            span_walk_direct(&ARM_SHALLOW_REV, phase, startLine, page, block, dx, dy, lineEnd, pattern0, wantMarkers);
         else
-            span_walk_direct(&ARM_SHALLOW_FWD, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, wantMarkers);
+            span_walk_direct(&ARM_SHALLOW_FWD, phase, startLine, page, block, dx, dy, lineEnd, pattern0, wantMarkers);
     } else {
         ROAD_PHASE(ROAD_PHASE_WALK);
-        if (mem[SPAN_ARM] & 0x80u)
-            span_walk_direct(&ARM_STEEP_REV, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, 0);
+        if (arm & 0x80u)
+            span_walk_direct(&ARM_STEEP_REV, phase, startLine, page, block, dx, dy, lineEnd, pattern0, 0);
         else
-            span_walk_direct(&ARM_STEEP_FWD, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, 0);
+            span_walk_direct(&ARM_STEEP_FWD, phase, startLine, page, block, dx, dy, lineEnd, pattern0, 0);
     }
     ROAD_PHASE(ROAD_PHASE_SPANS);
 
