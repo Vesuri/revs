@@ -210,7 +210,8 @@ endif
 
 # ⚠⚠ `make ROADARM=1|2` — PICTURE WRONG BY CONSTRUCTION, the pricing arms for draw_road's span
 # body (src/gen/revs_native.c): 1 = no span walk and no plot (the setup still runs), 2 = no span
-# body at all (only the endpoint hand-over), 3 = the walk runs but each plot's BODY is skipped.  ph11 against the plain control prices each part
+# body at all (only the endpoint hand-over), 3 = the walk runs but each plot's BODY is skipped, 4 = the walk's per-span entry only,
+# 5 = the walk's loop with no plot called at all.  ph11 against the plain control prices each part
 # WITHOUT ROADSPLIT's brackets, which double the pass (67 ms against 34) and so cannot size it.
 # ⚠ Check phase 5 and the frame count match the control: the sim must not see the difference.
 ifneq ($(ROADARM),)

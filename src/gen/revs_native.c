@@ -6987,20 +6987,41 @@ static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t ori
    ⚠ A larger of 0 would spin here exactly as the 6502 does.  It cannot happen: a zero larger
    means both ground magnitudes are zero, which is the equal case and never reaches an arm,
    and project_point's far clip rejects every point when point_dist is 0. */
+/* Leading zeros of a byte (clz8[0] = 8, never read: the callers never pass zero). */
+static const uint8_t s_clz8[256] = {
+#define R2(n) n, n
+#define R4(n) R2(n), R2(n)
+#define R8(n) R4(n), R4(n)
+#define R16(n) R8(n), R8(n)
+#define R32(n) R16(n), R16(n)
+#define R64(n) R32(n), R32(n)
+#define R128(n) R64(n), R64(n)
+    8, 7, R2(6), R4(5), R8(4), R16(3), R32(2), R64(1), R128(0)
+#undef R2
+#undef R4
+#undef R8
+#undef R16
+#undef R32
+#undef R64
+#undef R128
+};
+
+/* ⭐⭐ ONE SHIFT, NOT A LOOP — and it was ~6% of the whole frame's wall time (amiga/pcsample.gdb:
+   ~65% of project_point_core's samples sat in this loop, on the transform every edge point
+   runs).  The 6502 shifts one place per pass because it has nothing else; a 68000 has no CLZ
+   either, but a 256-byte leading-zeros table and one variable shift give the SAME three
+   results the loop did: `shifts` = the leading zeros of `larger`, `larger` shifted one place
+   past them (its leading 1 falls out, as the loop's last pass shed it), and `smaller` shifted
+   by `shifts` with the same 16-bit truncation the per-pass shifts applied. */
 static uint8_t normalise_for_divide(uint16_t* larger, uint16_t* smaller, unsigned* shifts)
 {
     uint16_t v = *larger;
+    unsigned z = (v & 0xFF00u) ? s_clz8[v >> 8] : 8u + s_clz8[v & 0xFFu];
 
-    *shifts = 0;
-    for (;;) {
-        unsigned out = v >> 15;                           /* the bit the pair sheds off the top */
-        v = (uint16_t)(v << 1);
-        if (out)
-            break;
-        *smaller = (uint16_t)(*smaller << 1);
-        (*shifts)++;
-    }
-    *larger = v;
+    *shifts  = z;
+    *smaller = (uint16_t)(*smaller << z);
+    v        = (uint16_t)(v << (z + 1u));
+    *larger  = v;
     return (uint8_t)((v >> 9) | 0x80u);                   /* ROR A, with the 1 that fell out */
 }
 
@@ -7830,6 +7851,11 @@ static inline __attribute__((always_inline))
 unsigned sw_plot(int usePlot2, uint8_t column, uint8_t y, unsigned carryIn)
 {
     unsigned r;
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 5
+    /* ⚠⚠ `make ROADARM=5` — PICTURE WRONG: the walk's loop runs and NO plot is called at all.
+       A plot that never abandons and never moves Y.  §ROADARM */
+    (void)usePlot2; (void)column; (void)carryIn; return SPAN_PLOT_PACK(y, 0u, 0);
+#endif
     ROAD_PHASE(ROAD_PHASE_NULL);    /* the control: an empty bracket at the plot rate */
     ROAD_PHASE(ROAD_PHASE_PLOT);
     r = usePlot2 ? sw_plot_2(column, y, carryIn) : sw_plot_1(column, y, carryIn);
@@ -7918,6 +7944,9 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 #endif
 
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
+    return;     /* ⚠⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only.  §ROADARM */
+#endif
 
     for (;;) {
         ROAD_COUNT(g_roadSpanLines);        /* one DDA scan line of this span */
