@@ -433,3 +433,29 @@ per-cell reload, because the constraint is the register file, not which value is
 whether to hoist at all.** And note GCC reassociates through parentheses, so
 `(mem + CONST) + (line + off)` emits byte-identical code to `mem + (CONST + line + off)`; you
 cannot spell your way to a constant base register.
+
+## ⭐ WRITING A HAND-ASM ROUTINE FOR THIS BUILD — what the span walk established (2026-09-23)
+
+- **GNU as, not vasm, for a new routine**: `m68k-amiga-elf-as --register-prefix-optional` takes
+  Motorola syntax and gives `.macro` (with `\@`-free numeric local labels and `\name\()_suffix`
+  label pasting), `.type`/`.size` (addr2line and the PC sampler then name the routine), and
+  **`.subsection 1` for cold arms**. Code emitted there lands after the whole routine, so the hot
+  path falls through with no branch over the cold block, and `jbcc`/`jbne` relax to `.s` or `.w`
+  by themselves. Put the `.size` end label in subsection 1, or the cold code is unnamed.
+  (`src/platform/amiga/span_walk_m68k.s`; the Makefile rule passes `--defsym SABOTAGE=N`.)
+- **Bridge with pinned register variables**, not a struct: `register uint32_t x __asm("d5")` for
+  every input and `"+d"`/`"+a"` for every register the routine changes, `"memory"` in the clobbers.
+  Eleven pinned registers compiled without complaint. Have the routine save only a5/a6 itself
+  (either may be GCC's frame pointer), and let GCC save the rest in its own prologue, which it
+  was paying anyway.
+- **Unroll to make operands constant.** A column index that selects a pointer and a table byte
+  costs a register and an indexed load; unrolled, it is an immediate displacement and a fixed
+  register. The twelve routines are ~9 KB, which is free on a cache-less CPU.
+- **A far table needs its own address register**: `d8(An,Xn)` has an 8-bit displacement, so
+  `$3900 + block` cannot be reached from a base that also serves `$628F`. Carry `&table[index]` in
+  an address register and step it with the index. ⚠ Make the step wrap-exact if the index is a
+  byte (`bcc` over a `lea ±256`).
+- `bcc.s` to the very next instruction is an assembler error (a zero byte offset means `.w`):
+  a sabotage that deletes the instruction a short branch skips must leave a same-size no-op.
+- Push the entry address and `rts` to it (`pea (a5,d7.w)` / `rts`). It frees the register that
+  held the jump table's base for the constant it really wants.

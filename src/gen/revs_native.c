@@ -8148,47 +8148,48 @@ int span_walk_fast_ok(const SpanArm *arm)
     return 1;
 }
 
+/* The register walk's state: what span_walk_fast reads once per span and the walk carries.
+   ⚠ Only ever a LOCAL of span_walk_fast, handed by address to always_inline code, so GCC keeps
+   every field in a register (SROA) — the WALKCHECK build is the one place its address escapes. */
+typedef struct {
+    uint16_t p1, p2, p3, dest1, dest2;  /* the three screen pointers and both patched operands */
+    uint8_t  y, block, dx, dy, lineEnd, bh;
+    int      stepIn, stepOut, markOn;
+    int      col, forced, runTop;       /* the first line's computed entry */
+} FastWalk;
+
+#ifdef REVS_WALKCHECK
+volatile unsigned long g_walkCheckCarryIns;   /* DDA adds with a non-zero carry-in (the C walk) */
+volatile unsigned long g_walkCheckArms[4], g_walkCheckExact;   /* every span_walk, by arm; guard refusals */
+#define WALK_CARRY_IN(c) do { if (c) g_walkCheckCarryIns++; } while (0)
+#else
+#define WALK_CARRY_IN(c) ((void)0)
+#endif
+
 /* span_walk_exact's control flow, line for line, over locals.  Plotter 1 reads and writes its
    cell through plot_ptr2 and copies bearing_hi through plot_ptr; plotter 2 through plot_ptr and
-   plot_ptr3 (SPAN_PLOT_1 / SPAN_PLOT_2).  Marker p1 stores through plot_ptr, p2 through plot_ptr2. */
+   plot_ptr3 (SPAN_PLOT_1 / SPAN_PLOT_2).  Marker p1 stores through plot_ptr, p2 through plot_ptr2.
+   Returns 1 when a plot reached the end line (the abandon) and 0 when the walk ran out of lines;
+   either way w holds the final y, pointers and block, and the CALLER writes them back and caps.
+   ⭐ On the Amiga this is also the REFERENCE span_walk_m68k is checked against (`make WALKCHECK=1`). */
 static inline __attribute__((always_inline))
-void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+int span_walk_fast_loop(const SpanArm *arm, FastWalk *w)
 {
-    int col, forced, runTop, first = 1;
-    uint8_t  y = startLine, colMark = 0x80u, acc;
+    int first = 1;
+    const int col = w->col, forced = w->forced, runTop = w->runTop;
+    uint8_t  y = w->y, colMark = 0x80u, acc;
     unsigned carry;
-    uint16_t p1, p2, p3, dest1, dest2;
-    uint8_t  block, dx, dy, lineEnd, bh;
-    int      stepIn, stepOut, markOn;
+    uint16_t p1 = w->p1, p2 = w->p2, p3 = w->p3;
+    const uint16_t dest1 = w->dest1, dest2 = w->dest2;
+    uint8_t  block = w->block;
+    const uint8_t dx = w->dx, dy = w->dy, lineEnd = w->lineEnd, bh = w->bh;
+    const int stepIn = w->stepIn, stepOut = w->stepOut, markOn = w->markOn;
 
-    mem[arm->operand] = mem[arm->table + phase];    /* the entry offset over the branch operand */
-    p1 = plot_ptr_v; p2 = plot_ptr2_v; p3 = plot_ptr3_v;   /* span_walk_fast_ok marshalled them */
-#ifdef REVS_SPAN_SLOT_FALLBACK
-    /* ⚠ The guard has just proved this span runs TOWARD its bound, so say so: span_walk_cap reads
-       this flag, span_walk_exact recomputes it per span, and span_plot_oracle leaves it SET — a
-       stale 1 made the cap decode an unwritten slot (interp_edge 78/600, but only after the
-       draw_span fixtures had run). */
-    g_spanSlotsWrapped = 0;
-#endif
-    if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
-#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
-    return;     /* ⚠⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only. */
-#endif
+    acc   = (uint8_t)(0u - (unsigned)dy);
+    carry = 0;
 
-    dx      = mem[arm->addend];                     /* $83/$84 — fixed for the span (see banner) */
-    dy      = mem[arm->subtrahend];
-    lineEnd = mem[SPAN_LINE_END];
-    block   = mem[SPAN_BLOCK];
-    bh      = bearing_hi;
-    dest1   = (uint16_t)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
-    dest2   = (uint16_t)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
-    stepIn  = (int)g_spanStepIn;
-    stepOut = (int)g_spanStepOut;
-    markOn  = (g_spanMarkOn == SPAN_MARK_ON);
-    acc     = (uint8_t)(0u - (unsigned)dy);
-    carry   = 0;
-
-/* One plot through plotter 1 or 2; an abandon writes the state back, caps if asked and leaves.
+#define FAST_SAVE() do { w->y = y; w->p1 = p1; w->p2 = p2; w->p3 = p3; w->block = block; } while (0)
+/* One plot through plotter 1 or 2; an abandon hands the state back and leaves.
    ⚠ dest1 and dest2 are the two plotters' patched operands and every writer makes them EQUAL
    (draw_surface_spans_core stores one byte into both; every fixture plants them equal), so
    giving plotter 2 dest1 is a sabotage that PASSES — no change at all; one byte off fails.
@@ -8198,15 +8199,8 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                                      (uint8_t)(column), y, carry)                                  \
                          : fast_plot(p2, p1, dest1, block, lineEnd, bh, stepIn, stepOut,           \
                                      (uint8_t)(column), y, carry);                                 \
-        if (SPAN_PLOT_ABANDONED(r)) {                                                              \
-            FAST_WRITE_BACK();                                                                     \
-            if (span_cap_pending != 0) span_cap_line(SPAN_PLOT_Y(r), (uint8_t)(cpu.S + 2u));       \
-            return;                                                                                \
-        } } while (0)
-#define FAST_WRITE_BACK() do {                                                                     \
-        plot_ptr_v = p1; plot_ptr2_v = p2; plot_ptr3_v = p3;                                       \
-        mem[MEM_plot_ptr_hi] = (uint8_t)(p1 >> 8); mem[MEM_plot_ptr2_hi] = (uint8_t)(p2 >> 8);     \
-        mem[MEM_plot_ptr3_hi] = (uint8_t)(p3 >> 8); mem[SPAN_BLOCK] = block; } while (0)
+        if (SPAN_PLOT_ABANDONED(r)) { y = SPAN_PLOT_Y(r); FAST_SAVE(); return 1; }                 \
+        } while (0)
 /* span_end_marker_body over the locals: a column that plotted nothing gets the $FF terminator. */
 #define FAST_MARKER(ptr) do {                                                                      \
         if (markOn) {                                                                              \
@@ -8240,6 +8234,7 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                 for (;;) {
                     FAST_PLOT(usePlot2, column, r);
                     y = SPAN_PLOT_Y(r); carry = SPAN_PLOT_CARRY(r);
+                    WALK_CARRY_IN(carry);
                     { unsigned s = (unsigned)acc + dx + carry; acc = (uint8_t)s; carry = s >> 8; }
                     if (carry) break;
                 }
@@ -8247,6 +8242,7 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
             } else {
                 if (force) force = 0;
                 else {
+                    WALK_CARRY_IN(carry);
                     { unsigned s = (unsigned)acc + dx + carry; acc = (uint8_t)s; carry = s >> 8; }
                     if (!carry) continue;
                     { int d = (int)acc - dy - (int)(1u - carry); acc = (uint8_t)d; carry = (d >= 0); }
@@ -8268,11 +8264,301 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
         first = 0;
     }
 
-    FAST_WRITE_BACK();
-    if (arm->rev) span_walk_cap(y);
+    FAST_SAVE();
+    return 0;
 #undef FAST_PLOT
-#undef FAST_WRITE_BACK
+#undef FAST_SAVE
 #undef FAST_MARKER
+}
+/* ⭐⭐ THE AMIGA RUNS THE SAME WALK IN 68000 ASSEMBLY — src/platform/amiga/span_walk_m68k.s.
+   GCC holds ~22 live values in 15 registers and spills whatever the C shape (four shapes measured,
+   docs/perf-method.md §the span walk in 68000 asm), so the loop above keeps its state in the stack
+   frame; the asm keeps all of it in registers, unrolls the eight columns so which plotter and which
+   pattern byte a column uses are constants, and drops the DDA carry, which is provably 0 on this
+   path (g_walkCheckCarryIns counts it on the reference).  It takes only the span shapes the game
+   produces — dest1 == dest2, one Y step 0 and the other +-1; anything else runs the loop above.  ⚠ Built only without the instrument hooks the loop carries (ROAD_COUNT,
+   PLOT_STORE_MARK), so an instrument build still counts what it counts. */
+#if defined(REVS_SPAN_ASM) && defined(REVS_PLATFORM_AMIGA) && !defined(REVS_ROADSPLIT) \
+    && !defined(REVS_SHAPE) && !defined(REVS_VIEWSKIP) && !defined(REVS_SRC_EVENTS)     \
+    && !defined(REVS_SRC_EVENTS_CHECK) && !defined(REVS_ROAD_ARM)
+#define REVS_SPAN_ASM_ON 1
+
+/* Which of span_walk_m68k's twelve routines, or -1 for the C loop. */
+#ifdef REVS_WALKCHECK
+volatile unsigned long g_walkCheckWhy[4];   /* fallbacks: dest1 != dest2, step shape, -, check window */
+#define WALK_REFUSE(k) do { g_walkCheckWhy[k]++; return -1; } while (0)
+#else
+#define WALK_REFUSE(k) return -1
+#endif
+static inline __attribute__((always_inline))
+int span_asm_variant(const SpanArm *arm, const FastWalk *w, unsigned n)
+{
+    int inMode, neg;
+    if (w->dest1 != w->dest2) WALK_REFUSE(0);
+    if (w->stepIn == 0) {
+        if (w->stepOut != 1 && w->stepOut != -1) WALK_REFUSE(1);
+        inMode = 0; neg = (w->stepOut < 0);
+    } else {
+        if (w->stepOut != 0 || arm->steep || (w->stepIn != 1 && w->stepIn != -1)) WALK_REFUSE(1);
+        inMode = 1; neg = (w->stepIn < 0);
+    }
+    return arm->steep ? 8 + arm->rev * 2 + neg : arm->rev * 4 + inMode * 2 + neg;
+}
+
+/* The bridge: the register contract is at the top of span_walk_m68k.s. */
+static inline __attribute__((always_inline))
+int span_walk_asm(FastWalk *w, int variant, unsigned n)
+{
+    register uint32_t r_y     __asm("d1") = w->y;
+    register uint32_t r_add   __asm("d2") = w->dx;
+    register uint32_t r_sub   __asm("d3") = w->dy;
+    register uint32_t r_block __asm("d4") = w->block;
+    register uint32_t r_end   __asm("d5") = (uint32_t)w->lineEnd | ((uint32_t)(n - 1u) << 16);
+    register uint32_t r_bh    __asm("d6") = (uint32_t)w->bh | ((uint32_t)(w->markOn != 0) << 16);
+    register uint32_t r_entry __asm("d7") = (uint32_t)(variant * 16 + w->col * 2 + (w->forced != 0));
+    register uint8_t *r_p1    __asm("a1") = (uint8_t *)mem + w->p1;
+    register uint8_t *r_p2    __asm("a2") = (uint8_t *)mem + w->p2;
+    register uint8_t *r_p3    __asm("a3") = (uint8_t *)mem + w->p3;
+    register uint8_t *r_dest  __asm("a4") = (uint8_t *)mem + w->dest1;
+    __asm volatile ("jsr span_walk_m68k"
+                    : "+d"(r_y), "+d"(r_block), "+d"(r_end), "+d"(r_entry),
+                      "+a"(r_p1), "+a"(r_p2), "+a"(r_p3)
+                    : "d"(r_add), "d"(r_sub), "d"(r_bh), "a"(r_dest)
+                    : "d0", "a0", "cc", "memory");
+    w->y     = (uint8_t)r_y;
+    w->block = (uint8_t)r_block;
+    w->p1    = (uint16_t)(r_p1 - (uint8_t *)mem);
+    w->p2    = (uint16_t)(r_p2 - (uint8_t *)mem);
+    w->p3    = (uint16_t)(r_p3 - (uint8_t *)mem);
+    return (int)r_entry;
+}
+
+#ifdef REVS_WALKCHECK
+/* ⭐⭐ `make WALKCHECK=1` — THE ASM'S GATE, on the target, on the game's own spans (the host cannot
+   run 68000 code).  Per span the asm takes: snapshot every byte the walk can write (the pages the
+   three pointers visit plus one for y, and the destination's 256 bytes), run the C loop above,
+   keep what it wrote, restore, run the asm, and compare the bytes and the handed-back state.
+   ⚠ SCOPE: it shares span_walk_fast_ok and span_asm_variant with the asm, so it cannot see a
+   defect in either — the host's `validate` sabotages gate the guard, and the variant filter is
+   argued at span_asm_variant.  g_walkCheckCarryIns is the carry derivation's direct test: the
+   REFERENCE counts every DDA add whose carry-in is not 0, and it must read 0. */
+volatile unsigned long g_walkCheckSpans, g_walkCheckMismatch, g_walkCheckFallback;
+volatile unsigned long g_walkCheckFirstAddr, g_walkCheckFirstC, g_walkCheckFirstAsm;
+volatile unsigned long g_walkCheckVariants[12];
+static uint8_t s_wcSnap[0x1800], s_wcRef[0x1800], s_wcDestSnap[0x100], s_wcDestRef[0x100];
+
+/* The pages the walk can write: each pointer's n pages, plus one for y. */
+static void span_walk_window(const SpanArm *arm, const FastWalk *w, unsigned n,
+                             unsigned *lo, unsigned *len)
+{
+    const uint16_t ptrs[3] = { w->p1, w->p2, w->p3 };
+    unsigned l = 0xFFu, h = 0u, k;
+    for (k = 0; k < 3; k++) {
+        unsigned pg = ptrs[k] >> 8;
+        unsigned a = arm->rev ? pg - (n - 1u) : pg, b = (arm->rev ? pg : pg + (n - 1u)) + 1u;
+        if (a < l) l = a;
+        if (b > h) h = b;
+    }
+    *lo = l << 8; *len = (h + 1u) * 256u - (l << 8);
+}
+
+/* Run the C loop and the asm on the same bytes; 1 if they disagree (the first disagreement goes
+   into g_walkCheckFirst*).  Leaves mem[] and *w as the ASM left them. */
+static __attribute__((noinline))
+int span_walk_compare(const SpanArm *arm, FastWalk *w, int variant, unsigned n, int *abandoned)
+{
+    unsigned lo, len, i;
+    FastWalk wc = *w;
+    int ac, aa, bad = 0;
+
+    span_walk_window(arm, w, n, &lo, &len);
+    memcpy(s_wcSnap, &mem[lo], len);
+    memcpy(s_wcDestSnap, &mem[w->dest1], 0x100u);
+    ac = span_walk_fast_loop(arm, &wc);
+    memcpy(s_wcRef, &mem[lo], len);
+    memcpy(s_wcDestRef, &mem[w->dest1], 0x100u);
+    memcpy(&mem[lo], s_wcSnap, len);
+    memcpy(&mem[w->dest1], s_wcDestSnap, 0x100u);
+    aa = span_walk_asm(w, variant, n);
+
+#define WC_BAD(addr, c, a) do { if (!g_walkCheckMismatch) { g_walkCheckFirstAddr = (addr);          \
+        g_walkCheckFirstC = (c); g_walkCheckFirstAsm = (a); } bad = 1; } while (0)
+    for (i = 0; i < len; i++)
+        if (mem[lo + i] != s_wcRef[i]) { WC_BAD(lo + i, s_wcRef[i], mem[lo + i]); break; }
+    for (i = 0; !bad && i < 0x100u; i++)
+        if (mem[w->dest1 + i] != s_wcDestRef[i]) { WC_BAD(w->dest1 + i, s_wcDestRef[i], mem[w->dest1 + i]); break; }
+    /* ...and the state C writes back: a fake address above $FFFF names which. */
+    if (!bad && ac != aa)             WC_BAD(0x10000u, ac, aa);
+    if (!bad && wc.y != w->y)         WC_BAD(0x10001u, wc.y, w->y);
+    if (!bad && wc.block != w->block) WC_BAD(0x10002u, wc.block, w->block);
+    if (!bad && wc.p1 != w->p1)       WC_BAD(0x10003u, wc.p1, w->p1);
+    if (!bad && wc.p2 != w->p2)       WC_BAD(0x10004u, wc.p2, w->p2);
+    if (!bad && wc.p3 != w->p3)       WC_BAD(0x10005u, wc.p3, w->p3);
+#undef WC_BAD
+    if (bad) g_walkCheckMismatch++;
+    *abandoned = aa;
+    return bad;
+}
+
+/* ⭐⭐ THE SELF-TEST: the game on one circuit does not reach every routine (Silverstone driving
+   never makes a steep span or a +1 step), so before the first real span WALKCHECK also runs
+   WALK_SELF_CASES random spans through the same comparison — every variant, every entry column,
+   abandons, markers, a wrapping block, pointers whose low byte carries y across a page, filled and
+   `$55` cells.  Each case is drawn INSIDE what span_walk_fast_ok and span_asm_variant admit (that
+   is the claim under test) and runs on randomised bytes in the pages it can touch; every byte it
+   could have touched, and the pattern tables it reads, is saved first and restored after. */
+#define WALK_SELF_CASES 6000u
+volatile unsigned long g_walkSelfCases, g_walkSelfMismatch, g_walkSelfAbandons, g_walkSelfVariants[12];
+volatile unsigned long g_walkSelfFirstAddr, g_walkSelfFirstC, g_walkSelfFirstAsm;
+
+static uint8_t s_wsSave[0x4800 - 0x0300];   /* $0300..$47FF: every destination and every page */
+static uint8_t s_wsPat[0x20];
+
+static void span_walk_selftest(void)
+{
+    static const SpanArm *const arms[4] = { &ARM_SHALLOW_FWD, &ARM_SHALLOW_REV, &ARM_STEEP_FWD, &ARM_STEEP_REV };
+    uint32_t seed = 0x2545F491u;
+    unsigned c, i;
+/* xorshift32: no multiply, so no __mulsi3 (muldiv-audit) */
+#define WS_RAND() (seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5, (unsigned)(seed & 0xFFFFu))
+#define WS_MOD(x, m) revs_modu16((uint32_t)(x), (uint16_t)(m))
+
+    memcpy(s_wsSave, &mem[0x0300], sizeof s_wsSave);
+    memcpy(s_wsPat, &mem[MEM_colour_pattern_tbl], 0x10u);
+    memcpy(s_wsPat + 0x10, &mem[MEM_colour_pattern_and_tbl], 4u);
+
+    for (c = 0; c < WALK_SELF_CASES; c++) {
+        const SpanArm *arm = arms[WS_RAND() & 3u];
+        FastWalk w;
+        unsigned n, maxN, lo, len, p2hi, r;
+        int v, ab, s1 = (WS_RAND() & 1u) ? 1 : -1;
+
+        /* n lines to the bound, and every pointer's pages inside $30..$45 (span_walk_fast_ok) */
+        maxN = arm->rev ? 0x45u - arm->bound : arm->bound - 0x30u;
+        n = 1u + WS_MOD(WS_RAND(), (maxN < 6u ? maxN : 6u));
+        p2hi = arm->rev ? arm->bound + n : arm->bound - n;
+        w.p2 = (uint16_t)((p2hi << 8) | (WS_RAND() & 0xFFu));
+        r = WS_RAND() & 3u;                 /* the game's shape (p1 on p2's page, p3 above) or not */
+        w.p1 = (uint16_t)((((r == 0) ? p2hi : p2hi + (WS_MOD(WS_RAND(), 3u)) - 1u) << 8) | (WS_RAND() & 0xFFu));
+        w.p3 = (uint16_t)(w.p1 + 0x100u + ((r == 1) ? (WS_RAND() & 0xFFu) : 0u));
+#define WS_PAGES_OK(v) (arm->rev ? ((unsigned)((v) >> 8) - (n - 1u) >= 0x30u && ((v) >> 8) <= 0x45u) \
+                                 : (((v) >> 8) >= 0x30u && (unsigned)((v) >> 8) + (n - 1u) <= 0x45u))
+        if (!WS_PAGES_OK(w.p1) || !WS_PAGES_OK(w.p3)) { c--; continue; }
+#undef WS_PAGES_OK
+        w.dest1 = w.dest2 = (uint16_t)(0x0300u + WS_MOD(WS_RAND(), 0x501u));
+        w.y       = (uint8_t)WS_RAND();
+        { unsigned d = 1u + WS_MOD(WS_RAND(), 24u);     /* near y in the step's direction, or anywhere */
+          w.lineEnd = (WS_RAND() & 1u) ? (uint8_t)(s1 > 0 ? w.y + d : w.y - d) : (uint8_t)WS_RAND(); }
+        w.block   = (uint8_t)((WS_RAND() & 3u) ? WS_MOD(WS_RAND(), 0x28u) : WS_RAND());
+        w.dx = (uint8_t)WS_RAND(); w.dy = (uint8_t)WS_RAND(); w.bh = (uint8_t)WS_RAND();
+        if (arm->steep || (WS_RAND() & 1u)) { w.stepIn = 0; w.stepOut = s1; }
+        else                                 { w.stepIn = s1; w.stepOut = 0; }
+        w.markOn = (int)(WS_RAND() & 1u);
+        w.col = (int)(WS_RAND() & 7u); w.forced = (int)(WS_RAND() & 1u); w.runTop = (int)(WS_RAND() & 1u);
+
+        /* the bytes it reads: cells mostly empty, some `$55`, the rest anything */
+        span_walk_window(arm, &w, n, &lo, &len);
+        for (i = 0; i < len; i++) {
+            unsigned k = WS_RAND() & 7u;
+            mem[lo + i] = (k < 4u) ? 0u : (k == 4u) ? 0x55u : (uint8_t)WS_RAND();
+        }
+        for (i = 0; i < 0x100u; i++) mem[MEM_dash_block_starts + i] = (uint8_t)(WS_MOD(WS_RAND(), 0x50u));
+        for (i = 0; i < 0x10u; i++)  mem[MEM_colour_pattern_tbl + i] = (uint8_t)WS_RAND();
+        for (i = 0; i < 4u; i++)     mem[MEM_colour_pattern_and_tbl + i] = (uint8_t)WS_RAND();
+
+        v = span_asm_variant(arm, &w, n);
+        if (v < 0) { c--; continue; }       /* cannot happen: every draw is an admitted shape */
+        if (span_walk_compare(arm, &w, v, n, &ab)) g_walkSelfMismatch++;
+        g_walkSelfCases++; g_walkSelfVariants[v]++; if (ab) g_walkSelfAbandons++;
+    }
+#undef WS_RAND
+#undef WS_MOD
+    memcpy(&mem[0x0300], s_wsSave, sizeof s_wsSave);
+    memcpy(&mem[MEM_colour_pattern_tbl], s_wsPat, 0x10u);
+    memcpy(&mem[MEM_colour_pattern_and_tbl], s_wsPat + 0x10, 4u);
+    g_walkSelfFirstAddr = g_walkCheckFirstAddr; g_walkSelfFirstC = g_walkCheckFirstC;
+    g_walkSelfFirstAsm = g_walkCheckFirstAsm;
+    g_walkCheckMismatch = 0;                /* the self-test reports through its own counters */
+    g_walkCheckFirstAddr = g_walkCheckFirstC = g_walkCheckFirstAsm = 0;
+}
+
+static __attribute__((noinline))
+int span_walk_check(const SpanArm *arm, FastWalk *w, int variant, unsigned n)
+{
+    unsigned lo, len;
+    int ab;
+    if (!g_walkSelfCases) span_walk_selftest();
+    span_walk_window(arm, w, n, &lo, &len);
+    if (len > sizeof s_wcSnap) { g_walkCheckWhy[3]++; return span_walk_asm(w, variant, n); }
+    (void)span_walk_compare(arm, w, variant, n, &ab);
+    g_walkCheckSpans++;
+    g_walkCheckVariants[variant]++;
+    return ab;
+}
+#endif
+#endif /* REVS_SPAN_ASM_ON */
+
+/* The register walk: the per-span entry, then the loop (C, or the asm on the Amiga), then the
+   write-back and the caps, which stay in C because they can reach a circuit's hook. */
+static inline __attribute__((always_inline))
+void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+{
+    FastWalk w;
+    int abandoned;
+
+    mem[arm->operand] = mem[arm->table + phase];    /* the entry offset over the branch operand */
+    w.p1 = plot_ptr_v; w.p2 = plot_ptr2_v; w.p3 = plot_ptr3_v;   /* span_walk_fast_ok marshalled them */
+#ifdef REVS_SPAN_SLOT_FALLBACK
+    /* ⚠ The guard has just proved this span runs TOWARD its bound, so say so: span_walk_cap reads
+       this flag, span_walk_exact recomputes it per span, and span_plot_oracle leaves it SET — a
+       stale 1 made the cap decode an unwritten slot (interp_edge 78/600, but only after the
+       draw_span fixtures had run). */
+    g_spanSlotsWrapped = 0;
+#endif
+    if (!span_entry_decode(arm, mem[arm->operand], &w.col, &w.forced, &w.runTop)) return;
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
+    return;     /* ⚠⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only. */
+#endif
+
+    w.y       = startLine;
+    w.dx      = mem[arm->addend];                   /* $83/$84 — fixed for the span (see banner) */
+    w.dy      = mem[arm->subtrahend];
+    w.lineEnd = mem[SPAN_LINE_END];
+    w.block   = mem[SPAN_BLOCK];
+    w.bh      = bearing_hi;
+    w.dest1   = (uint16_t)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
+    w.dest2   = (uint16_t)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
+    w.stepIn  = (int)g_spanStepIn;
+    w.stepOut = (int)g_spanStepOut;
+    w.markOn  = (g_spanMarkOn == SPAN_MARK_ON);
+
+#ifdef REVS_SPAN_ASM_ON
+    { unsigned n = arm->rev ? (unsigned)(w.p2 >> 8) - arm->bound : arm->bound - (unsigned)(w.p2 >> 8);
+      int v = span_asm_variant(arm, &w, n);
+      if (v >= 0) {
+#ifdef REVS_WALKCHECK
+          abandoned = span_walk_check(arm, &w, v, n);
+#else
+          abandoned = span_walk_asm(&w, v, n);
+#endif
+      } else {
+#ifdef REVS_WALKCHECK
+          g_walkCheckFallback++;
+#endif
+          abandoned = span_walk_fast_loop(arm, &w);
+      } }
+#else
+    abandoned = span_walk_fast_loop(arm, &w);
+#endif
+
+    plot_ptr_v = w.p1; plot_ptr2_v = w.p2; plot_ptr3_v = w.p3;
+    mem[MEM_plot_ptr_hi] = (uint8_t)(w.p1 >> 8); mem[MEM_plot_ptr2_hi] = (uint8_t)(w.p2 >> 8);
+    mem[MEM_plot_ptr3_hi] = (uint8_t)(w.p3 >> 8); mem[SPAN_BLOCK] = w.block;
+    if (abandoned) {
+        if (span_cap_pending != 0) span_cap_line(w.y, (uint8_t)(cpu.S + 2u));
+        return;
+    }
+    if (arm->rev) span_walk_cap(w.y);
 }
 
 /* The dispatcher every caller uses: the register walk when the span provably cannot touch its own
@@ -8282,6 +8568,10 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 {
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 1
     (void)arm; (void)phase; (void)startLine; return;   /* ⚠⚠ ROADARM=1: no walk.  §ROADARM */
+#endif
+#ifdef REVS_WALKCHECK
+    g_walkCheckArms[arm->steep * 2 + arm->rev]++;
+    if (!span_walk_fast_ok(arm)) g_walkCheckExact++;
 #endif
     if (span_walk_fast_ok(arm)) span_walk_fast(arm, phase, startLine);
     else                        span_walk_exact(arm, phase, startLine);

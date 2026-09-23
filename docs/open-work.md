@@ -26,9 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 133.70 ms bracketed, ~128.0 shipping** (the probe costs ~5.7; 149.18 at the plan's start) for the DEFAULT — measured
-2026-09-23 against a same-session control that reproduced 139.47 bit for bit (`loopFrames` 379 →
-385, phase 0 121 → 120 fields, one crash hold each). The context line that follows is the
+**Where the frame stands:** **Σ(1..39) − ph28 = 128.23 ms bracketed** (149.18 at the plan's start) for the DEFAULT — measured
+2026-09-23 with the span walk in asm against a same-session `SPANASM=0` control at 132.90, both arms run twice and identical to the tick (`loopFrames` 387 → 404, phase 0 120 fields on all four). The context line that follows is the
 2026-09-22 measurement at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
 `FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
@@ -76,7 +75,7 @@ by certainty × size:
 4. `build_track_geometry` −4.8, the sign/object pair −2.1, the tail −2.1, the small rows −1.3.
 5. Port-only: the drain's ~442 µs/cycle remainder (~4 ms), `prepareFrame`'s non-copper part.
 
-**STEP 1 PROGRESS (2026-09-23): 149.18 → 133.24 ms bracketed, −15.9.**
+**STEP 1 PROGRESS (2026-09-23): 149.18 → 128.23 ms bracketed, −20.95.**
 - ✅ 1.1 input: the MOS round trip → a direct Amiga answer + a reverse key map, **−4.04**
   (ph3 5.11 → 1.96 against the BBC's 1.0).
 - ✅ the span plotters inlined into the walk, **−2.23** (the `noinline` rested on a
@@ -99,9 +98,35 @@ by certainty × size:
   determinism runs, per-circuit views) — the walk's state in locals behind a per-span footprint
   guard, the old walk kept as `span_walk_exact`; the fixtures now reach it (real `row_base` table;
   a walk climbing through page `$2F`, which also exposed and fixed an exact-walk gap).
-  ⏭ **NEXT: the walk + plot as a hand-written 68000 routine — THE PLAN IS `docs/asm-span-walk-plan.md`** (design, validation on the target, and where to continue after it) — GCC keeps ~22 live values in 15
-  registers and spills 94-137 stack operands whatever the C shape (three shapes measured, CLOSED
-  below); an explicit allocation with the DDA carry in the X flag (`addx.b`) is the tool.
+  ✅ **landed: THE WALK + PLOT IN 68000 ASM, −4.67** (ph11 **32.26 → 27.77**, frame 132.90 →
+  128.23, `SPANASM=0` the control). It runs ~79 instructions per real walk against ~222, and the
+  gate is `make WALKCHECK=1`: 0 mismatches over ~7560 game spans on five circuits, plus a
+  6000-case target-side fuzzer, because Silverstone never produces a steep span or a +1 step.
+  Seven sabotages were caught, and the carry derivation was confirmed. docs/perf-method.md §the
+  span walk in 68000 asm.
+  ⏭ **NEXT — `interp_edge_core`'s per-span SETUP, now ~400 instructions a real call, the same
+  disease.** It writes and re-reads a zero-page working set every span:
+  - the clip history `SPAN_CLIP` ($88) and the endpoint `shared_temp_77`/`shared_temp_7e`;
+  - `span_line_cursor` and `SPAN_LINE_END/DX/DY/YSTEP/ARM/BLOCK` ($82-$87);
+  - `math_lo/hi` and the cap codes;
+  - the eight colour-pattern bytes ($628F / $629C), rebuilt from the style record even when the
+    style is unchanged. This is the trace's largest line: 8 stores + 8 loads a span.
+
+  Then the guard's pointer marshal and page tests, and the bridge's register loads. The move is to
+  carry the CROSS-SPAN state in locals of `draw_surface_spans_core`'s loop, hand `interp_edge` its
+  inputs as arguments, and memoise the pattern tables on the style index.
+
+  **Gate first:** `make rangeaudit RANGE=0077-0088,628F-62A0,337C-337F DEFUSE=1` on all five
+  circuits (the expansion circuits' cap hook reads cells here — `span_cap_line_slot_z`), then the
+  RESULTS rule for each cell that stops being written.
+
+  **After it, in order:**
+  1. `view_paint_lines` (ph24 + ph33, 35.3 against the BBC's 23.5). Single-step it with
+     `steptrace.gdb` before touching it: brackets have been wrong twice in this subsystem.
+  2. The port-only rows, `prepareFrame` 8.8 and the drain's excess ~6. Measure them after the
+     other two, because the drain self-heals as the frame shrinks.
+  3. The tail (5.07 vs 3.4) and sign/object (4.62 vs 2.9): single-step each once.
+  4. Then STEP 2.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
   18.83**. `bearing_to_section` and `project_point` each take `(S << 8) / L` in one `DIVU` of the
   real operands where the 6502 divided by a divisor truncated to its top byte (0..+2 above the

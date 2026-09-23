@@ -92,6 +92,26 @@ EXTRA_DEFINES += -DREVS_FASTMEM_CHECK
 PROBE_SYMS_FASTMEM = g_fmChecks g_fmMismatch g_fmSkipped g_fmLongest
 endif
 
+# ⭐⭐ `SPANASM=1` (the DEFAULT) — the span walk in 68000 assembly (src/platform/amiga/span_walk_m68k.s),
+# for every span span_walk_fast_ok admits and span_asm_variant recognises; `make SPANASM=0` is the C
+# control.  ⭐⭐ `make WALKCHECK=1` is its gate: on every such span the C loop and the asm run on the
+# same bytes and everything they write is compared (read with amiga/walkcheck.gdb) — ⚠ a correctness
+# arm, it snapshots pages per span and its phase rows are void.  `SPANASM_SABOTAGE=N` assembles
+# deliberate defect N (span_walk_m68k.s) for WALKCHECK to catch.  docs/perf-method.md §the span walk.
+SPANASM ?= 1
+ifeq ($(SPANASM),1)
+EXTRA_DEFINES += -DREVS_SPAN_ASM
+SPANASM_SRCS   = $(AMIGA_SRC)/span_walk_m68k.s
+endif
+ifdef WALKCHECK
+EXTRA_DEFINES += -DREVS_WALKCHECK
+PROBE_SYMS_WALKCHECK = g_walkCheckSpans g_walkCheckMismatch g_walkCheckFallback g_walkCheckFirstAddr \
+                       g_walkCheckFirstC g_walkCheckFirstAsm g_walkCheckVariants g_walkCheckCarryIns g_walkCheckWhy g_walkCheckArms g_walkCheckExact \
+                       g_walkSelfCases g_walkSelfMismatch g_walkSelfAbandons g_walkSelfVariants \
+                       g_walkSelfFirstAddr g_walkSelfFirstC g_walkSelfFirstAsm
+endif
+SPANASM_SABOTAGE ?= 0
+
 CORE_C_SRCS := \
     $(FASTMEM_SRCS) \
     $(REPO)/src/cpu/cpu.c \
@@ -108,7 +128,7 @@ CORE_C_SRCS := \
 
 # Support runtime (freestanding CRT: program entry, memset…) + incbin'd assets.
 SUPPORT_C_SRCS := $(SUPPORT)/gcc8_c_support.c
-ASM_SRCS       := $(SUPPORT)/gcc8_a_support.s $(AMIGA_SRC)/incbin.s
+ASM_SRCS       := $(SUPPORT)/gcc8_a_support.s $(AMIGA_SRC)/incbin.s $(SPANASM_SRCS)
 
 # Framework hand-written m68k asm (Motorola syntax, assembled by vasm -> ELF).  The
 # matching GCC register-marshalling bridges live under
@@ -1487,6 +1507,7 @@ PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERR
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
+PROBE_SYMS += $(PROBE_SYMS_WALKCHECK)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping
@@ -1593,6 +1614,10 @@ obj/gcc8_c_support.o : $(SUPPORT)/gcc8_c_support.c
 obj/gcc8_a_support.o : $(SUPPORT)/gcc8_a_support.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) -o $@ "$<"
+
+obj/span_walk_m68k.o : $(AMIGA_SRC)/span_walk_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SPANASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

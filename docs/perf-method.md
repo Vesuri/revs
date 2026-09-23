@@ -2566,6 +2566,63 @@ and take any wide-value pair it unblocks as a by-product. **The next real perfor
 REPRESENTATION change in `docs/direct-bitplane-plan.md`**, which attacks the machinery this
 measurement points at.
 
+### ⭐⭐⭐ THE SPAN WALK IN 68000 ASM — ph11 **32.26 → 27.77 ms**, frame **132.90 → 128.23** (2026-09-23)
+
+`span_walk_fast`'s loop + `fast_plot` are hand-written 68000 on the Amiga
+(`src/platform/amiga/span_walk_m68k.s`; `make SPANASM=0` is the C control, `build=` bit 12 says
+which arm ran). Two arms × two runs each, `PROBEFIELDS=3000`, identical to the tick run for run,
+phase 0 = 120 fields on all four. The C loop stays as the host's walk and as the asm's reference.
+
+**What it is.** Twelve routines generated from gas macros: shallow {fwd, rev} × {step in, step out} ×
+{+1, −1} and steep {fwd, rev} × {+1, −1}. The eight columns are UNROLLED, so which plotter, which
+pointer and which pattern byte a column uses are constants in the instruction. A column that
+doesn't plot is `add.b`/`bcc` (14 cycles), and the first line's computed entry is a jump table.
+The whole state lives in registers: acc, y, both deltas, the block, lineEnd, bh, three pointers,
+the destination, and `dash_block_starts[block]` as a pointer. Rare values ride in upper words:
+the line count in d5's, markOn in d6's, colMark as bit 8 of the accumulator. The cold arm of the
+plot (a filled cell) sits in `.subsection 1`, so an empty cell runs straight through. The C
+bridge pins eleven register variables around one `jsr`, and GCC compiles it without complaint.
+The asm saves only a5/a6.
+
+**Single-stepped** (`steptrace.gdb`, 24 calls): **~79 instructions per real walk, against ~222**
+for the C walk + plot + guard — the plan's 60-80. The rest of a real `interp_edge_core` call is now
+~400 instructions of SETUP, of which the pattern-table rebuild is the biggest line
+(docs/open-work.md, step 1 NEXT).
+
+⚠ **The estimate was ~8-10 ms and the phase table paid −4.49.** The asm hit its instruction
+target, so the gap is the DENOMINATOR: "×42 calls a frame" counted every call as a walk, and
+the trace shows 8 of 24 calls are publish-only (61-65 instructions, no walk at all). ⇒ price a
+per-call saving by the calls that take the path — CLAUDE.md's "check how many times it RUNS",
+once more.
+
+**How it was gated — and the two holes the game alone would have left.**
+1. `make WALKCHECK=1` + `amiga/walkcheck.gdb`: on every span the asm takes, the C loop and the asm
+   run on the same bytes, and everything either can write is compared (the visited pages plus
+   one, the destination, and the handed-back y/pointers/block/abandon). **0 mismatches over ~7560
+   game spans on all five circuits**, 0 fallbacks.
+2. ⭐⭐ **THE GAME DOES NOT REACH EVERY ROUTINE.** Silverstone, driving, produced **no steep span and
+   no +1 step in 4000 fields**, so half the routines had never run. Only Brands Hatch and
+   Snetterton reach them, and not all of them. So WALKCHECK starts with a **randomised self-test**:
+   6000 spans drawn inside what the guard and `span_asm_variant` admit, on randomised cells,
+   `dash_block_starts` and pattern tables. Every byte is saved and restored. It covers all 12
+   routines (~300-860 cases each, 2543 abandons). ⇒ **a target-side differential of a routine with
+   variants needs a fuzzer as well as the game's own data**, the same way `validate` needs one.
+3. ⭐ **The first WALKCHECK found a real gap in the design:** a third of Silverstone's reverse spans
+   start with a block low enough to step below 0, and the C reads `dash_block_starts[(uint8_t)block]`.
+   The first build refused them (353 fallbacks). The fix is a wrap-exact pointer step (`bcc` over
+   a `lea ±256`, 8 cycles), and those spans now take the asm.
+4. **Seven sabotages, all caught:** the first-line test off by one; the marker's `$80` test dropped;
+   plotter 2 reading through p2; the `$55` substitution dropped; no abandon; a carry-in of 1 into
+   each line's first add; the block pointer not following the wrap. Numbers 1 and 7 were caught
+   ONLY by the self-test, with 0 mismatches on the game's spans.
+5. **The DDA carry derivation is CONFIRMED on the data:** the C reference counts every add whose
+   carry-in is non-zero (`g_walkCheckCarryIns`), and it read 0 on all five circuits. Sabotage 6
+   shows the check would see a carry of 1.
+6. ⚠ The plan's parked-picture compare is **confounded** and was not a gate. Parked in first
+   gear the car creeps and the revs move, so two builds paint different sim states at the same
+   field: the rev needle differs, and edge bytes differ on 105..132. It is the same rule as the
+   `FASTMEM` one: a render-speed change moves the trajectory. The images are identical to the eye.
+
 ## Lessons — measurement
 
 - **Compare FPS row vectors, never the `total painted` line.** The total spans a partial
