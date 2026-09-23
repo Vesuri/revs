@@ -2623,6 +2623,26 @@ once more.
    field: the rev needle differs, and edge bytes differ on 105..132. It is the same rule as the
    `FASTMEM` one: a render-speed change moves the trajectory. The images are identical to the eye.
 
+### ⭐ AFTER THE ASM WALK: THE C AROUND IT, and where C's floor is (2026-09-23)
+
+Re-traced, a real `interp_edge_core` call was ~450 instructions: 79 of them the asm walk and **~130
+the C plumbing around it**:
+- the bridge, 59 (`span_asm_variant`, eleven pinned registers, the unpack);
+- `span_walk_fast_ok`, 56;
+- the pointer marshal, 18.
+
+Two lessons came out of it, both measured.
+1. ⭐ **A guard that is PROVABLY TRUE ON ONE CALLER'S PATH should not run on that path.**
+   `interp_edge` has just set all three pointer pages from a block below `$28`, so every page the
+   walk can visit is in `$30..$44`. It has also just set the steps and the marker switch, so they
+   can't trap. `span_walk_direct` passes the values it holds and skips the guard, while keeping the
+   one test a fixture can defeat (the destination): **−1.21 ms**. State the proof at the code: the
+   other callers (the 6502-ABI arms, the fixtures) still take the guard.
+2. **Rewriting the setup over locals** (no read-back of a stored cell, every store kept) paid only
+   **−0.34**: Rule 1b's per-cell floor. The remaining ~246 instructions are the stores plus the
+   computation. The coarse lever is the setup in asm, sharing the walk's registers and flushing
+   cross-span cells once a pass (docs/span-setup-asm-plan.md).
+
 ## Lessons — measurement
 
 - **Compare FPS row vectors, never the `total painted` line.** The total spans a partial
