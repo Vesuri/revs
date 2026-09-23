@@ -7802,10 +7802,15 @@ static void span_walk_cap(uint8_t y)
    rule says costs 2.6% of the frame.  Splitting the selection into two `noinline` twins hands
    each one a compile-time-constant descriptor (every slot address becomes an immediate) and
    drops an argument from the push, at the cost of one extra copy of the leaf.
-   ⭐ `noinline` is deliberate: span_walk has twenty plot sites across its four specialisations
-   and the leaf is ~370 instructions, so inlining it would be ~30 KB of instruction fetch on a
-   machine whose memory contention is as much on fetch as on data. */
-static __attribute__((noinline))
+   ⭐⭐ `always_inline`, and the `noinline` that stood here is RETRACTED: it argued that twenty
+   inlined copies of a ~370-instruction leaf "would be ~30 KB of instruction fetch", but a 68000
+   has no cache — it fetches the instructions it EXECUTES, never the ones that merely exist, so
+   code size is a memory-footprint question and not a fetch one.  What the out-of-line copy did
+   cost was per plotted column: three pushed arguments, a 16-byte frame, a six-register movem
+   and a stack-to-stack copy, and the walk's own DDA state spilled around the twelve calls
+   (interp_edge_core carried 174 stack operands).  Inlined, interp_edge_core is 2244 -> 6080
+   instructions and ph11 is 34.93 -> 32.71 ms (−2.23), every other row flat (2026-09-23). */
+static inline __attribute__((always_inline))
 unsigned sw_plot_1(uint8_t column, uint8_t y, unsigned carryIn)
 {
     unsigned r = span_plot_core(&SPAN_PLOT_1, column, y, carryIn);
@@ -7814,7 +7819,7 @@ unsigned sw_plot_1(uint8_t column, uint8_t y, unsigned carryIn)
     if (SPAN_PLOT_ABANDONED(r)) (void)span_chain_abandoned();
     return r;
 }
-static __attribute__((noinline))
+static inline __attribute__((always_inline))
 unsigned sw_plot_2(uint8_t column, uint8_t y, unsigned carryIn)
 {
     unsigned r = span_plot_core(&SPAN_PLOT_2, column, y, carryIn);
