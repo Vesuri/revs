@@ -143,6 +143,36 @@ static const KeyMap kKeys[] = {
 };
 #define KEY_COUNT (sizeof(kKeys) / sizeof(kKeys[0]))
 
+/* ⭐ THE REVERSE MAP: BBC negative-INKEY code -> its (at most two) Amiga rawkeys, $FF = none.
+   keyDown() is asked seven times a frame and used to scan all of kKeys each time — and without
+   stopping at the first match, because a code may carry two rawkeys (A9 = left-arrow and L).
+   Built once from kKeys, so kKeys stays the single place a BBC key meets an Amiga rawkey.
+   ⚠ Two slots is the table's WIDEST row today; buildReverseMap() counts overflow into
+   g_keyMapOverflow, which must read 0 — a third rawkey on one code would otherwise be silently
+   dropped and that key would simply stop working. */
+enum { RK_NONE = 0xFF };
+static uint8_t s_rk[256][2];
+static bool    s_rkBuilt = false;
+extern "C" { volatile uint8_t g_keyMapOverflow = 0; }
+
+static void buildReverseMap()
+{
+    for (unsigned c = 0; c < 256; c++) { s_rk[c][0] = RK_NONE; s_rk[c][1] = RK_NONE; }
+    for (unsigned i = 0; i < KEY_COUNT; i++) {
+        uint8_t* r = s_rk[kKeys[i].bbc];
+        if      (r[0] == RK_NONE) r[0] = kKeys[i].rawkey;
+        else if (r[1] == RK_NONE) r[1] = kKeys[i].rawkey;
+        else g_keyMapOverflow++;
+    }
+    s_rkBuilt = true;
+}
+
+static inline const uint8_t* rawkeysFor(uint8_t bbc)
+{
+    if (!s_rkBuilt) buildReverseMap();
+    return s_rk[bbc];
+}
+
 /* ---------------------------------------------------------------------------
    Key state, driven by the CIA-A serial-port interrupt.
    --------------------------------------------------------------------------- */
@@ -384,11 +414,11 @@ void RevsInput::shutdown()
 
 bool RevsInput::pressBbcKey(uint8_t bbcCode, bool down)
 {
-    bool mapped = false;
-    for (unsigned i = 0; i < KEY_COUNT; i++)
-        if (kKeys[i].bbc == bbcCode) { g_keyDown[kKeys[i].rawkey] = down ? 1u : 0u; mapped = true; }
-    if (!mapped) { g_keyUnmappedCode = bbcCode; g_keyUnmapped++; }
-    return mapped;
+    const uint8_t* r = rawkeysFor(bbcCode);
+    if (r[0] == RK_NONE) { g_keyUnmappedCode = bbcCode; g_keyUnmapped++; return false; }
+    g_keyDown[r[0]] = down ? 1u : 0u;
+    if (r[1] != RK_NONE) g_keyDown[r[1]] = down ? 1u : 0u;
+    return true;
 }
 
 void RevsInput::releaseAllKeys()
@@ -400,16 +430,15 @@ void RevsInput::releaseAllKeys()
 
 bool RevsInput::keyDown(uint8_t x) const
 {
-    bool mapped = false;
+    const uint8_t* r = rawkeysFor(x);
     if (x == 0x9Du) g_spacePolls++;                     /* SPACE — the instrument above */
+    if (r[0] == RK_NONE) { g_keyUnmappedCode = x; g_keyUnmapped++; return false; }
 
     /* The live level first: a key that is down now needs no latch, and the answer must not
        consume one (see the tap-latch note above — a held key would otherwise eat its own edge). */
-    for (unsigned i = 0; i < KEY_COUNT; i++) {
-        if (kKeys[i].bbc != x) continue;
-        mapped = true;
-        if (g_keyDown[kKeys[i].rawkey]) {
-            g_keyLatch[kKeys[i].rawkey] = 0u;           /* seen while held — the edge is spent */
+    for (unsigned k = 0; k < 2u && r[k] != RK_NONE; k++) {
+        if (g_keyDown[r[k]]) {
+            g_keyLatch[r[k]] = 0u;                      /* seen while held — the edge is spent */
             if (x == 0x9Du) g_spaceAnswered++;
             return true;
         }
@@ -419,10 +448,10 @@ bool RevsInput::keyDown(uint8_t x) const
        ⚠ `make NOLATCH=1` compiles this arm out — that is the SABOTAGE arm for the proof below,
        and the only thing that separates "the latch works" from "the taps were never short". */
 #ifndef REVS_NOLATCH
-    if (mapped && g_screenMode7) {
-        for (unsigned i = 0; i < KEY_COUNT; i++) {
-            const uint8_t rk = kKeys[i].rawkey;
-            if (kKeys[i].bbc != x || !g_keyLatch[rk]) continue;
+    if (g_screenMode7) {
+        for (unsigned k = 0; k < 2u && r[k] != RK_NONE; k++) {
+            const uint8_t rk = r[k];
+            if (!g_keyLatch[rk]) continue;
             g_keyLatch[rk] = 0u;                        /* one tap, one answer */
             if ((uint16_t)(g_vbiCount - g_keyLatchAt[rk]) > KEY_LATCH_FIELDS)
                 continue;                               /* stale — not this page's press */
@@ -432,8 +461,6 @@ bool RevsInput::keyDown(uint8_t x) const
         }
     }
 #endif
-
-    if (!mapped) { g_keyUnmappedCode = x; g_keyUnmapped++; }
     return false;
 }
 

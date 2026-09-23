@@ -45,6 +45,13 @@ typedef struct { uint8_t a, x, y, c; } MosRegs;
 void    platform_mos_call(uint16_t entry);
 MosRegs platform_mos_call_typed(uint16_t entry, MosRegs in);
 
+/* ⭐ Is the key with this negative-INKEY code held?  The ANSWER OSBYTE 129 (Y=$FF) gives, without
+   the OS call around it.  Used by kbd_test_key_regs on the AMIGA ONLY: there the MOS round trip
+   (a MosRegs built and copied by value three times, a virtual mosCall, two switches, then the
+   virtual keyDown) was 4 ms of a frame for seven key tests.  The host keeps the real MOS call,
+   because its MOS-call trace is part of `make validate`'s differential. */
+int     platform_key_down(uint8_t code);
+
 /* A BRK was executed at `pc`.  On the BBC this is a software interrupt, not a no-op: it
    vectors through BRKV ($0202) into the MOS error handler and does NOT return to the
    following instruction.  Revs contains four routines that are a single $00 byte, called

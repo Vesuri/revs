@@ -77,6 +77,10 @@ MosRegs platform_mos_call_typed(uint16_t entry, MosRegs in) {
     return platform->mosCall(entry, in);
 }
 
+int platform_key_down(uint8_t code) {
+    return platform ? (platform->keyDown(code) ? 1 : 0) : 0;
+}
+
 void platform_brk(uint16_t pc) {
     if (platform) platform->brk(pc);
 }

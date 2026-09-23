@@ -10159,7 +10159,23 @@ void apply_angle_term_core_oracle(uint8_t dest, uint8_t angle, uint8_t source)
    registers, so this returns them typed; kbd_test_key_core keeps the boolean the other callers want. */
 MosRegs kbd_test_key_regs(uint8_t keyCode)
 {
+#ifdef REVS_PLATFORM_AMIGA
+    /* ⭐⭐ THE ANSWER WITHOUT THE ROUND TRIP, and it was 4 ms of the frame.  The real BBC spends
+       1.0 ms on the whole of read_driving_controls (`make bbcprof`); the port spent 5.0, almost
+       all of it seven OSBYTE 129s a frame, each a MosRegs built and copied by value through
+       mos_call -> platform_mos_call_typed -> the virtual Platform::mosCall -> switch(entry) ->
+       osbyte() -> switch(a) -> the virtual keyDown.  This returns EXACTLY what that path
+       returns for this call — src/platform/mos.cpp `case 0x81` with Y = $FF: A untouched ($81),
+       X = Y = $FF held / $00 not, carry as handed in (0) — so no caller can tell the difference.
+       ⚠ Amiga only: the host keeps the MOS call because REVS_HW_TRACE logs it and `make
+       validate` diffs that log between twin and oracle (docs/faithfulness-seam.md: a faithful
+       routine that needs a small Amiga variation stays here, under the platform guard). */
+    const uint8_t v = platform_key_down(keyCode) ? 0xFFu : 0x00u;
+    MosRegs r = { 0x81u, v, v, 0u };
+    return r;
+#else
     return mos_osbyte(0x81u, keyCode, 0xFFu);   /* $0E50-$0E54 */
+#endif
 }
 
 int kbd_test_key_core(uint8_t keyCode)
