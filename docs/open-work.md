@@ -99,7 +99,7 @@ by certainty × size:
   determinism runs, per-circuit views) — the walk's state in locals behind a per-span footprint
   guard, the old walk kept as `span_walk_exact`; the fixtures now reach it (real `row_base` table;
   a walk climbing through page `$2F`, which also exposed and fixed an exact-walk gap).
-  ⏭ **NEXT: the walk + plot as a hand-written 68000 routine** — GCC keeps ~22 live values in 15
+  ⏭ **NEXT: the walk + plot as a hand-written 68000 routine — THE PLAN IS `docs/asm-span-walk-plan.md`** (design, validation on the target, and where to continue after it) — GCC keeps ~22 live values in 15
   registers and spills 94-137 stack operands whatever the C shape (three shapes measured, CLOSED
   below); an explicit allocation with the DDA carry in the X flag (`addx.b`) is the tool.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
