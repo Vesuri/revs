@@ -8498,16 +8498,17 @@ int span_walk_check(const SpanArm *arm, FastWalk *w, int variant, unsigned n)
 #endif
 #endif /* REVS_SPAN_ASM_ON */
 
-/* The register walk: the per-span entry, then the loop (C, or the asm on the Amiga), then the
-   write-back and the caps, which stay in C because they can reach a circuit's hook. */
+/* The register walk after its pointers are known: the per-span entry, then the loop (C, or the
+   asm on the Amiga), then the write-back and the caps, which stay in C because they can reach a
+   circuit's hook.  w arrives with p1/p2/p3 set; `dx`/`dy`/`lineEnd`/`block` are the cells'
+   values, passed by a caller that already holds them (see span_walk_direct). */
 static inline __attribute__((always_inline))
-void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+void span_walk_fast_run(const SpanArm *arm, uint8_t phase, FastWalk *wp)
 {
-    FastWalk w;
+    FastWalk w = *wp;
     int abandoned;
 
     mem[arm->operand] = mem[arm->table + phase];    /* the entry offset over the branch operand */
-    w.p1 = plot_ptr_v; w.p2 = plot_ptr2_v; w.p3 = plot_ptr3_v;   /* span_walk_fast_ok marshalled them */
 #ifdef REVS_SPAN_SLOT_FALLBACK
     /* ⚠ The guard has just proved this span runs TOWARD its bound, so say so: span_walk_cap reads
        this flag, span_walk_exact recomputes it per span, and span_plot_oracle leaves it SET — a
@@ -8519,18 +8520,6 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
     return;     /* ⚠⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only. */
 #endif
-
-    w.y       = startLine;
-    w.dx      = mem[arm->addend];                   /* $83/$84 — fixed for the span (see banner) */
-    w.dy      = mem[arm->subtrahend];
-    w.lineEnd = mem[SPAN_LINE_END];
-    w.block   = mem[SPAN_BLOCK];
-    w.bh      = bearing_hi;
-    w.dest1   = (uint16_t)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
-    w.dest2   = (uint16_t)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
-    w.stepIn  = (int)g_spanStepIn;
-    w.stepOut = (int)g_spanStepOut;
-    w.markOn  = (g_spanMarkOn == SPAN_MARK_ON);
 
 #ifdef REVS_SPAN_ASM_ON
     { unsigned n = arm->rev ? (unsigned)(w.p2 >> 8) - arm->bound : arm->bound - (unsigned)(w.p2 >> 8);
@@ -8559,6 +8548,74 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
         return;
     }
     if (arm->rev) span_walk_cap(w.y);
+}
+
+/* The general entry: everything from mem[] (span_walk_fast_ok has just marshalled the pointers). */
+static inline __attribute__((always_inline))
+void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+{
+    FastWalk w;
+    w.p1 = plot_ptr_v; w.p2 = plot_ptr2_v; w.p3 = plot_ptr3_v;
+    w.y       = startLine;
+    w.dx      = mem[arm->addend];                   /* $83/$84 — fixed for the span (see banner) */
+    w.dy      = mem[arm->subtrahend];
+    w.lineEnd = mem[SPAN_LINE_END];
+    w.block   = mem[SPAN_BLOCK];
+    w.bh      = bearing_hi;
+    w.dest1   = (uint16_t)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
+    w.dest2   = (uint16_t)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
+    w.stepIn  = (int)g_spanStepIn;
+    w.stepOut = (int)g_spanStepOut;
+    w.markOn  = (g_spanMarkOn == SPAN_MARK_ON);
+    span_walk_fast_run(arm, phase, &w);
+}
+
+static inline __attribute__((always_inline))
+void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine);
+
+/* ⭐ interp_edge's OWN entry, which knows everything span_walk_fast_ok would test.  On this path
+   the page tests are ALWAYS true: interp_edge has just set all three pointers' pages from a block
+   below $28 — plot_ptr/plot_ptr2 on page (block >> 1) + $30, at most $43, plot_ptr3 one above —
+   so every page the walk can visit lies in $30..$44 whichever way it goes (bounds $2F / $44), and
+   the start is strictly on the near side of the bound.  The steps and the marker switch are the
+   ones interp_edge has just set, so they cannot trap.  What is left is the destination, which a
+   fixture can plant anywhere; out of range, the span takes the general dispatcher, unchanged.
+   The cells interp_edge just stored (the deltas, the end line, the block) arrive as values
+   instead of being read back.  The pointers' LOW bytes still come from mem[], as the guard's
+   marshal took them. */
+static inline __attribute__((always_inline))
+void span_walk_direct(const SpanArm *arm, uint8_t phase, uint8_t startLine, uint8_t page,
+                      uint8_t block, uint8_t dx, uint8_t dy, uint8_t lineEnd, uint8_t bh,
+                      int markOn)
+{
+    FastWalk w;
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 1
+    (void)arm; (void)phase; (void)startLine; (void)page; (void)block; (void)dx; (void)dy;
+    (void)lineEnd; (void)bh; (void)markOn; (void)w; return;   /* ⚠⚠ ROADARM=1: no walk.  §ROADARM */
+#endif
+    w.dest1 = (uint16_t)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
+    w.dest2 = (uint16_t)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
+    if (w.dest1 < 0x0300u || w.dest1 > 0x0800u || w.dest2 < 0x0300u || w.dest2 > 0x0800u) {
+        span_walk(arm, phase, startLine);
+        return;
+    }
+#ifdef REVS_WALKCHECK
+    g_walkCheckArms[arm->steep * 2 + arm->rev]++;
+#endif
+    /* span_walk_fast_ok's marshal, from the bytes interp_edge has just written */
+    w.p1 = plot_ptr_v  = (uint16_t)(((unsigned)page << 8) | mem[MEM_plot_ptr_lo]);
+    w.p2 = plot_ptr2_v = (uint16_t)(((unsigned)page << 8) | mem[MEM_plot_ptr2_lo]);
+    w.p3 = plot_ptr3_v = (uint16_t)(((unsigned)(page + 1u) << 8) | mem[MEM_plot_ptr3_lo]);
+    w.y       = startLine;
+    w.dx      = arm->steep ? dx : dy;               /* the addend: SPAN_DY shallow, SPAN_DX steep */
+    w.dy      = arm->steep ? dy : dx;               /* ...and the subtrahend */
+    w.lineEnd = lineEnd;
+    w.block   = block;
+    w.bh      = bh;
+    w.stepIn  = (int)g_spanStepIn;
+    w.stepOut = (int)g_spanStepOut;
+    w.markOn  = markOn;
+    span_walk_fast_run(arm, phase, &w);
 }
 
 /* The dispatcher every caller uses: the register walk when the span provably cannot touch its own
@@ -8803,21 +8860,23 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 
     /* 6 — the three screen pointers and the source block, all from the endpoint's x. */
     math_hi = (uint8_t)(shared_temp_7e - 0x30u);
-    { uint8_t block = (uint8_t)(math_hi >> 2);
-      mem[SPAN_BLOCK] = block;
-      if (block >= 0x28u) return interp_edge_publish();   /* off the side */
-      /* The three screen pages, from the endpoint's block: (block >> 1) + $30, and plot_ptr3
-         one page above. */
-      { uint8_t page = (uint8_t)((block >> 1) + 0x30u);
-        PLOT_SET_HI(plot_ptr,  page);
-        PLOT_SET_HI(plot_ptr2, page);
-        PLOT_SET_HI(plot_ptr3, page + 1u); } }
+    uint8_t block = (uint8_t)(math_hi >> 2);
+    mem[SPAN_BLOCK] = block;
+    if (block >= 0x28u) return interp_edge_publish();   /* off the side */
+    /* The three screen pages, from the endpoint's block: (block >> 1) + $30, and plot_ptr3
+       one page above. */
+    uint8_t page = (uint8_t)((block >> 1) + 0x30u);
+    PLOT_SET_HI(plot_ptr,  page);
+    PLOT_SET_HI(plot_ptr2, page);
+    PLOT_SET_HI(plot_ptr3, page + 1u);
 
-    /* The span walk takes the entry sub-column phase and the start line as plain C arguments. */
+    /* The span walk takes the entry sub-column phase and the start line as plain C arguments,
+       and the cells this routine has just stored as values (span_walk_direct). */
     uint8_t phase     = (uint8_t)(math_hi & 7u);   /* the sub-column phase, into the entry tables */
     uint8_t startLine = span_line_cursor;
+    const uint8_t dxv = mem[SPAN_DX], dyv = mem[SPAN_DY], lineEnd = mem[SPAN_LINE_END];
 
-    if (mem[SPAN_DX] >= mem[SPAN_DY]) {
+    if (dxv >= dyv) {
         /* X-MAJOR.  A solid run needs no terminator, so the two end markers are switched off
            by planting RTS over their first byte. */
         int wantMarkers = (mem[MEM_colour_pattern_tbl] == 0xFFu)
@@ -8837,12 +8896,16 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
             }
         }
         ROAD_PHASE(ROAD_PHASE_WALK);    /* everything above this line is per-span SETUP */
-        if (mem[SPAN_ARM] & 0x80u) span_walk(&ARM_SHALLOW_REV, phase, startLine);
-        else                       span_walk(&ARM_SHALLOW_FWD, phase, startLine);
+        if (mem[SPAN_ARM] & 0x80u)
+            span_walk_direct(&ARM_SHALLOW_REV, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, wantMarkers);
+        else
+            span_walk_direct(&ARM_SHALLOW_FWD, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, wantMarkers);
     } else {
         ROAD_PHASE(ROAD_PHASE_WALK);
-        if (mem[SPAN_ARM] & 0x80u) span_walk(&ARM_STEEP_REV, phase, startLine);
-        else                       span_walk(&ARM_STEEP_FWD, phase, startLine);
+        if (mem[SPAN_ARM] & 0x80u)
+            span_walk_direct(&ARM_STEEP_REV, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, 0);
+        else
+            span_walk_direct(&ARM_STEEP_FWD, phase, startLine, page, block, dxv, dyv, lineEnd, pattern0, 0);
     }
     ROAD_PHASE(ROAD_PHASE_SPANS);
 
