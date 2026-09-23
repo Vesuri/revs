@@ -403,24 +403,50 @@ const frameCycles = [];
    the VERTB ISR to whatever phase it preempted.  Symmetric, and stated rather than hidden.
    ⚠ Reported as a MEDIAN over settled frames for the same reason the frame cost is: the
    drive-in and the engine's crash holds are a different workload. */
-const PROFILE_ROUTINES = [
-    [0x24f6, "build_track_geometry", "ph5"],
-    [0x1a20, "draw_road",            "ph11"],
-    [0x7be2, "view_paint_lines",     "ph24+33+32"],
-    [0x22ff, "road_edge_start",      "(inside ph5)"],
-    [0x2145, "bearing_to_section",   "(inside ph5)"],
-    [0x2285, "project_point",        "(inside ph5)"],
-    [0x0ca5, "point_distance_hypot", "(inside ph5)"],
-    [0x1e15, "fill_dash_edge_columns", "ph18"],
-    [0x46a1, "apply_driving_model",  "ph4"],
-    [0x2637, "move_and_draw_cars",   "ph17"],
+/* ⭐⭐ MEASURED (2026-09-23, Silverstone practice, driving): the site MEANS sum to 96.4 of the
+   frame's 97.0 ms, so this table IS the BBC frame — read docs/open-work.md §THE PER-PHASE
+   COMPARISON for it lined up against the port.  ⚠ Compare the MEAN column: the median read the
+   three engine_sound_update calls as 0.0 ms where the mean is 1.1, because they work on fewer
+   than half their frames.
+   The main loop's 24 call SITES, $1701..$1748 — one per Amiga phase id, in order.  Bracketed at
+   the SITE rather than the routine because engine_sound_update is called three times (phases
+   9/12/20) and a routine-level bracket would merge them.  Opens on the JSR itself (S = s0) and
+   closes on the instruction after it with S back at s0 — exact, and nest-proof by construction. */
+const PROFILE_SITES = [
+    [0x1701, 1, "tick_race_timers"],     [0x1704, 2, "draw_starting_lights"],
+    [0x1707, 3, "read_driving_controls"], [0x170a, 4, "apply_driving_model"],
+    [0x170d, 5, "build_track_geometry"], [0x1710, 6, "place_player_in_section"],
+    [0x1713, 7, "advance_player_section"], [0x1716, 8, "update_lap_timers"],
+    [0x1719, 9, "engine_sound_update"],  [0x171c, 10, "clear_surface_buffers"],
+    [0x171f, 11, "draw_road"],           [0x1722, 12, "engine_sound_update"],
+    [0x1725, 13, "fill_line_surface"],   [0x1728, 14, "build_road_sign"],
+    [0x172d, 15, "draw_track_object"],   [0x1730, 16, "draw_corner_markers"],
+    [0x1733, 17, "move_and_draw_cars"],  [0x1736, 18, "fill_dash_edge_columns"],
+    [0x1739, 19, "mirrors_update"],      [0x173c, 20, "engine_sound_update"],
+    [0x173f, 21, "update_horizon_band"], [0x1742, 22, "process_car_contact"],
+    [0x1745, 23, "check_crash"],         [0x1748, 24, "view_paint_lines"],
+    /* ...and the LOOP TAIL the port brackets as phase 32 ($174B-$17B7): the three calls on the
+       usual ($62F6 == 0) path back to $1701.  Numbered 32 so the rows line up with the port's. */
+    [0x1791, 32, "tail: shift_key_commands"],         [0x17b1, 32, "tail: engine_sound_update"],
+    [0x17b4, 32, "tail: draw_dash_needles"],
 ];
+/* ...and the practice-session DELAY PAD inside move_and_draw_cars ($262D-$2636, 1536 decrements
+   of math_lo), which the port deliberately does not reproduce (src/gen/revs_native.c twin #179).
+   A PC-RANGE bracket, because it is a branch target and not a call. */
+const PAD_LO = 0x262d, PAD_HI = 0x2636;
 const profileOn = argv.includes("--profile");
 /* pc -> {name, note, open:[{sp,t0}], frameCycles:<cycles this frame>, per:[] , calls:[] } */
 const profState = new Map();
-if (profileOn)
-    for (const [pc, name, note] of PROFILE_ROUTINES)
-        profState.set(pc, { name, note, open: [], cur: 0, curCalls: 0, per: [], calls: [] });
+const siteAt = new Map();   /* site pc -> state */
+if (profileOn) {
+    for (const [pc, ph, name] of PROFILE_SITES) {
+        const st = { name, ph, pc, s0: -1, t0: 0, cur: 0, curCalls: 0, per: [], calls: [] };
+        profState.set(pc, st); siteAt.set(pc, st);
+    }
+    profState.set(-1, { name: "  (the practice DELAY PAD)", ph: 0, pc: PAD_LO, s0: -1, t0: 0,
+                        cur: 0, curCalls: 0, per: [], calls: [] });
+}
+const padSt = () => profState.get(-1);
 let numAsks = 0,
     numValidations = 0,
     numRejects = 0,
@@ -437,19 +463,15 @@ let ringAt = 0,
 
 tm.processor.debugInstruction.add((addr) => {
     if (profileOn) {
-        /* close first: an entry PC reached while a frame of the SAME routine is open is a
-           genuine re-entry, and closing on this instruction would swallow it. */
-        for (const st of profState.values()) {
-            while (st.open.length && tm.processor.s >= st.open[st.open.length - 1].sp + 2) {
-                const fr = st.open.pop();
-                if (st.open.length === 0) st.cur += cpuCycles() - fr.t0;   /* subtree, once */
-            }
-        }
-        const st = profState.get(addr);
-        if (st) {
-            if (st.open.length === 0) st.curCalls++;
-            st.open.push({ sp: tm.processor.s, t0: cpuCycles() });
-        }
+        const now = cpuCycles(), S = tm.processor.s;
+        /* close a site on the instruction after its JSR, with the stack back where it was */
+        const back = siteAt.get(addr - 3);
+        if (back && back.s0 >= 0 && S >= back.s0) { back.cur += now - back.t0; back.s0 = -1; }
+        const st = siteAt.get(addr);
+        if (st && st.s0 < 0) { st.s0 = S; st.t0 = now; st.curCalls++; }
+        const pad = padSt(), inPad = addr >= PAD_LO && addr <= PAD_HI;
+        if (inPad && pad.s0 < 0) { pad.s0 = 1; pad.t0 = now; pad.curCalls++; }
+        else if (!inPad && pad.s0 >= 0) { pad.cur += now - pad.t0; pad.s0 = -1; }
     }
     if (traceEdge && addr === 0x23c0 && frames === memAtFrame) {
         const pk = (a) => tm.processor.peekmem(a);
@@ -1831,21 +1853,27 @@ if (frameCycles.length > 12) {
     if (profileOn) {
         const med = (a) => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
         const frameMed = med(gaps);
-        console.log(`\nWHERE THAT FRAME GOES — per routine, SUBTREE cycles, median over the same window:`);
-        console.log(`   ${"routine".padEnd(24)} ${"calls/f".padStart(8)} ${"cyc/frame".padStart(10)}` +
-                    ` ${"ms".padStart(6)} ${"% frame".padStart(8)}  ${"cyc/call".padStart(9)}  port row`);
-        for (const [pc] of PROFILE_ROUTINES) {
-            const st = profState.get(pc);
+        console.log(`\nWHERE THAT FRAME GOES — per main-loop CALL SITE, subtree cycles, over the same window:`);
+        console.log(`   ${"phase routine".padEnd(28)} ${"n/f".padStart(4)} ${"median cyc".padStart(10)}` +
+                    ` ${"med ms".padStart(6)} ${"% frame".padStart(8)} ${"MEAN ms".padStart(8)}`);
+        let sum = 0, sumMean = 0;
+        for (const st of profState.values()) {
             const per = st.per.slice(8), cl = st.calls.slice(8);
             if (!per.length) continue;
             const m = med(per), c = med(cl);
-            console.log(`   ${st.name.padEnd(24)} ${String(c).padStart(8)} ${String(m).padStart(10)}` +
+            /* ⚠ the MEAN is the column to compare against the port's phase row (which is a mean):
+               a median reads a routine that works on under half its frames as its idle cost. */
+            const mean = per.reduce((a, b) => a + b, 0) / per.length;
+            if (st.ph) { sum += m; sumMean += mean; }
+            console.log(`   ${(st.ph ? "ph" + String(st.ph).padStart(2) + " " : "     ") + st.name.padEnd(24)}` +
+                        ` ${String(c).padStart(4)} ${String(m).padStart(10)}` +
                         ` ${ms(m).padStart(6)} ${((m / frameMed) * 100).toFixed(1).padStart(7)}%` +
-                        `  ${String(c ? Math.round(m / c) : 0).padStart(9)}  ${st.note}`);
+                        ` ${ms(mean).padStart(8)}`);
         }
-        console.log(`   ⚠ SUBTREE cost, so the nested rows (road_edge_start, bearing_to_section,`);
-        console.log(`     project_point, point_distance_hypot) are already INSIDE`);
-        console.log(`     build_track_geometry's row — do not add the column up.`);
+        console.log(`   Σ of the site medians = ${ms(sum)} ms against the frame's ${ms(frameMed)} —` +
+                    ` the rest is the $1760 frame wait and the loop code between calls.`);
+        console.log(`   Σ of the site MEANS = ${ms(sumMean)} ms.`);
+        console.log(`   ⚠ PORT-COMPARABLE: the MEAN column, and exclude the delay pad (the port does not reproduce it).`);
         console.log(`   ⚠ An interrupt taken inside a routine is charged to it, exactly as the`);
         console.log(`     Amiga side charges the VERTB ISR to whatever phase it preempted.`);
     }
