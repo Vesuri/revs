@@ -447,6 +447,36 @@ if (profileOn) {
                         cur: 0, curCalls: 0, per: [], calls: [] });
 }
 const padSt = () => profState.get(-1);
+
+/* ── ⭐⭐ `--flat` : A FLAT PROFILE BY FUNCTION — every instruction's cycles charged to the
+   symbols.csv function containing its PC.  The site table above says which main-loop CALL costs
+   what; this says which ROUTINE inside it does, which is what sizing one component of the
+   port's draw_road (setup / walk / plotter) against the original needs.  The charge for an
+   instruction is the cycle delta to the NEXT hook, so an interrupt's cycles land on the MOS/IRQ
+   code it ran, never on the routine it preempted.  ⚠ "Containing" = nearest preceding func
+   symbol, so an unnamed routine is charged to whatever named one sits below it in memory —
+   the table prints the address with every name for that reason. */
+const flatOn = argv.includes("--flat");
+let flatStarts = [], flatNames = [];
+if (flatOn) {
+    const csv = fs.readFileSync(new URL("../disasm/symbols.csv", import.meta.url), "utf8");
+    const rows = [];
+    for (const line of csv.split("\n")) {
+        const m = /^0x([0-9A-Fa-f]{4}),([A-Za-z_0-9]+),func,/.exec(line);
+        if (m) rows.push([parseInt(m[1], 16), m[2]]);
+    }
+    rows.push([0xc000, "MOS_ROM"]);
+    rows.sort((a, b) => a[0] - b[0]);
+    flatStarts = rows.map((r) => r[0]); flatNames = rows.map((r) => r[1]);
+}
+const flatIdx = (pc) => {
+    let lo = 0, hi = flatStarts.length - 1, r = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (flatStarts[mid] <= pc) { r = mid; lo = mid + 1; } else hi = mid - 1; }
+    return r;
+};
+const flatCur = new Map();     /* function index -> cycles this frame */
+const flatAll = new Map();     /* function index -> [per-frame cycles] */
+let flatLastPc = -1, flatLastT = 0, flatFrames = 0;
 let numAsks = 0,
     numValidations = 0,
     numRejects = 0,
@@ -462,6 +492,14 @@ let ringAt = 0,
     engineInsns = 0;
 
 tm.processor.debugInstruction.add((addr) => {
+    if (flatOn) {
+        const now = cpuCycles();
+        if (flatLastPc >= 0) {
+            const k = flatIdx(flatLastPc);
+            flatCur.set(k, (flatCur.get(k) || 0) + (now - flatLastT));
+        }
+        flatLastPc = addr; flatLastT = now;
+    }
     if (profileOn) {
         const now = cpuCycles(), S = tm.processor.s;
         /* close a site on the instruction after its JSR, with the stack back where it was */
@@ -546,6 +584,15 @@ tm.processor.debugInstruction.add((addr) => {
             // the 50 Hz body and all.  Everything else this project measures is the port's
             // cost with nothing to compare it to.
             frameCycles.push(cpuCycles());
+            if (flatOn) {
+                flatFrames++;
+                if (flatFrames > 8)                     /* the same settle skip as the frame cost */
+                    for (const [k, v] of flatCur) {
+                        if (!flatAll.has(k)) flatAll.set(k, 0);
+                        flatAll.set(k, flatAll.get(k) + v);
+                    }
+                flatCur.clear();
+            }
             if (profileOn)
                 for (const st of profState.values()) {
                     st.per.push(st.cur); st.calls.push(st.curCalls);
@@ -1874,6 +1921,18 @@ if (frameCycles.length > 12) {
                     ` the rest is the $1760 frame wait and the loop code between calls.`);
         console.log(`   Σ of the site MEANS = ${ms(sumMean)} ms.`);
         console.log(`   ⚠ PORT-COMPARABLE: the MEAN column, and exclude the delay pad (the port does not reproduce it).`);
+    }
+    if (flatOn && flatFrames > 9) {
+        const n = flatFrames - 8;
+        const rows = [...flatAll].map(([k, v]) => [k, v / n]).sort((a, b) => b[1] - a[1]);
+        let tot = 0; for (const [, v] of rows) tot += v;
+        console.log(`\nFLAT PROFILE BY FUNCTION — mean cycles per frame over ${n} frames (Σ = ${ms(tot)} ms):`);
+        for (const [k, v] of rows.slice(0, 45)) {
+            if (v < 200) break;
+            const a = k >= 0 ? flatStarts[k] : 0;
+            console.log(`   $${a.toString(16).padStart(4, "0")} ${(k >= 0 ? flatNames[k] : "?").padEnd(30)}` +
+                        ` ${String(Math.round(v)).padStart(7)} cyc ${ms(v).padStart(6)} ms`);
+        }
         console.log(`   ⚠ An interrupt taken inside a routine is charged to it, exactly as the`);
         console.log(`     Amiga side charges the VERTB ISR to whatever phase it preempted.`);
     }

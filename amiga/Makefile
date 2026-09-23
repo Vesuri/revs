@@ -208,6 +208,15 @@ ifdef VIEWCAL
 EXTRA_DEFINES += -DREVS_VIEWCAL=$(VIEWCAL)
 endif
 
+# ⚠⚠ `make ROADARM=1|2` — PICTURE WRONG BY CONSTRUCTION, the pricing arms for draw_road's span
+# body (src/gen/revs_native.c): 1 = no span walk and no plot (the setup still runs), 2 = no span
+# body at all (only the endpoint hand-over), 3 = the walk runs but each plot's BODY is skipped.  ph11 against the plain control prices each part
+# WITHOUT ROADSPLIT's brackets, which double the pass (67 ms against 34) and so cannot size it.
+# ⚠ Check phase 5 and the frame count match the control: the sim must not see the difference.
+ifneq ($(ROADARM),)
+EXTRA_DEFINES += -DREVS_ROAD_ARM=$(ROADARM)
+endif
+
 # ⭐⭐ `make BODYSPLIT=1 PROBES=1` — split the 50 Hz DRAIN (phases 26+29) into the band cycle's
 # four parts (src/platform/probe.h §BODYSPLIT): the 43-byte reuse GATE (59), the game's own IRQ1V
 # chain (60), an EMPTY control at the gate's rate (61) and bbc_begin_band_cycle (62).  The drain is

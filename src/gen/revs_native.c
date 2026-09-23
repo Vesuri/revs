@@ -7534,6 +7534,13 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
     if (!span_step_take(g_spanStepIn, p->stepIn, &y))   /* entry slot trapped: carry_in stands */
         return SPAN_PLOT_PACK(y, carryIn, 0);
     if (y == mem[SPAN_LINE_END]) { span_abandon_chain(y); return SPAN_PLOT_PACK(y, carryIn, 1); }
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 3
+    /* ⚠⚠ `make ROADARM=3` — PICTURE WRONG BY CONSTRUCTION: the plot BODY is skipped (its three
+       stores, the pattern compose and the block-first-line exit), keeping the Y steps and the
+       abandon test the walk's control flow depends on.  Prices the plotter against the DDA. */
+    { unsigned c = span_step_take(g_spanStepOut, p->stepOut, &y) ? 0u : 0u;
+      (void)p; return SPAN_PLOT_PACK(y, c, 0); }
+#endif
 
     /* Which source block feeds this scan line, into the pass's surface_edge buffer. */
     { unsigned d = (unsigned)((mem[p->destLo] | (mem[p->destHi] << 8)) + y);
@@ -7859,6 +7866,11 @@ unsigned sw_marker(int p2, uint8_t colMark, uint8_t y, unsigned carry)
 static inline __attribute__((always_inline))
 void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 {
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 1
+    /* ⚠⚠ `make ROADARM=1` — PICTURE WRONG BY CONSTRUCTION: no walk and no plot, the per-span
+       setup still runs.  ph11's drop against the control IS the walk + plot.  §ROADARM. */
+    (void)arm; (void)phase; (void)startLine; return;
+#endif
     int col, forced, runTop, first = 1;
     uint8_t y = startLine;              /* the scan line the plotters step through Y */
     uint8_t colMark = 0x80u;            /* "this column has plotted nothing yet" (shallow) */
@@ -8091,6 +8103,12 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     saved_slot_index   = farPoint;
     span_saved_index   = nearPoint;
     if (publishOnly) return interp_edge_publish();
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 2
+    /* ⚠⚠ `make ROADARM=2` — PICTURE WRONG BY CONSTRUCTION, a PRICING arm: the span body (setup,
+       walk and plot) is skipped and only the endpoint hand-over runs, so ph11 minus the control
+       IS what one span's body costs the port.  amiga/Makefile §ROADARM. */
+    return interp_edge_publish();
+#endif
 
     /* Both ends have to be usable.  Bit 6 clear means the PREVIOUS point was on screen and
        this one starts a span; bit 6 set with bit 7 set means neither is. */
