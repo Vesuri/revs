@@ -26,7 +26,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 149.18 ms bracketed, ~143.5 shipping** (the probe costs ~5.7) for the DEFAULT — measured
+**Where the frame stands:** **Σ(1..39) − ph28 = 139.47 ms bracketed, ~133.8 shipping** (the probe costs ~5.7; 149.18 at the plan's start) for the DEFAULT — measured
 2026-09-22 at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
 `FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
@@ -73,6 +73,37 @@ by certainty × size:
 3. `view_paint_lines` **−11.4** — the consumer, now painting bitplanes behind a dual playfield.
 4. `build_track_geometry` −4.8, the sign/object pair −2.1, the tail −2.1, the small rows −1.3.
 5. Port-only: the drain's ~442 µs/cycle remainder (~4 ms), `prepareFrame`'s non-copper part.
+
+**STEP 1 PROGRESS (2026-09-23): 149.18 → 139.47 ms bracketed, −9.7.**
+- ✅ 1.1 input: the MOS round trip → a direct Amiga answer + a reverse key map, **−4.04**
+  (ph3 5.11 → 1.96 against the BBC's 1.0).
+- ✅ the span plotters inlined into the walk, **−2.23** (the `noinline` rested on a
+  fetch-contention argument a cache-less 68000 does not have).
+- ✅ `normalise_for_divide`'s bit-at-a-time loop → a leading-zeros table + one shift, **−2.22**,
+  found by the new PC sampler (below).
+- ⭐ **`draw_road`, priced by deletion** (`make ROADARM=1..4`): per-span setup **7.5 ms = the
+  BBC's 7.6**; the driver 7.9 against 3.3; **the walk + plot 17.3 (after inlining) against ~3.4**,
+  of which the plot body is 4.15 and the walk's loop/scaffolding ~11.9. The sampler puts the
+  shallow DDA step at ~15% of `interp_edge_core` and the rest spread over the plot's three stores,
+  the style-pattern loop and the epilogue — no single defect left; the next move there is the
+  DDA as 16-bit fixed point in registers (the carry as the 68000's own X flag, not byte math).
+- ⏳ **NEXT — THE TRUE 68000 RATIO (user decision, 2026-09-23).** The 6502 divides by a
+  divisor TRUNCATED to 8 bits; `(S << 8) / L` in one `DIVU` is the true ratio and differs by 1
+  (rarely 2, always downward) in ~1/3 of cases, identical for L < 256. Take it at BOTH producers
+  (`bearing_to_section`'s arms, `project_point`) and follow `proj_width`/`proj_width_shift` — a
+  software float for 1/distance, mantissa `round($8000/D)` from `reciprocal_table`, exponent z —
+  to its three consumers (`emit_edge_width_offset`, the object slot writer's `object_width`,
+  `scale_shape_vectors`) and replace each with a direct `K/dist` DIVU. Order, and each is a gate:
+  1. `validate` gains a TOLERANCE mode (named cells within ±N of the oracle, the rest exact) —
+     these twins deliberately stop matching their oracles, so equality cannot gate them;
+  2. a reader audit (`make rangeaudit`, all five circuits) of every scratch cell the new math
+     stops writing — `point_delta_lo/hi`'s shifted lanes, `shared_temp_76`, `math_lo`,
+     `proj_width(_shift)` — including expansion-circuit hook code;
+  3. the change, then `make determinism-record` and a `viewdiff` whose differences are all
+     within the tolerance, the exemption written up per the RESULTS rule.
+- ⭐ **Two new instruments drive the rest of step 1:** `make bbcprof` (per call site and, with
+  `--flat`, per function, on a real BBC) and `amiga/pcsample.sh` + `tools/pcsample_report.py`
+  (a statistical PC sampler on the target, by function and by source line).
 
 **STEP 2 — BEYOND PARITY: ~90 → 48 ms.** Needs the view pipeline (61.7 BBC ms) at ~3× the 6502,
 which is past the 2.3× the best native row demonstrates — so it cannot come from code shape, only

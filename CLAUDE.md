@@ -195,7 +195,16 @@ make PROBES=1 ISRSPLIT=1  # ⭐ split the VERTB ISR into its own timed slots (am
                           #   charged to whichever phase it preempted.  ISRCAL=1 adds the known-
                           #   quantity calibration burn; ⚠ `make clean` when you turn it back off
 EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=x.gdb ./diag_run.sh 60   # ⭐⭐ ~4.9x faster, same numbers
+EXTRA_ARGS="--warp_mode=1" ./pcsample.sh 150 0.01   # ⭐⭐ STATISTICAL PC SAMPLER: where the time REALLY is
+python3 ../tools/pcsample_report.py .run/gdb-out.log --from-field=3000 [--fn=<name>]  # by function / source line
 ```
+⭐⭐ **Rank step-1 work against the REAL BBC, row for row: `make bbcprof` (repo root) brackets its 27
+main-loop call sites, `--flat` its functions.** A port row slower than the 6502's is a defect to
+find, not a trade; a routine the port already beats (`apply_driving_model`, 2.2×) says what native
+C buys. ⚠ Compare the MEAN column (a median hides a routine that works on under half its frames),
+and the BBC's practice frame contains a 6.0 ms busy-delay pad the port rightly drops.
+⚠ **A pricing arm (`ROADARM=`, `*CARVE=`, …) leaves a WRONG PICTURE in `amiga/out/` — rebuild plain
+before handing the machine back**; a user ran one and reported the road missing.
 
 ⭐⭐ **Put `EXTRA_ARGS="--warp_mode=1"` on every probe run** — FS-UAE runs ~4.9× faster than real
 time and it changes **no** measurement this project takes (FPS is `50 * g_fpsFrames / g_vbiCount`
