@@ -26,29 +26,63 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 149.21 ms** for the SHIPPING DEFAULT — measured
+**Where the frame stands:** **Σ(1..39) − ph28 = 149.18 ms bracketed, ~143.5 shipping** (the probe costs ~5.7) for the DEFAULT — measured
 2026-09-22 at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
 `FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
 measured against). ⚠ `ph34` is a ONE-SHOT (`calls=1`), so the RECURRING frame is **~146.7 ms**.
-⭐⭐⭐ **AND THE PRODUCERS ARE AT ROUGH 6502 PARITY PER UNIT OF WORK — MEASURED, AND IT
-RETRACTS THE "FEWER POINTS/SPANS IS THE ONLY ROUTE" READING THIS BLOCK CARRIED EARLIER TODAY.**
-`build_track_geometry` costs **7003 cycles per edge point** (26.6 ms / 27 points) and its three
-bodies are **~600 instructions with no `jsr`, no frame operand and a real `divu`** — i.e.
-**11.7 cycles per instruction**, which is simply what a 68000 costs on a mix that is 17% absolute
-`mem[]` operands (16-20 cyc each). At 7.09 MHz that is **988 µs a point**. The 6502, at any
-plausible share of its own 194 000-cycle frame, spent **719-1078 µs a point** (20-30%). ⇒ **the
-68000's 3.5× clock is almost exactly cancelled by its ~3.3× cycles-per-instruction, so the
-producers are NOT where the port loses — and there is no code shape and no fidelity trade that
-changes that.** `draw_road` reads the same way: 5819 cyc/span, 1604 of setup, 400 per DDA step,
-1088 per plotted column, every body clean.
-⇒ **the 1.59× IS THE PORT-ADDED WORK, which is what the campaign has been deleting all along** —
-the consumer's 41.0 ms, `prepareFrame`'s 8.5, the drain's machinery, the MOS input dispatch. The
-producers' 61 ms is the floor the original also paid.
-⚠⚠ **THE ONE ASSUMPTION LEFT IN THAT, AND IT IS THE NEXT MEASUREMENT (entry 8): the BBC's own
-per-routine share is a GUESS, not a number.** Everything above rests on "geometry was 20-30% of
-the 6502's frame". `make refloop` already races a real BBC and measures its FRAME; nobody has ever
-asked it where that frame goes. Until then the parity reading is [INFERRED], not [DERIVED].
+⭐⭐⭐ **THE PER-PHASE COMPARISON — the port against a real BBC, row for row (2026-09-23).**
+`make bbcprof` brackets the real BBC's 24 main-loop call sites plus the three tail calls, one row
+per Amiga phase id; its site MEANS sum to 96.4 of 97.0 ms, so it IS the BBC frame. The port side
+is the plain-default phase table with ~0.118 ms (one probe transition, 96 instructions) taken off
+each row per call. ⚠ The BBC's 97.0 contains a **6.0 ms busy-delay pad** (`move_and_draw_cars`'
+practice arm, twin #179) the port rightly does not reproduce ⇒ **the comparable BBC frame is 91.0
+ms, and the port ships at ~143.5** (149.2 bracketed − ~5.7 of probe) **= 1.58×.**
+
+| phase | routine | BBC | port | excess |
+|---|---|---:|---:|---:|
+| 11 | `draw_road` | 16.5 | 34.3 | **+17.8** |
+| 24+33 | `view_paint_lines` | 23.5 | 34.9 | **+11.4** |
+| 5 | `build_track_geometry` | 21.7 | 26.5 | +4.8 |
+| 3 | `read_driving_controls` | 1.0 | 5.0 | **+4.0** |
+| 32 | loop tail (`draw_dash_needles` 3.0 of the BBC's) | 3.4 | 5.5 | +2.1 |
+| 14+15 | `build_road_sign` + `draw_track_object` | 2.9 | 5.0 | +2.1 |
+| — | eight small rows (sound ×3, markers, timers, mirrors, crash, horizon) | 1.3 | 2.6 | +1.3 |
+| 27+30 | `prepareFrame` — **port-only** | — | 8.6 | +8.6 |
+| 26+29 | the 50 Hz drain — the game's part is inside the BBC rows | ~1.5 | 6.0 | +4.5 |
+| 4 | `apply_driving_model` | 8.1 | 3.5 | **−4.6** |
+| 18 | `fill_dash_edge_columns` | 7.4 | 5.8 | −1.6 |
+| 17,7,10,6 | cars (net of the pad), advance, clear, place | 3.7 | 2.0 | −1.7 |
+
+⭐⭐⭐ **THE PORT BEATS THE 6502 BY UP TO 2.3× WHERE IT DOES ARITHMETIC IN LOCALS, AND LOSES IN THE
+ROUTINES THAT WALK `mem[]` BYTE BY BYTE.** The machine is not the constraint; the byte-at-a-time
+representation is. ⛔ **Entry 3's "fewer points / fewer spans" is NOT forced and must not be
+proposed as the route** — the producers are 1.25× and 2.1× the 6502, not at a floor.
+
+### ⭐⭐⭐ THE PLAN TO 48 ms, in two steps and in this order
+
+**STEP 1 — NEVER SLOWER THAN THE 6502 ON ANY ROW: ~143.5 → ~90 ms.** Every excess above is work
+the port adds on top of the game's own, so each is a defect to find, not a trade to make. Ranked
+by certainty × size:
+1. `read_driving_controls` **−4.0**, certain — seven key tests a frame through a virtual
+   `mosCall` → OSBYTE switch → virtual `keyDown` → a 33-entry linear scan. A reverse rawkey map
+   and a direct entry (§7).
+2. `draw_road` **−17.8** — 5819 cyc/span for 1.1 DDA lines and 1.3 columns a span, 1088 per
+   plotted column. Still carries the 6502's self-modifying opcode SLOTS (`span_step_take`,
+   `sw_marker`, the page-$00 alias guard) that the governing directive says must go. §2.
+3. `view_paint_lines` **−11.4** — the consumer, now painting bitplanes behind a dual playfield.
+4. `build_track_geometry` −4.8, the sign/object pair −2.1, the tail −2.1, the small rows −1.3.
+5. Port-only: the drain's ~442 µs/cycle remainder (~4 ms), `prepareFrame`'s non-copper part.
+
+**STEP 2 — BEYOND PARITY: ~90 → 48 ms.** Needs the view pipeline (61.7 BBC ms) at ~3× the 6502,
+which is past the 2.3× the best native row demonstrates — so it cannot come from code shape, only
+from deleting work the 6502 did *because of its own architecture*: the `$3000` source-block
+intermediate between `draw_road` and `view_paint_lines` exists to serve the BBC's screen layout,
+and with the car on its own playfield and no `mem[]` decode the constraints that closed the old
+direct-plot attempts (§CLOSED: `SPANPAINT`, the source-event consumer) have changed. **Re-price it
+with numbers after step 1, not before** — step 1 moves every denominator it depends on.
+
+⇒ **The last 8 ms (48 → 40) is where the `50/N` ladder steps to 25 fps; not planned until 48.**
 
 ⭐ **And `ph26`+`ph29` (12.47 ms, the 50 Hz drain) SELF-HEALS as the frame shrinks** — the body is
 a 50 Hz tick, so a 154 ms frame drains 8.78 of them and a 40 ms frame would drain 2. Never count it
@@ -628,18 +662,9 @@ BBC's frame (65%) against **101.9 ms of ours (68%), = 1.61×**.
 rather than a wall, and ⛔ **entry 3 is NOT forced: "fewer points / fewer spans" is no longer the
 only route and must not be proposed as one.**
 
-⚠⚠⚠ **AND ONE DISCREPANCY IT TURNED UP THAT IS NOW A FAITHFULNESS ITEM, NOT A PERF ONE.**
-`move_and_draw_cars` is **13094 cycles (6.5 ms) on the real BBC** where the port's ph17 is
-**0.14 ms** — 46×. The contamination theory is **refuted**: `--peek=0x5f3b` reads `qualify_minutes
-= $FF for all 157 settled frames`, so the reference is a PRACTICE session exactly like the port's
-baseline, and every row in the table above is comparable. ⇒ the 6.5 ms is real practice-session
-work, and either `symbols.csv`'s note is wrong (it says the routine "returns immediately when
-qualify_minutes is negative", and `$FF` is negative) or **the port skips ~6.5 ms of work the real
-machine does every frame.**
-⚠ `make viewdiff` would not see it: it gates display lines 82..166, and an empty practice grid
-puts no car there — the same blind spot §2c already names for the object plotter. **Read the real
-BBC's path through `$2637` before trusting either the note or the port's early return**, and fix
-whichever is wrong; a port that is fast because it does less is not a port.
+✅ **The `move_and_draw_cars` discrepancy is SETTLED** — a PC-range bracket over its practice
+delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
+on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
