@@ -26,8 +26,10 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 139.47 ms bracketed, ~133.8 shipping** (the probe costs ~5.7; 149.18 at the plan's start) for the DEFAULT — measured
-2026-09-22 at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+**Where the frame stands:** **Σ(1..39) − ph28 = 133.70 ms bracketed, ~128.0 shipping** (the probe costs ~5.7; 149.18 at the plan's start) for the DEFAULT — measured
+2026-09-23 against a same-session control that reproduced 139.47 bit for bit (`loopFrames` 379 →
+385, phase 0 121 → 120 fields, one crash hold each). The context line that follows is the
+2026-09-22 measurement at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
 `FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
 measured against). ⚠ `ph34` is a ONE-SHOT (`calls=1`), so the RECURRING frame is **~146.7 ms**.
@@ -74,7 +76,7 @@ by certainty × size:
 4. `build_track_geometry` −4.8, the sign/object pair −2.1, the tail −2.1, the small rows −1.3.
 5. Port-only: the drain's ~442 µs/cycle remainder (~4 ms), `prepareFrame`'s non-copper part.
 
-**STEP 1 PROGRESS (2026-09-23): 149.18 → 139.47 ms bracketed, −9.7.**
+**STEP 1 PROGRESS (2026-09-23): 149.18 → 133.70 ms bracketed, −15.5.**
 - ✅ 1.1 input: the MOS round trip → a direct Amiga answer + a reverse key map, **−4.04**
   (ph3 5.11 → 1.96 against the BBC's 1.0).
 - ✅ the span plotters inlined into the walk, **−2.23** (the `noinline` rested on a
@@ -87,20 +89,21 @@ by certainty × size:
   shallow DDA step at ~15% of `interp_edge_core` and the rest spread over the plot's three stores,
   the style-pattern loop and the epilogue — no single defect left; the next move there is the
   DDA as 16-bit fixed point in registers (the carry as the 68000's own X flag, not byte math).
-- ⏳ **NEXT — THE TRUE 68000 RATIO (user decision, 2026-09-23).** The 6502 divides by a
-  divisor TRUNCATED to 8 bits; `(S << 8) / L` in one `DIVU` is the true ratio and differs by 1
-  (rarely 2, always downward) in ~1/3 of cases, identical for L < 256. Take it at BOTH producers
-  (`bearing_to_section`'s arms, `project_point`) and follow `proj_width`/`proj_width_shift` — a
-  software float for 1/distance, mantissa `round($8000/D)` from `reciprocal_table`, exponent z —
-  to its three consumers (`emit_edge_width_offset`, the object slot writer's `object_width`,
-  `scale_shape_vectors`) and replace each with a direct `K/dist` DIVU. Order, and each is a gate:
-  1. `validate` gains a TOLERANCE mode (named cells within ±N of the oracle, the rest exact) —
-     these twins deliberately stop matching their oracles, so equality cannot gate them;
-  2. a reader audit (`make rangeaudit`, all five circuits) of every scratch cell the new math
-     stops writing — `point_delta_lo/hi`'s shifted lanes, `shared_temp_76`, `math_lo`,
-     `proj_width(_shift)` — including expansion-circuit hook code;
-  3. the change, then `make determinism-record` and a `viewdiff` whose differences are all
-     within the tolerance, the exemption written up per the RESULTS rule.
+- ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
+  18.83**. `bearing_to_section` and `project_point` each take `(S << 8) / L` in one `DIVU` of the
+  real operands where the 6502 divided by a divisor truncated to its top byte (0..+2 above the
+  true quotient), and project_point writes NOTHING else: no normalise, no shifted lanes, no
+  `shared_temp_76` / `math_lo`, no mantissa/exponent float. The two width routines divide by
+  `point_dist` themselves (`2^(22-k)/D`, `$2000/D`), keeping the 6502's own computation only for
+  the points beside the car where its shift overflowed. (`scale_shape_vectors` was never a
+  consumer — it reads `object_width`.) Gated by `validate`'s new TOLERANCE mode
+  (docs/validation-harness.md §THE TOLERANCE MODE — the twin exact to the true ratio, the oracle
+  within the 6502's measured error), the def-use reader audit (`make rangeaudit DEFUSE=1`, all five
+  circuits) and `viewdiff`: HEAD was 0 gated bytes on every circuit; now 1/5/17/0/3, **every one an
+  edge transition displaced along its own line** — 20 of 26 lines by one pixel, Donington's
+  shallow kerb at 113..119 by one scan line (2..6 px on a ~3:1 slope). That IS the accepted
+  ±1 LSB, written up there; the five determinism baselines were re-recorded (only view geometry
+  moved — the edge arrays, their scratch, a few view-source bytes; no car state).
 - ⭐ **Two new instruments drive the rest of step 1:** `make bbcprof` (per call site and, with
   `--flat`, per function, on a real BBC) and `amiga/pcsample.sh` + `tools/pcsample_report.py`
   (a statistical PC sampler on the target, by function and by source line).

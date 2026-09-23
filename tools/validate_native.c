@@ -188,6 +188,122 @@ static const uint16_t* g_ignore   = 0;
 static int             g_ignore_n = 0;
 static void set_ignore(const uint16_t* addrs, int n) { g_ignore = addrs; g_ignore_n = n; }
 
+/* ⭐⭐ THE TOLERANCE MODE — for a twin that DELIBERATELY stops matching its oracle.
+   `set_ignore` says a cell is not a result; this says a cell IS a result and the twin computes it
+   BETTER than the 6502 could — the user's "true 68000 ratio" decision (docs/open-work.md): one
+   DIVU of the true operands where the 6502 divided by a normalised 8-bit truncation of the divisor,
+   accepted at +-1 LSB of the 6502's own representation against a real BBC.  Equality cannot gate
+   such a twin, and dropping the cells from the diff would gate nothing, so a fixture names its
+   result cells and HOW FAR each may move, and everything else stays byte-exact.
+
+   The hook runs after the ignore list and before the exact compare.  It sees the oracle's state
+   (mutable), the native state (`mem`, `cpu`) and the shared pre-state, and for every difference it
+   ACCEPTS it copies the native value into the oracle's copy so the exact compare passes; a
+   difference it rejects it prints and returns non-zero for.  Its bound is the fixture's to argue,
+   AT the fixture — it may be computed per case (a relative bound, or "the clip decision may flip
+   only where the 6502's quotient was within its own error of the threshold").
+   ⚠ A tolerance is only evidence if it FIRES and if a defect one step past it FAILS: every user
+   must print the accepted-difference census (`g_tolDiffs`, `g_tolMaxDelta`) and require it
+   non-zero, and must be sabotaged at bound + 1.  Scoped exactly like set_ignore. */
+typedef int (*TolFn)(uint8_t* refMem, const uint8_t* pre, Cpu6502* refCpu,
+                     const char* name, int t, int* printed);
+static TolFn         g_tol = 0;
+static unsigned long g_tolDiffs = 0;      /* accepted cell differences since the last reset */
+static unsigned      g_tolMaxDelta = 0;   /* ...and the largest |delta| among them */
+/* Installing a hook resets the census; clearing one (f = 0) leaves it for the report. */
+static void set_tolerance(TolFn f) { g_tol = f; if (f) { g_tolDiffs = 0; g_tolMaxDelta = 0; } }
+
+/* One little-endian result value of `bytes` bytes at `addr`: accept |native - oracle| <= maxDelta
+   (modulo 2^(8*bytes), read signed), else report.  Returns 1 on a rejected difference. */
+static int tol_value(uint8_t* refMem, unsigned addr, unsigned bytes, unsigned maxDelta,
+                     const char* what, const char* name, int t, int* printed)
+{
+    uint32_t ref = 0, nat = 0, mask = (bytes >= 4) ? 0xFFFFFFFFu : ((1u << (8u * bytes)) - 1u);
+    unsigned i, mag;
+    int32_t  d;
+
+    for (i = 0; i < bytes; i++) {
+        ref |= (uint32_t)refMem[(addr + i) & 0xFFFFu] << (8u * i);
+        nat |= (uint32_t)mem[(addr + i) & 0xFFFFu]    << (8u * i);
+    }
+    if (ref == nat) return 0;
+    d = (int32_t)((nat - ref) & mask);
+    if (bytes < 4 && (d & (int32_t)((mask >> 1) + 1u))) d -= (int32_t)mask + 1;   /* sign-extend */
+    mag = (unsigned)(d < 0 ? -d : d);
+    if (mag > maxDelta) {
+        if (*printed < 12) {
+            printf("[TOL DIFF] %s case %d  %s $%04X  ref=$%0*X native=$%0*X  |delta| %u > %u\n",
+                   name, t, what, addr, (int)bytes * 2, ref, (int)bytes * 2, nat, mag, maxDelta);
+            (*printed)++;
+        }
+        return 1;
+    }
+    for (i = 0; i < bytes; i++)
+        refMem[(addr + i) & 0xFFFFu] = (uint8_t)(nat >> (8u * i));
+    g_tolDiffs++;
+    if (mag > g_tolMaxDelta) g_tolMaxDelta = mag;
+    return 0;
+}
+
+/* The same for a 16-bit value split across two plane arrays (edge_x_lo/_hi and kin). */
+static int tol_split16(uint8_t* refMem, unsigned lo, unsigned hi, unsigned maxDelta,
+                       const char* what, const char* name, int t, int* printed)
+{
+    uint16_t ref = (uint16_t)(refMem[lo] | (refMem[hi] << 8));
+    uint16_t nat = (uint16_t)(mem[lo] | (mem[hi] << 8));
+    int      d   = (int)(int16_t)(uint16_t)(nat - ref);
+    unsigned mag = (unsigned)(d < 0 ? -d : d);
+
+    if (ref == nat) return 0;
+    if (mag > maxDelta) {
+        if (*printed < 12) {
+            printf("[TOL DIFF] %s case %d  %s $%04X/$%04X  ref=$%04X native=$%04X  |delta| %u > %u\n",
+                   name, t, what, lo, hi, ref, nat, mag, maxDelta);
+            (*printed)++;
+        }
+        return 1;
+    }
+    refMem[lo] = mem[lo];
+    refMem[hi] = mem[hi];
+    g_tolDiffs++;
+    if (mag > g_tolMaxDelta) g_tolMaxDelta = mag;
+    return 0;
+}
+
+/* ⭐ THE REAL reciprocal_table, for a fixture whose oracle reads the 6502's float of 1/distance
+   and whose twin divides by the distance itself.  The table is constant game data (entry i =
+   round($8000 / (i + $80)), $FF at i = 0 where the true value is $100 — checked against
+   disasm/revs_runtime.bin), so a random one is not an input the game can produce, and against it
+   the two models are not approximations of the same number at all (THE DOMAIN RULE). */
+static void stage_real_reciprocal(uint8_t* pre)
+{
+    unsigned i;
+    for (i = 0; i < 0x80u; i++) {
+        unsigned v = (0x10000u / (i + 0x80u) + 1u) / 2u;     /* round($8000 / (i + $80)) */
+        pre[0x6200u + i] = (uint8_t)(v > 0xFFu ? 0xFFu : v);
+    }
+}
+
+/* Stage one distance the way the pipeline leaves it for the two width routines: point_dist
+   ($7C/$7D) for the twin, and the 6502's float of it — mantissa in proj_width ($2A), exponent in
+   proj_width_shift ($2B) — for the oracle, exactly as $22BE-$22D8 computed them. */
+static void stage_proj_float(uint8_t* pre, uint16_t dist)
+{
+    unsigned z = 0;
+    while (z < 16u && !((dist << z) & 0x8000u)) z++;
+    pre[0x007C] = (uint8_t)dist;
+    pre[0x007D] = (uint8_t)(dist >> 8);
+    pre[0x002B] = (uint8_t)z;
+    pre[0x002A] = pre[0x6200u - 0x80u + (uint8_t)((uint16_t)(dist << z) >> 8)];
+}
+
+/* A distance whose 6502 exponent is `z` (0..15): its top set bit is bit 15 - z. */
+static uint16_t dist_with_exponent(unsigned z)
+{
+    unsigned lo = 0x8000u >> z;
+    return (uint16_t)(lo + (xs() % lo));
+}
+
 void tt_reset_state(void);
 /* ⚠⚠ Mode 5's poll counters live outside mem[], so they are PROCESS state and diff_run has to
    rewind them before EACH model — see platform_cbridge.cpp.  A no-op in every other mode. */
@@ -331,6 +447,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     for (int i = 0; i < g_ignore_n; i++) ref_mem[g_ignore[i]] = mem[g_ignore[i]];
 
     int failed = 0;
+    if (g_tol && g_tol(ref_mem, pre, &ref_cpu, name, t, printed)) failed = 1;
     if (memcmp((const void*)mem, ref_mem, 65536) != 0) {
         failed = 1;
         for (int i = 0; i < 65536 && *printed < 12; i++)
@@ -6771,6 +6888,161 @@ static void stage_component(uint8_t* pre, uint8_t sectionByte, unsigned componen
     pre[0x0A00 + sectionByte + component] = (uint8_t)(sec >> 8);
 }
 
+/* ⭐⭐ BEARING TOLERANCE — the true-ratio twin against the 6502's truncated-divisor oracle.
+   Checked in QUOTIENT space, not as a +-N band on the angle, because the fixture's arctan table
+   is random bytes and a band on its values would mean nothing:
+     * the TWIN must be exact to the true ratio: shared_temp_7e = arctan_table[qt] with
+       qt = (smaller << 8) / larger, and the bearing that byte makes (bear_angle);
+     * the ORACLE must be what the 6502's divide gives — the same computation for SOME quotient
+       qt+0..qt+2 (the truncated divisor only ever makes it larger, never by more than 2), or the
+       diagonal door ($FF, the quadrant's 45-degree angle) that a quotient reaching 256 takes.
+   Anything else fails.  Plus the four magnitude lanes the 6502 then shifted in place: the twin
+   leaves them holding the UNSHIFTED magnitudes it wrote a moment earlier, and must.  The census
+   of which slack the oracle used (g_bearSlack) is what proves the tolerance was exercised. */
+static uint16_t g_bearDiff0, g_bearDiff2;          /* the staged deltas, mod 2^16 */
+static unsigned g_bearSlack[4];                    /* oracle quotient = qt+0/+1/+2, or the door */
+static const uint8_t BEAR_DIAG[4] = { 0x20u, 0x60u, 0xE0u, 0xA0u };
+
+static uint16_t bear_angle(uint8_t raw, int larger0, int s0, int s2)
+{
+    unsigned angle = (unsigned)raw * 32u;
+    int      differ = s0 != s2;
+    uint8_t  base   = larger0 ? 0x40u : 0x00u;
+    if (larger0 ? !differ : differ) angle = (unsigned)(-(int)angle) & 0xFFFFu;
+    if (larger0 ? s0 : s2) base = (uint8_t)(base + 0x80u);
+    return (uint16_t)((angle & 0xFFu) | ((((angle >> 8) + base) & 0xFFu) << 8));
+}
+
+static int tol_bearing(uint8_t* ref, const uint8_t* pre, Cpu6502* rc,
+                       const char* name, int t, int* printed)
+{
+    int      s0 = (g_bearDiff0 & 0x8000u) != 0, s2 = (g_bearDiff2 & 0x8000u) != 0;
+    uint16_t m0 = s0 ? (uint16_t)(0u - g_bearDiff0) : g_bearDiff0;
+    uint16_t m2 = s2 ? (uint16_t)(0u - g_bearDiff2) : g_bearDiff2;
+    const struct { unsigned a; uint8_t v; } lanes[4] = {
+        { 0x0080u, (uint8_t)m0 }, { 0x0083u, (uint8_t)(m0 >> 8) },
+        { 0x0082u, (uint8_t)m2 }, { 0x0085u, (uint8_t)(m2 >> 8) } };
+    int i, bad = 0, larger0, slack = -1;
+    unsigned qt;
+    uint16_t L, S, natB, refB;
+    (void)rc;
+
+    for (i = 0; i < 4; i++) {
+        if (mem[lanes[i].a] != lanes[i].v) {
+            if (*printed < 12) {
+                printf("[TOL DIFF] %s case %d  lane $%04X native=$%02X, want the unshifted $%02X\n",
+                       name, t, lanes[i].a, mem[lanes[i].a], lanes[i].v);
+                (*printed)++;
+            }
+            bad = 1;
+        }
+        ref[lanes[i].a] = mem[lanes[i].a];
+    }
+    if (m0 == m2) return bad;                       /* the exact diagonal: both models agree */
+
+    larger0 = m2 < m0;
+    L  = larger0 ? m0 : m2;
+    S  = larger0 ? m2 : m0;
+    qt = ((unsigned)S << 8) / L;
+    natB = (uint16_t)(mem[0x008A] | (mem[0x008B] << 8));
+    refB = (uint16_t)(ref[0x008A] | (ref[0x008B] << 8));
+
+    if (mem[0x007E] != pre[0x6100u + qt] || natB != bear_angle(pre[0x6100u + qt], larger0, s0, s2)) {
+        if (*printed < 12) {
+            printf("[TOL DIFF] %s case %d  twin not exact to the true ratio: qt=%u 7e=$%02X "
+                   "bearing=$%04X, want 7e=$%02X bearing=$%04X\n", name, t, qt, mem[0x007E], natB,
+                   pre[0x6100u + qt], bear_angle(pre[0x6100u + qt], larger0, s0, s2));
+            (*printed)++;
+        }
+        return 1;
+    }
+    for (i = 0; i <= 2 && qt + (unsigned)i <= 0xFFu; i++) {
+        uint8_t raw = pre[0x6100u + qt + (unsigned)i];
+        if (ref[0x007E] == raw && refB == bear_angle(raw, larger0, s0, s2)) { slack = i; break; }
+    }
+    if (slack < 0 && ref[0x007E] == 0xFFu
+        && refB == (uint16_t)(BEAR_DIAG[(s0 ? 2u : 0u) | (s2 ? 1u : 0u)] << 8))
+        slack = 3;
+    if (slack < 0) {
+        if (*printed < 12) {
+            printf("[TOL DIFF] %s case %d  oracle outside the 6502's error: qt=%u oracle 7e=$%02X "
+                   "bearing=$%04X\n", name, t, qt, ref[0x007E], refB);
+            (*printed)++;
+        }
+        return 1;
+    }
+    g_bearSlack[slack]++;
+    if (ref[0x007E] != mem[0x007E] || refB != natB) {
+        unsigned d = (unsigned)abs((int)(int16_t)(uint16_t)(natB - refB));
+        g_tolDiffs++;
+        if (d > g_tolMaxDelta) g_tolMaxDelta = d;
+    }
+    ref[0x007E] = mem[0x007E]; ref[0x008A] = mem[0x008A]; ref[0x008B] = mem[0x008B];
+    return bad;
+}
+
+/* ⭐⭐ PROJECTION TOLERANCE — the same shape, and TIGHTER.  The twin must be exact to qt =
+   (height << 8) / distance (the clip at $80, else the scan line qt makes); the oracle must be the
+   same for qt or qt+1 — never +2, and that is arithmetic, not a fixture gap: the 6502 divides by
+   the distance's top byte d where the true divisor lies in [d, d+1), a relative error under 1/d
+   <= 1/128, and a surviving quotient is under $80, so the two differ by less than one before the
+   floors.  That +1 is also the only way the CLIP DECISION may differ: a true quotient of $7F that
+   the 6502's pushed to $80.  The far clip itself is untouched (same compare, same operands), so a
+   point dropped there is dropped identically. */
+static unsigned g_projHeight, g_projDist;
+static int      g_projBelow;
+static unsigned g_projSlack[2], g_projClipFlips;
+
+static uint8_t proj_line(unsigned q, const uint8_t* pre)
+{
+    uint8_t line = g_projBelow ? (uint8_t)(0x3Cu - q) : (uint8_t)(q + 0x3Cu);
+    return (uint8_t)(line - pre[0x000D]);           /* view_pitch_offset */
+}
+
+static int tol_project(uint8_t* ref, const uint8_t* pre, Cpu6502* rc,
+                       const char* name, int t, int* printed)
+{
+    unsigned qt;
+    int      natClip, i, slack = -1;
+
+    if (g_projHeight >= g_projDist) return 0;       /* the far clip: identical in both */
+    qt      = (g_projHeight << 8) / g_projDist;
+    natClip = qt >= 0x80u;
+    if (cpu.C != (uint8_t)natClip
+        || mem[0x008D] != (natClip ? pre[0x008D] : proj_line(qt, pre))) {
+        if (*printed < 12) {
+            printf("[TOL DIFF] %s case %d  twin not exact to the true ratio: qt=%u C=%d line=$%02X\n",
+                   name, t, qt, cpu.C, mem[0x008D]);
+            (*printed)++;
+        }
+        return 1;
+    }
+    for (i = 0; i <= 1; i++) {
+        unsigned q = qt + (unsigned)i;
+        int clip = q >= 0x80u;
+        if (rc->C == (uint8_t)clip && ref[0x008D] == (clip ? pre[0x008D] : proj_line(q, pre))) {
+            slack = i; break;
+        }
+    }
+    if (slack < 0) {
+        if (*printed < 12) {
+            printf("[TOL DIFF] %s case %d  oracle outside the 6502's error: qt=%u C=%d line=$%02X\n",
+                   name, t, qt, rc->C, ref[0x008D]);
+            (*printed)++;
+        }
+        return 1;
+    }
+    g_projSlack[slack]++;
+    if (rc->C != cpu.C) g_projClipFlips++;
+    if (ref[0x008D] != mem[0x008D] || rc->C != cpu.C) {
+        g_tolDiffs++;
+        if ((unsigned)slack > g_tolMaxDelta) g_tolMaxDelta = (unsigned)slack;
+    }
+    ref[0x008D] = mem[0x008D];
+    rc->C = cpu.C;
+    return 0;
+}
+
 static int test_road_transforms(void)
 {
     static uint8_t pre[65536];
@@ -6802,12 +7074,20 @@ static int test_road_transforms(void)
            that byte is BELOW the stack pointer on return and provably dead — nothing reads it
            before the next push.  S itself stays declared live, so a real stack leak still
            fails, and the ignore is scoped to this fixture. */
-        static const uint16_t bearIgnore[] = { 0x01FFu };
+        /* ...and two more since the TRUE RATIO (user decision, docs/open-work.md): shared_temp_76
+           (the 6502's normalised divisor) and math_lo (its quotient) are no longer written, and
+           `make rangeaudit DEFUSE=1` on all five circuits finds no reader of either value outside
+           bearing_to_section and the 6502's own div16by8 — so they are working notes, not results
+           (docs/validation-harness.md §THE RESULTS RULE).  Everything the routine ANSWERS goes
+           through tol_bearing instead of equality. */
+        static const uint16_t bearIgnore[] = { 0x01FFu, 0x0074u, 0x0076u };
         int shaped[BEAR_SHAPES];
         int decimal = 0, diagonal = 0, tightDoor = 0, armA = 0, armB = 0, sixth = 0;
         int subFail = 0;
         for (t = 0; t < BEAR_SHAPES; t++) shaped[t] = 0;
-        set_ignore(bearIgnore, 1);
+        set_ignore(bearIgnore, 3);
+        set_tolerance(tol_bearing);
+        memset(g_bearSlack, 0, sizeof g_bearSlack);
 
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -6865,6 +7145,8 @@ static int test_road_transforms(void)
 
             stage_component(pre, sectionByte, 0, origin, d0);
             stage_component(pre, sectionByte, 2, origin, d2);
+            g_bearDiff0 = (uint16_t)d0;
+            g_bearDiff2 = (uint16_t)d2;
 
             c.X = sectionByte;
             c.Y = origin;
@@ -6879,27 +7161,42 @@ static int test_road_transforms(void)
             subFail += diff_run("bearing_to_section_from", pre, c, bearing_to_section_from,
                                 bearing_to_section_from__t6502, bearMask, t, &printed);
 
-            /* The census.  Which OCTANT arm ran is a property of the inputs — whichever ground
-               magnitude is the larger becomes the divisor — so it is counted from the staged
-               deltas rather than from the angle: the quadrant base would have separated the two
-               arms only until the negate pushes an angle past $80.
-               Whether the 45-degree arm ran is a property of the OUTPUT, because it has two
-               doors: equal magnitudes, or a normalised dividend that caught the divisor.  The
-               second is the one BEAR_TIGHT exists for, and `tightDoor` is the count that proves
-               that door was actually opened. */
+            /* The census, all of it from the staged deltas.  Which OCTANT arm ran: whichever
+               ground magnitude is the larger becomes the divisor.  The 45-degree arm: equal
+               magnitudes (both models), or — the ORACLE only, since the true ratio — a
+               normalised dividend that caught the 6502's truncated divisor, the door BEAR_TIGHT
+               exists for; `tightDoor` recomputes the 6502's normalise to prove the oracle
+               opened it, which is the case the tolerance's diagonal alternative covers. */
             {
-                unsigned m0 = (unsigned)(d0 < 0 ? -d0 : d0);
-                unsigned m2 = (unsigned)(d2 < 0 ? -d2 : d2);
+                unsigned m0 = (uint16_t)d0 & 0x8000u ? (uint16_t)(0u - (uint16_t)d0) : (uint16_t)d0;
+                unsigned m2 = (uint16_t)d2 & 0x8000u ? (uint16_t)(0u - (uint16_t)d2) : (uint16_t)d2;
                 if (m2 < m0) armA++; else if (m2 > m0) armB++;
-                if (mem[0x007E] == 0xFFu) {
-                    diagonal++;
-                    if (m0 != m2) tightDoor++;
+                if (m0 == m2) diagonal++;
+                else {
+                    unsigned L = m2 < m0 ? m0 : m2, S = m2 < m0 ? m2 : m0, z = 0;
+                    while (!((L << z) & 0x8000u)) z++;
+                    if ((((S << z) & 0xFFFFu) >> 8) == (((L << z) & 0xFFFFu) >> 8)) {
+                        diagonal++; tightDoor++;
+                    }
                 }
             }
         }
         set_ignore(0, 0);
+        set_tolerance(0);
         fail += subFail;
         (void)decimal;
+        /* ⭐ The tolerance must FIRE — an oracle at +1 and at +2 above the true quotient, and the
+           diagonal door — or it relaxed nothing and proves nothing (see set_tolerance). */
+        if (g_bearSlack[1] == 0 || g_bearSlack[2] == 0 || g_bearSlack[3] == 0 || g_tolDiffs == 0) {
+            printf("[VACUOUS] bearing_to_section_from: tolerance slack +0/+1/+2/door = %u/%u/%u/%u, "
+                   "%lu accepted differences — every one must be non-zero\n", g_bearSlack[0],
+                   g_bearSlack[1], g_bearSlack[2], g_bearSlack[3], g_tolDiffs);
+            fail++;
+        }
+        printf("%-32s tolerance: oracle quotient = true +0/+1/+2/door in %u/%u/%u/%u cases, %lu "
+               "accepted differences, largest %u in the angle\n", "bearing_to_section_from",
+               g_bearSlack[0], g_bearSlack[1], g_bearSlack[2], g_bearSlack[3], g_tolDiffs,
+               g_tolMaxDelta);
         if (shaped[BEAR_EQUAL] == 0 || diagonal == 0 || tightDoor == 0 || armA == 0 ||
             armB == 0 || sixth == 0) {
             printf("[VACUOUS] bearing_to_section_from: diagonal=%d (of which %d by the "
@@ -6931,8 +7228,20 @@ static int test_road_transforms(void)
            divide left a saturated garbage byte — but the point is dropped and nothing reads the
            quotient of a dropped point before the next divide overwrites $0074.  The clip DECISION
            (carry) is checked and matches; the dead scratch byte is an implementation detail. */
-        static const uint16_t projIgnore[] = { 0x0074u };
-        set_ignore(projIgnore, 1);
+        /* ⭐ AND SINCE THE TRUE RATIO (user decision, docs/open-work.md) six more cells are not
+           written at all, each audited by `make rangeaudit DEFUSE=1` on all five circuits:
+           shared_temp_76 ($76) and the quotient in math_lo — read only by the 6502's own divide
+           and by project_point itself; the scaled height lanes $81/$84 — read only by
+           project_point itself; point_dist_lo ($7C), which the 6502 shifted in place — the
+           shifted value is read by nothing (it now simply survives, and the width routines
+           divide by it); proj_width / proj_width_shift ($2A/$2B) — read only by
+           emit_edge_width_offset and write_object_slot, which no longer read them from here.
+           The routine's ANSWER — the scan line and the clip carry — goes through tol_project. */
+        static const uint16_t projIgnore[] = { 0x0074u, 0x0076u, 0x007Cu, 0x0081u, 0x0084u,
+                                               0x002Au, 0x002Bu };
+        set_ignore(projIgnore, (int)(sizeof projIgnore / sizeof projIgnore[0]));
+        set_tolerance(tol_project);
+        memset(g_projSlack, 0, sizeof g_projSlack); g_projClipFlips = 0;
 
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -6983,6 +7292,12 @@ static int test_road_transforms(void)
             stage_component(pre, sectionByte, 1, origin, d1);
             pre[0x007C] = (uint8_t)dist;                      /* point_dist_lo */
             pre[0x007D] = (uint8_t)(dist >> 8);               /* point_dist_hi */
+            /* for tol_project: the height exactly as the routine derives it — the delta mod
+               2^16 read as SIGNED (a staged +$9000 is a negative delta), its magnitude >> 3 */
+            { uint16_t diff = (uint16_t)d1;
+              g_projBelow  = (diff & 0x8000u) != 0;
+              g_projHeight = (unsigned)(uint16_t)(g_projBelow ? 0u - diff : diff) >> 3;
+              g_projDist   = dist; }
 
             c.X = sectionByte;
             c.Y = origin;
@@ -6997,9 +7312,8 @@ static int test_road_transforms(void)
                overflow exit is a carry-set case that still got as far as writing proj_width. */
             if (cpu.C) {
                 clipped++;
-                /* proj_width is only written past the clip, so a carry-set case that moved it
-                   was rejected by the QUOTIENT rather than by the far clip. */
-                if (mem[0x002A] != pre[0x002A]) overflowed++;
+                /* A carry-set case that passed the far clip was rejected by the QUOTIENT. */
+                if (g_projHeight < g_projDist) overflowed++;
                 /* Which far-clip door — the staged delta IS the delta the routine computes,
                    now that the regime is binary. */
                 else {
@@ -7010,6 +7324,16 @@ static int test_road_transforms(void)
             }
         }
         set_ignore(0, 0);
+        set_tolerance(0);
+        if (g_projSlack[1] == 0 || g_projClipFlips == 0 || g_tolDiffs == 0) {
+            printf("[VACUOUS] project_point_from: tolerance slack +0/+1 = %u/%u, %u clip "
+                   "decisions flipped, %lu accepted differences — every one must be non-zero\n",
+                   g_projSlack[0], g_projSlack[1], g_projClipFlips, g_tolDiffs);
+            fail++;
+        }
+        printf("%-32s tolerance: oracle quotient = true +0/+1 in %u/%u cases, %u clip "
+               "decisions flipped at the $80 edge, %lu accepted differences\n", "project_point_from",
+               g_projSlack[0], g_projSlack[1], g_projClipFlips, g_tolDiffs);
         fail += subFail;
         (void)decimal;
         if (clipped == 0 || survived == 0 || overflowed == 0 || below == 0 ||
@@ -7089,6 +7413,35 @@ static void near_slot_pre(uint8_t* pre)
     pre[0x0007] = (xs() % 4) ? (uint8_t)(xs() % 8) : (uint8_t)xs();
 }
 
+/* ⭐⭐ ROAD-WIDTH TOLERANCE — emit_edge_width_offset since the true ratio.  The twin's half-width
+   is floor(2^(22-k) / D) and the oracle's is the 6502's float of 1/D shifted by k: an 8-bit
+   mantissa whose divisor was truncated to its top byte and whose reciprocal was rounded, so it
+   sits within ~1.2% of the true value (1/128 + 1/256), plus one for a right shift's floor.
+   The bound is therefore RELATIVE — (T >> 6) + 2, i.e. 1.56% + 2 — on each place that offset
+   lands: the far kerb's azimuth (edge_opp_x at the cursor), the math_lo/hi copy, and a corner
+   marker's offset when one is appended; and the width ADC's exit V may differ only where one of
+   those did.  Where the twin takes the 6502's own path (a distance at or under 64 >> k, or a
+   table k past 15) there is no tolerance at all: both must agree to the bit. */
+static int      g_widthScored, g_widthCold;
+static unsigned g_widthT;
+static unsigned g_widthColdCases, g_widthFastDiffs;
+
+static int tol_width(uint8_t* ref, const uint8_t* pre, Cpu6502* rc,
+                     const char* name, int t, int* printed)
+{
+    unsigned bound, before = (unsigned)g_tolDiffs, slot = pre[0x0012], m = pre[0x0057];
+    int bad = 0;
+
+    if (!g_widthScored || g_widthCold) return 0;
+    bound = (g_widthT >> 6) + 2u;
+    bad |= tol_split16(ref, 0x5E50u + slot, 0x5EA0u + slot, bound, "edge_opp_x", name, t, printed);
+    bad |= tol_value(ref, 0x0074u, 2, bound, "math_lo/hi", name, t, printed);
+    if (m < 3u)
+        bad |= tol_split16(ref, 0x62B7u + m, 0x62BAu + m, bound, "marker_offset", name, t, printed);
+    if ((unsigned)g_tolDiffs != before) { rc->V = cpu.V; g_widthFastDiffs++; }
+    return bad;
+}
+
 /* emit_edge_width_offset's own pre-state.  ⚠ The SMC site is planted in every case except the
    deliberate garbage shape — see plant_geometry_smc's note: an unplanted $261A is a trap on
    the FIRST case that would have written the horizon, i.e. a fixture that compares nothing. */
@@ -7108,16 +7461,28 @@ static void width_pre(uint8_t* pre, int shape)
     { static const uint8_t n[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x11, 0xFF };
       pre[0x0042] = n[xs() % (sizeof n)]; }
     pre[0x0012] = (uint8_t)(xs() % 0x50);                   /* edge_cursor, a real slot */
-    /* THE SHIFT COUNT.  It is proj_width_shift - edge_width_shift_tbl[feature] - 1, and the
-       table entry is whatever the block-0 tail holds, so the count is steered by picking
-       proj_width_shift relative to the entry the masked flags will select.  Cheaper and more
-       honest than solving for the flags: draw the whole set of interesting counts against a
-       RANDOM table entry, which covers each one about an eighth of the time. */
-    { static const int8_t want[] = { 0, 1, 2, 8, 15, 16, 17, -1, -2, -15, -16, -17 };
+    /* THE DISTANCE, and through it the 6502's shift count.  Since the true ratio the twin
+       divides by point_dist while the oracle shifts project_point's float of it, so both are
+       staged from ONE distance (stage_proj_float) against the REAL reciprocal table — a random
+       mantissa is not a float of any distance, and the two models would not be computing the
+       same number.  The oracle's count is exponent - edge_width_shift_tbl[feature] - 1, so the
+       interesting counts are steered by picking the distance's exponent relative to a RANDOM
+       table entry, which covers each about an eighth of the time; a quarter of the cases take a
+       distance of 1..72 instead, the points beside the car where the 6502's shift overflowed
+       and the twin keeps the old computation (edge_width_offset_for's cold arm and its edge). */
+    stage_real_reciprocal(pre);
+    /* the width exponents: Silverstone's table is {5,5,3,4,3,4,4,4}; three cases in four draw
+       all eight from 0..15 (the twin's divide arm), the fourth leaves the block-0 tail random,
+       which is mostly past 15 and so exercises the exact 6502 arm on every distance */
+    if (xs() % 4) { unsigned f; for (f = 0; f < 8u; f++) pre[0x3076u + f] = (uint8_t)(xs() % 16u); }
+    { static const int8_t want[] = { 0, 1, 2, 8, 9, 15, 16, 17, -1, -2, -15, -16, -17 };
       unsigned feature = (unsigned)(xs() & 7);
-      int      steps   = want[xs() % (sizeof want)];
-      pre[0x002B] = (uint8_t)(pre[0x3076 + feature] + steps + 1); }
-    pre[0x002A] = (uint8_t)xs();                            /* proj_width, the mantissa */
+      int      z       = pre[0x3076 + feature] + want[xs() % (sizeof want)] + 1;
+      uint16_t dist;
+      if (xs() % 4 == 0)            dist = (uint16_t)(1u + xs() % 72u);
+      else if (z >= 0 && z <= 15)   dist = dist_with_exponent((unsigned)z);
+      else                          dist = dist_with_exponent(xs() % 16u);
+      stage_proj_float(pre, dist); }
     pre[0x008D] = (uint8_t)(xs() % 0x60);                   /* projected_line around the $50 top */
     if (xs() % 3 == 0) pre[0x001F] = pre[0x008D];           /* ...exactly on the horizon */
 }
@@ -7338,6 +7703,8 @@ static int test_geometry_leaves(void)
     if (want("emit_edge_width_offset")) {
         int subFail = 0, scored = 0, marked = 0, horizon = 0;
         const int cases = 2000 * scale;
+        set_tolerance(tol_width);
+        g_widthColdCases = 0; g_widthFastDiffs = 0;
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             int shape = (t % 6 == 4) ? EDGE_HOOKED : (t % 6 == 5) ? EDGE_GARBAGE
@@ -7350,6 +7717,16 @@ static int test_geometry_leaves(void)
             c.A = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;      /* render path is binary — docs/static-map.md §Decimal mode */
+            /* for tol_width: does this case compute a width, with which k, on which path —
+               the routine's own feature lookup ($2565-$257E) and scoring gate ($2580) */
+            { uint8_t  flags = (uint8_t)(pre[(c.X >= 0x78u) ? 0x068Au + c.X : 0x0702u + c.X]
+                                         & pre[0x306Cu + pre[0x0049]]);
+              uint8_t  k     = pre[0x3076u + (flags & 7u)];
+              uint16_t dist  = (uint16_t)(pre[0x007C] | (pre[0x007D] << 8));
+              g_widthScored = pre[0x0042] >= 3u;
+              g_widthCold   = !(k <= 15u && dist > (64u >> k));
+              g_widthT      = g_widthCold ? 0u : (0x400000u >> k) / dist;
+              if (g_widthScored && g_widthCold) g_widthColdCases++; }
             subFail += diff_run("emit_edge_width_offset", pre, c, emit_edge_width_offset,
                                 emit_edge_width_offset__t6502, liveMask, t, &printed);
             if (mem[0x5E50 + pre[0x0012]] != pre[0x5E50 + pre[0x0012]] ||
@@ -7357,7 +7734,17 @@ static int test_geometry_leaves(void)
             if (mem[0x0057] != pre[0x0057]) marked++;
             if (mem[0x001F] != pre[0x001F]) horizon++;
         }
+        set_tolerance(0);
         fail += subFail;
+        if (g_widthFastDiffs == 0 || g_widthColdCases == 0) {
+            printf("[VACUOUS] emit_edge_width_offset: %u cases differed within the tolerance, %u "
+                   "took the 6502's own path — both must be non-zero\n", g_widthFastDiffs,
+                   g_widthColdCases);
+            fail++;
+        }
+        printf("%-32s tolerance: %u cases differed within (T>>6)+2 (%lu cells, largest %u), %u "
+               "scored cases on the exact 6502 path\n", "emit_edge_width_offset",
+               g_widthFastDiffs, g_tolDiffs, g_tolMaxDelta, g_widthColdCases);
         if (scored == 0 || marked == 0 || horizon == 0) {
             printf("[VACUOUS] emit_edge_width_offset: width=%d markers=%d horizon=%d — "
                    "one of the three outputs was never produced in %d cases\n",
@@ -10498,6 +10885,26 @@ static void force_near_sign(uint8_t* pre)
     pre[0x590B] = (uint8_t)cam2;        pre[0x530B] = (uint8_t)(cam2 >> 8);
 }
 
+/* ⭐⭐ OBJECT-WIDTH TOLERANCE — write_object_slot since the true ratio.  The twin's width is
+   floor($2000 / D); the oracle's is the 6502's mantissa shifted by exponent - $0A, which for
+   33..63 is round($2000 / D) (+-1) and above that the same float shifted right with a floor
+   (within ~1.2% of a value under $80, so +-2).  At D <= 32 the twin takes the 6502's own path
+   and there is no tolerance at all. */
+static int      g_objDrawn, g_objCold;
+static unsigned g_objDiffs, g_objColdCases;
+
+static int tol_object(uint8_t* ref, const uint8_t* pre, Cpu6502* rc,
+                      const char* name, int t, int* printed)
+{
+    unsigned before = (unsigned)g_tolDiffs;
+    int bad;
+    (void)rc;
+    if (!g_objDrawn || g_objCold) return 0;
+    bad = tol_value(ref, 0x03C8u + pre[0x0042], 1, 2, "object_width", name, t, printed);
+    if ((unsigned)g_tolDiffs != before) g_objDiffs++;
+    return bad;
+}
+
 static int test_road_sign(void)
 {
     static uint8_t pre[65536];
@@ -10533,6 +10940,8 @@ static int test_road_sign(void)
            $01B8..$01FF skip covers it in the whole-corpus path. */
         static const uint16_t signOriginIgnore[1] = { 0x01FF };
         set_ignore(i == 3 ? signOriginIgnore : 0, i == 3 ? 1 : 0);
+        set_tolerance(i == 4 ? tol_object : 0);
+        g_objDiffs = 0; g_objColdCases = 0;
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -10564,9 +10973,21 @@ static int test_road_sign(void)
             if (xs() & 1) { pre[PRE_PROJ_W_SHIFT] = (uint8_t)(0x05 + xs() % 14); shiftBoth++; }
             if (i == 4) {
                 unsigned pick = xs() % 4;
+                uint16_t dist;
                 if (pick == 0)      { c.C = 1; rejectC++; }
                 else if (pick == 1) { c.C = 0; c.A = 0;   rejectLine++; }
                 else                { c.C = 0; c.A = (uint8_t)(1 + xs() % 255); accepted++; }
+                /* ⭐ Since the true ratio the twin divides by point_dist and the oracle shifts
+                   project_point's float of it, so both are staged from ONE distance against the
+                   REAL reciprocal table (stage_proj_float) — every exponent 0..15, and a quarter
+                   of the cases at 1..40, where the 6502's shift overflowed the byte and the twin
+                   keeps the old computation (object_width_for's cold arm and its edge at 32). */
+                stage_real_reciprocal(pre);
+                dist = (xs() % 4 == 0) ? (uint16_t)(1u + xs() % 40u) : dist_with_exponent(xs() % 16u);
+                stage_proj_float(pre, dist);
+                g_objDrawn = pick >= 2;
+                g_objCold  = dist <= 32u;
+                if (g_objDrawn && g_objCold) g_objColdCases++;
             }
 
             /* note_object_contact: a threshold that the distance can actually be under.  The
@@ -10601,6 +11022,10 @@ static int test_road_sign(void)
                which the clean core no longer does.  Keep S live for the stack-balance check.
                The other five here are leaf routines whose flags ARE read by callers. */
             unsigned caseMask = (i == 5) ? LIVE_S : liveMask;
+            /* ⭐ write_object_slot (i==4): since the true ratio its exit X, V and C — the only
+               parts of its exit that depended on the exponent loop — are argued dead at every
+               caller (the audit is at write_object_slot_core), so A/Y/N/Z/S are compared. */
+            if (i == 4) caseMask = LIVE_A | LIVE_Y | LIVE_S | LIVE_N | LIVE_Z;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 caseMask, t, &printed);
         }
@@ -10609,6 +11034,17 @@ static int test_road_sign(void)
             printf("[VACUOUS] %s: %d decimal, %d SMC-random, %d same sign, %d shift window\n",
                    list[i].name, decimal, patched, sameSign, shiftBoth);
             fail++;
+        }
+        if (i == 4) {
+            set_tolerance(0);
+            if (g_objDiffs == 0 || g_objColdCases == 0) {
+                printf("[VACUOUS] write_object_slot: %u cases differed within +-2, %u drawn on the "
+                       "exact 6502 path — both must be non-zero\n", g_objDiffs, g_objColdCases);
+                fail++;
+            }
+            printf("%-32s tolerance: %u cases differed within +-2 (largest %u), %u drawn on the "
+                   "exact 6502 path\n", "write_object_slot", g_objDiffs, g_tolMaxDelta,
+                   g_objColdCases);
         }
         if (i == 4 && (!rejectC || !rejectLine || !accepted)) {
             printf("[VACUOUS] write_object_slot: %d carry rejects, %d line rejects, %d accepted\n",
@@ -10626,7 +11062,8 @@ static int test_road_sign(void)
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=%s  "
                "(%d decimal, %d SMC-random, %d same sign, %d shift window%s)\n",
-               list[i].name, cases, subFail, (i == 5) ? "S (mem-only result)" : "AXY+flags",
+               list[i].name, cases, subFail,
+               (i == 5) ? "S (mem-only result)" : (i == 4) ? "AY+NZ" : "AXY+flags",
                decimal, patched, sameSign, shiftBoth,
                i == 4 ? ", both reject arms" : (i == 2 ? ", close cases forced" :
                (i == 5 ? ", near signs forced" : "")));

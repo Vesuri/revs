@@ -4299,9 +4299,9 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
    reading the 6502's exit flags back out: `line` is the projected scan line (the 6502 left it
    in A), `clip` is the drop flag (the far clip or the >$80 quotient — C set on the 6502) and
    `behind` is bit 7 of the surviving line (N on the 6502), which the road-edge walk folds into
-   a subdivide.  `behind` is meaningful only when !clip; it is 0 on a clipped return.  The
-   mantissa/exponent project_point also produces stay in proj_width / proj_width_shift, shared
-   state the same way a mem[] cell is. */
+   a subdivide.  `behind` is meaningful only when !clip; it is 0 on a clipped return.  (The
+   6502's mantissa/exponent float of 1/distance is no longer produced at all: the two width
+   routines divide by point_dist themselves — see edge_width_offset_for.) */
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
 /* The driving model's two pure-binary scale helpers (defined with damp_and_derive_loads),
@@ -4717,6 +4717,91 @@ static unsigned width_shifted(uint8_t mantissa, uint8_t steps)
     {   /* the right arm counts UP to zero, so 256 - steps places */
         unsigned places = 0x100u - steps;
         return places >= 16 ? 0u : ((unsigned)mantissa >> places);
+    }
+}
+
+
+/* ⭐⭐ THE APPARENT WIDTH AS A DIVIDE BY THE DISTANCE (user decision, docs/open-work.md — the
+   "true 68000 ratio").  project_point used to leave 1/distance as a software float for the two
+   routines that scale a width by it: reciprocal_table's entry for the NORMALISED distance (a
+   mantissa, $80..$FF) in proj_width and the normalising shift count (its exponent) in
+   proj_width_shift.  Carried through the algebra, what each consumer computed is a constant over
+   the distance D = point_dist:
+     emit_edge_width_offset   mantissa << (exponent - k - 1)   =  2^(22-k) / D
+     write_object_slot        mantissa << (exponent - 10)      =  $2000 / D
+   with the float's 8-bit mantissa for precision (the divisor truncated to its top byte, the
+   reciprocal rounded).  One DIVU of the true operands is both cheaper and exact, and needs
+   project_point to write nothing at all.
+   ⚠ EXCEPT WHERE THE 6502'S SHIFT OVERFLOWED, and that is reproduced, not "fixed": a distance
+   small enough that the shift pushes the mantissa off the top of its 16-bit (edge) or 8-bit
+   (object) result gave a wrapped value, and the true quotient does not fit either.  Those are
+   the points next to the car (D <= 64 >> k, D <= 32) and they take `float_width_6502`, the old
+   computation rebuilt from D, so the picture there is the 6502's to the bit.  */
+
+/* Leading zeros of a byte (clz8[0] = 8). */
+static const uint8_t s_clz8[256] = {
+#define R2(n) n, n
+#define R4(n) R2(n), R2(n)
+#define R8(n) R4(n), R4(n)
+#define R16(n) R8(n), R8(n)
+#define R32(n) R16(n), R16(n)
+#define R64(n) R32(n), R32(n)
+#define R128(n) R64(n), R64(n)
+    8, 7, R2(6), R4(5), R8(4), R16(3), R32(2), R64(1), R128(0)
+#undef R2
+#undef R4
+#undef R8
+#undef R16
+#undef R32
+#undef R64
+#undef R128
+};
+
+/* The 6502's float of 1/D, rebuilt — the cold path only.  $22BE-$22D8: shift D left until its
+   top bit falls out (the count is the exponent), take the high byte with the 1 rotated back in
+   ($80..$FF) and look its reciprocal up.  D = 0 cannot reach a consumer — project_point's far
+   clip drops every point at distance 0 — and would spin the 6502's loop forever. */
+static uint8_t float_width_6502(uint16_t dist, uint8_t* exponent)
+{
+    unsigned z = (dist & 0xFF00u) ? s_clz8[dist >> 8] : 8u + s_clz8[dist & 0xFFu];
+    uint8_t  divisor = (uint8_t)((uint16_t)(dist << z) >> 8);
+
+    *exponent = (uint8_t)z;
+    return mem[MEM_reciprocal_table - 0x80u + divisor];
+}
+
+/* emit_edge_width_offset's half-width for width exponent k — see the note above.  The fast arm
+   needs D > 2^(6-k) so that 2^(22-k)/D fits DIVU's 16-bit quotient, which is exactly where the
+   6502's shift stopped overflowing (a count of 9+ pushes a $80+ mantissa past bit 15).  k is a
+   table byte an expansion circuit could rewrite, so anything past 15 also takes the old path. */
+static unsigned edge_width_offset_for(uint16_t dist, uint8_t k)
+{
+    if (k <= 15u && dist > (64u >> k))
+        return revs_divu16(0x400000u >> k, dist);
+    if (dist == 0u)
+        return 0u;                                    /* unreachable — see float_width_6502 */
+    {
+        uint8_t exponent;
+        uint8_t mantissa = float_width_6502(dist, &exponent);
+        return width_shifted(mantissa, (uint8_t)(exponent - k - 1u));
+    }
+}
+
+/* write_object_slot's width — see the note above.  The fast arm needs D > 32: at 32 the true
+   $2000/D is 256, past the byte, and below it the 6502's shift count went positive and every
+   pass pushed a $80+ mantissa's top bit out of the byte.  Those near points take the old path
+   bit for bit, including its loops' both-ways walk to 0 past eight places. */
+static uint8_t object_width_for(uint16_t dist)
+{
+    if (dist > 32u)
+        return (uint8_t)revs_divu16(0x2000u, dist);
+    if (dist == 0u)
+        return 0u;                                    /* unreachable — see float_width_6502 */
+    {
+        uint8_t  exponent;
+        unsigned width  = float_width_6502(dist, &exponent);
+        int      places = (int)exponent - 10;         /* >= 0 here: D <= 32 means exponent >= 10 */
+        return (places >= 8) ? 0u : (uint8_t)(width << places);
     }
 }
 
@@ -5336,9 +5421,9 @@ uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo
    three separate things out of one lookup:
 
      1. THE OPPOSITE BOUNDARY.  The point's section byte carries feature bits; masked by the
-        bits that belong to this road side, their low three select a width EXPONENT, and
-        proj_width (the reciprocal-table mantissa project_point just left) shifted by the
-        difference is how wide the road looks HERE.  Added to — or subtracted from, depending
+        bits that belong to this road side, their low three select a width EXPONENT k, and
+        2^(22-k) over the point's distance is how wide the road looks HERE (the 6502 shifted
+        project_point's reciprocal mantissa by the exponent difference — edge_width_offset_for).  Added to — or subtracted from, depending
         on which side and which way round the circuit — the point's own azimuth, that is
         edge_opp_x, the angle of the far kerb.
      2. THE STYLE.  edge_style_by_feature's entry for the same feature bits, or a flat 2 on an odd
@@ -5384,12 +5469,15 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
     if (shared_counter_42 >= firstScoringPoint) {
         int negate;
 
-        /* $2589-$25A9 — the apparent half-width here: project_point's mantissa, shifted by its
-           exponent less this feature's own.  Binary render path (docs/static-map.md §Decimal
-           mode), so the shift count is a plain subtract. */
-        uint8_t steps = (uint8_t)(proj_width_shift - mem[MEM_edge_width_shift_tbl + feature] - 1u);
-
-        offset  = width_shifted(proj_width, steps);
+        /* $2589-$25A9 — the apparent half-width here: this feature's width constant over the
+           point's distance.  The 6502 shifted project_point's reciprocal mantissa by its exponent
+           less this feature's own; that is 2^(22-k)/point_dist, taken here as one divide
+           (edge_width_offset_for — the true ratio, user decision).  point_dist is still this
+           point's: project_point no longer shifts it, and nothing between the two touches it
+           ($2455→$2460, $23FC→$246A, and the native walk's same order). */
+        offset  = edge_width_offset_for(
+                      (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo),
+                      mem[MEM_edge_width_shift_tbl + feature]);
         math_hi = (uint8_t)(offset >> 8);
         math_lo = (uint8_t)offset;
 
@@ -6834,9 +6922,9 @@ void copy_dash_data_core(uint8_t dirFlag)
    ⭐⭐ AND THE QUESTION IS NOW MOOT, WHICH IS THE ONLY REASON THIS LOOP IS STILL HERE.  The
    "unlock is upstream" note this header used to carry — take the DIVU once project_point and
    bearing_to_section are twins — was answered by those twins NOT calling this routine at all:
-   `bearing_arm` and `project_point_core` each do their own `revs_divu16` on the normalised
-   operands, and the only callers left of `div16by8()` are the two `__t6502` oracle bodies in
-   revs_gen.c.  So the loop below costs the shipping build nothing per frame, and replacing it
+   `bearing_arm` and `project_point_core` each take the TRUE ratio in one `revs_divu16` of the
+   unnormalised operands (the user's "true 68000 ratio" decision), and the only callers left of
+   `div16by8()` are the two `__t6502` oracle bodies in revs_gen.c.  So the loop below costs the shipping build nothing per frame, and replacing it
    would mean relaxing two fixtures that still compare V in order to speed up the ORACLE.  Same
    shape as `scale16_by_y`'s PHP/PLP: it is the oracle being an oracle (docs/native-sweep.md). */
 
@@ -6921,8 +7009,9 @@ Div16By8 div16by8_core_oracle(uint16_t dividend, uint8_t divisor)
    both: bearing_to_section turns a track section's position into an ANGLE measured from the
    view origin, project_point turns the same section's height into a SCAN LINE.  They are
    taken together because they are very nearly one routine twice over — the same opening
-   subtract, the same normalise-and-divide, the same pair of entry points — and because
-   between them they call exactly ONE function, div16by8, which is already real C (twin #13).
+   subtract, the same normalise-and-divide on the 6502 (one true-ratio DIVU each here), the same
+   pair of entry points — and because between them the 6502 calls exactly ONE function,
+   div16by8, which is already real C (twin #13).
 
    ⭐ TWO ENTRY POINTS EACH, AND THE SECOND ONE IS AN ORIGIN.  $2145 and $2285 are two bytes
    long — `LDY #0` — and fall into $2147 / $2287, which subtract view_origin[Y].  Y is a byte
@@ -6946,14 +7035,12 @@ Div16By8 div16by8_core_oracle(uint16_t dividend, uint8_t divisor)
    closing adjustments go through the 6502's own ADC/SBC.  The fixtures randomise D for the
    same reason twin #13's does, and that is also where the exit V comes from.
 
-   ⭐ AND BOTH DIVIDES ARE ALREADY ONE `DIVU.W` — see `bearing_arm` and `project_point_core`
-   below.  Neither twin calls div16by8; each divides the normalised operands directly, so that
-   routine's eight-step restoring loop survives only as the oracle's, and the "replace it with
-   DIVU" note it used to carry here is moot rather than open. */
-
-/* reciprocal_table indexed by a MANTISSA: project_point normalises the distance until bit 7 is
-   set, so the entry it wants is $80 below the table's base ($6200) — entry i = $8000/(i+$80). */
-#define RECIP_TABLE_BIAS  (MEM_reciprocal_table - 0x80u)
+   ⭐ AND BOTH DIVIDES ARE ONE `DIVU` OF THE TRUE OPERANDS — see `bearing_arm` and
+   `project_point_core` below.  Neither twin calls div16by8 or normalises anything: each takes
+   (smaller << 8) / larger directly, which is the ratio the 6502's truncated-divisor quotient
+   approximated (0..+2 above it).  That is a deliberate departure from byte equality, accepted
+   by the user at +-1 LSB against a real BBC and validated to a tolerance, not to equality
+   (tools/validate_native.c §bearing / §projection tolerance, docs/validation-harness.md). */
 
 /* One component of the camera-relative delta: the section coordinate minus the view origin,
    split into its sign (the high byte of the signed difference) and its magnitude (the absolute
@@ -6971,58 +7058,6 @@ static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t ori
     d.rawHi = (uint8_t)(diff >> 8);
     d.mag   = (diff & 0x8000u) ? (uint16_t)(-(int)diff) : diff;   /* |section - viewpoint| */
     return d;
-}
-
-/* Shift the larger magnitude left until the bit leaving its high byte is a 1, taking the
-   smaller one with it ONE PLACE FEWER — that spare place is the headroom the 8-bit quotient
-   needs — and hand back the high byte with the bit rotated back in: the divisor div16by8
-   wants, normalised so bit 7 is set.  $21BD-$21C6, $2235-$223E and $22C5-$22CF are all this
-   same idiom.
-
-   ⭐ The 6502 spells the shift `ASL lo / ROL hi`; both magnitudes are single 16-bit values here,
-   so each place is ONE `<<`.  `*larger` comes back fully shifted, but the CALLERS store only its
-   low byte back to mem[]: the 6502 keeps the high byte in A for the whole loop and never writes
-   it out.  Both of the smaller's lanes do go back.
-
-   ⚠ A larger of 0 would spin here exactly as the 6502 does.  It cannot happen: a zero larger
-   means both ground magnitudes are zero, which is the equal case and never reaches an arm,
-   and project_point's far clip rejects every point when point_dist is 0. */
-/* Leading zeros of a byte (clz8[0] = 8, never read: the callers never pass zero). */
-static const uint8_t s_clz8[256] = {
-#define R2(n) n, n
-#define R4(n) R2(n), R2(n)
-#define R8(n) R4(n), R4(n)
-#define R16(n) R8(n), R8(n)
-#define R32(n) R16(n), R16(n)
-#define R64(n) R32(n), R32(n)
-#define R128(n) R64(n), R64(n)
-    8, 7, R2(6), R4(5), R8(4), R16(3), R32(2), R64(1), R128(0)
-#undef R2
-#undef R4
-#undef R8
-#undef R16
-#undef R32
-#undef R64
-#undef R128
-};
-
-/* ⭐⭐ ONE SHIFT, NOT A LOOP — and it was ~6% of the whole frame's wall time (amiga/pcsample.gdb:
-   ~65% of project_point_core's samples sat in this loop, on the transform every edge point
-   runs).  The 6502 shifts one place per pass because it has nothing else; a 68000 has no CLZ
-   either, but a 256-byte leading-zeros table and one variable shift give the SAME three
-   results the loop did: `shifts` = the leading zeros of `larger`, `larger` shifted one place
-   past them (its leading 1 falls out, as the loop's last pass shed it), and `smaller` shifted
-   by `shifts` with the same 16-bit truncation the per-pass shifts applied. */
-static uint8_t normalise_for_divide(uint16_t* larger, uint16_t* smaller, unsigned* shifts)
-{
-    uint16_t v = *larger;
-    unsigned z = (v & 0xFF00u) ? s_clz8[v >> 8] : 8u + s_clz8[v & 0xFFu];
-
-    *shifts  = z;
-    *smaller = (uint16_t)(*smaller << z);
-    v        = (uint16_t)(v << (z + 1u));
-    *larger  = v;
-    return (uint8_t)((v >> 9) | 0x80u);                   /* ROR A, with the 1 that fell out */
 }
 
 /* $220D-$2234 — the four 45-degree diagonals, on the two sign bits.  Reached three ways
@@ -7043,37 +7078,26 @@ static void bearing_diagonal(void)
    which component is the divisor, which sign byte picks the quadrant base, and which way the
    negate goes.  Arm A measures off component 0 (base $40/$C0, negate when the two signs
    AGREE); arm B measures off component 2 (base $00/$80, negate when they DIFFER).  Together
-   they are an octant decomposition of a full turn. */
-static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
+   they are an octant decomposition of a full turn.
+
+   ⭐⭐ THE TRUE RATIO, NOT THE 6502'S (user decision, docs/open-work.md).  The 6502 had an 8-bit
+   divide, so it normalised the larger magnitude until its top bit fell out, divided the equally
+   shifted smaller one by the larger's HIGH BYTE, and read a quotient that is the ratio with an
+   8-bit-truncated divisor: never below the true one and up to 2 above it (398 890 inputs: 67%
+   equal, 32% +1, 1% +2).  A 68000 divides the real operands in one DIVU — (smaller << 8) /
+   larger, a proper fraction, so the quotient is 0..255 — and needs no normalise, no shift count
+   and none of the four scratch stores the 6502 made on the way (the shifted point_delta lanes,
+   shared_temp_76, math_lo).  The reader audit that frees them is `make rangeaudit DEFUSE=1` on
+   all five circuits: nothing outside this routine and the 6502's own divide reads any of them.
+   ⚠ And the 6502's SECOND 45-degree door goes with it: a normalised dividend that caught the
+   divisor was the truncated quotient reaching 256, which the true quotient never does — it lands
+   on arctan_table[253..255] instead, within 96 of the diagonal's angle.  Equal magnitudes still
+   take the diagonal (bearing_diagonal), because there the ratio is exactly 1.
+   Validated to that tolerance, not to equality: tools/validate_native.c §bearing tolerance. */
+static void bearing_arm(unsigned largerComponent, uint16_t larger, uint16_t smaller,
                         uint8_t quadrantBase, int negateWhenSignsAgree)
 {
-    uint16_t larger   = (uint16_t)(((unsigned)mem[MEM_point_delta_hi + largerComponent] << 8)
-                                   | mem[MEM_point_delta_lo + largerComponent]);
-    uint16_t smaller  = (uint16_t)(((unsigned)mem[MEM_point_delta_hi + smallerComponent] << 8)
-                                   | mem[MEM_point_delta_lo + smallerComponent]);
-    unsigned shifts;
-    uint8_t  divisor;
-
-    divisor = normalise_for_divide(&larger, &smaller, &shifts);
-    mem[MEM_point_delta_lo + largerComponent]  = (uint8_t)larger;   /* low lane only — see above */
-    mem[MEM_point_delta_lo + smallerComponent] = (uint8_t)smaller;
-    mem[MEM_point_delta_hi + smallerComponent] = (uint8_t)(smaller >> 8);
-
-    shared_temp_76 = divisor;                       /* $21C7 / $223F */
-    math_lo        = (uint8_t)smaller;              /* $21C9 / $2241 */
-
-    /* $21CD / $2245 — a dividend half that has caught the divisor would overflow the 8-bit
-       quotient, and is the 45-degree case by another road.  After the sort the dividend high
-       byte is <= the divisor, so this is the only way it reaches it. */
-    if ((uint8_t)(smaller >> 8) == divisor) {
-        bearing_diagonal();
-        return;
-    }
-
-    /* $22DA — the divide, a proper fraction (dividend hi < divisor) so an 8-bit quotient: one
-       DIVU.W where the 6502 spent a seven-step restoring loop. */
-    uint8_t quotient  = (uint8_t)revs_divu16(smaller, divisor);
-    math_lo           = quotient;
+    uint8_t quotient  = (uint8_t)revs_divu16((uint32_t)smaller << 8, larger);
     uint8_t rawArctan = mem[MEM_arctan_table + quotient];
     shared_temp_7e    = rawArctan;                  /* how oblique — the hypot's segment split */
 
@@ -7111,8 +7135,7 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 
     /* $2187-$2191 THE SORT.  The divide wants a proper fraction, so the smaller magnitude
        becomes the dividend and the larger the divisor.  point_distance_hypot reads the same
-       two pairs afterwards as its min and max, UNSHIFTED — the normalise below only touches
-       the point_delta cells, never these. */
+       two pairs afterwards as its min and max. */
     {
         int d2Smaller = d2.mag <  d0.mag;
         int equal     = d2.mag == d0.mag;
@@ -7120,14 +7143,14 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
         if (d2Smaller) {
             hypot_min_v  = d2.mag;                  /* $2193/$2197, relocated out of mem[] */
             hypot_max_v  = d0.mag;                  /* $219D/$21A1, relocated out of mem[] */
-            bearing_arm(0, 2, 0x40u, 1);            /* $21C1 — measured off component 0 */
+            bearing_arm(0, d0.mag, d2.mag, 0x40u, 1);   /* $21C1 — measured off component 0 */
         } else {
             hypot_min_v  = d0.mag;                  /* $21A7/$21AB, relocated out of mem[] */
             hypot_max_v  = d2.mag;                  /* $21B1/$21B5, relocated out of mem[] */
             if (equal)
                 bearing_diagonal();                 /* $21B8 — the two are the same length */
             else
-                bearing_arm(2, 0, 0x00u, 0);        /* $2239 — measured off component 2 */
+                bearing_arm(2, d2.mag, d0.mag, 0x00u, 0);   /* $2239 — measured off component 2 */
         }
     }
 }
@@ -7145,13 +7168,10 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        scaled on the way in: >> 3 as a 16-bit pair before anything looks at it. */
     ViewDelta d      = view_delta(sectionByte, 1, origin);
     uint16_t  height = (uint16_t)(d.mag >> 3);
-    unsigned  shifts;
-    uint8_t   divisor, quotient, lineByte;
+    uint8_t   quotient, lineByte;
     uint16_t  dist;
 
     mem[MEM_point_delta_sign + 1] = d.rawHi;
-    mem[MEM_point_delta_lo   + 1] = (uint8_t)height;
-    mem[MEM_point_delta_hi   + 1] = (uint8_t)(height >> 8);
 
     /* $22B0-$22BD THE FAR CLIP — the scaled height against point_dist, which
        point_distance_hypot filled in for THIS point a moment ago, so it is a vertical
@@ -7161,43 +7181,34 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
     if (height >= dist)
         return PROJ_CLIPPED;                        /* $22BC SEC — "drop this point" */
 
-    /* $22BE-$22D8 — normalise the DISTANCE until its top bit falls out, taking the height
-       with it one place fewer, and record the pair the road's apparent width is made of:
-       reciprocal_table's entry for the normalised distance (a MANTISSA) in proj_width and the
-       shift count (its EXPONENT) in proj_width_shift.  Neither is read again here — both are
-       for emit_edge_width_offset and the object slot writer.
-       ⚠ point_dist_lo is shifted IN PLACE and does not survive; point_dist_hi does, because
-       the 6502 keeps it in A for the whole loop — which is why only the low lane of the shifted
-       word is stored back.  `dist` is the word the far clip has already composed — nothing
-       between the two touches point_dist, so it is read from mem[] once, not twice. */
-    divisor = normalise_for_divide(&dist, &height, &shifts);
-    point_dist_lo = (uint8_t)dist;
-
-    mem[MEM_point_delta_lo + 1] = (uint8_t)height;
-    mem[MEM_point_delta_hi + 1] = (uint8_t)(height >> 8);
-
-    shared_temp_76   = divisor;
-    proj_width_shift = (uint8_t)shifts;
-    proj_width       = mem[RECIP_TABLE_BIAS + divisor];
-
-    /* $22DA-$22E1 — the perspective divide itself: the shifted height over the normalised
-       distance, one DIVU.W.  A DIVIDE, not a multiply — the reciprocal above is for the width. */
-    unsigned q = revs_divu16(height, divisor);
-    math_lo    = (uint8_t)q;
+    /* $22BE-$22E1 — THE PERSPECTIVE DIVIDE, AS THE TRUE RATIO (user decision, docs/open-work.md).
+       The 6502 normalised the distance until its top bit fell out, divided the equally shifted
+       height by the distance's HIGH BYTE, and left the normalised pair behind as a software
+       float of 1/distance — reciprocal_table's entry for the mantissa in proj_width, the shift
+       count in proj_width_shift — for the two routines that want the road's and an object's
+       apparent width.  The quotient that makes was the ratio with an 8-bit-truncated divisor,
+       0..+2 above the true one.  Here: (height << 8) / distance in one DIVU, a proper fraction
+       (the far clip has just proved height < distance), so 0..255.
+       ⭐ NOTHING ELSE IS WRITTEN, and the reader audit is what licenses it (`make rangeaudit
+       DEFUSE=1`, all five circuits): the shifted height lanes, shared_temp_76 and the quotient in
+       math_lo are read by nothing but this routine and the 6502's own divide; point_dist_lo,
+       which the 6502 shifted IN PLACE, is read by nothing after it — so it now simply SURVIVES,
+       and that is what the two width routines take instead of the float: emit_edge_width_offset
+       and write_object_slot divide by point_dist themselves (see edge_width_offset_for and
+       object_width_for).  proj_width / proj_width_shift keep their other tenancy, the object
+       plotter's scale (draw_track_object → scale_shape_vectors), which never came from here.
+       Validated to a tolerance, not to equality: tools/validate_native.c §projection tolerance. */
+    unsigned q = revs_divu16((uint32_t)height << 8, dist);
 
     /* $22E3-$22E7 — a quotient past $80 is off the top of the 0..79 scan-line space, and leaves
-       by the same drop door as the far clip.  ⚠ Tested on the FULL quotient, not its low byte:
-       a point right at the far-clip boundary divides to 256+ (line 128+, off screen), which the
-       6502's restoring divide saturated to a byte >= $80 before comparing.  DIVU keeps the true
-       value, so the >= $80 test must see it too — the low byte alone could wrap below $80 and
-       fail to drop an off-screen point. */
+       by the same drop door as the far clip. */
     if (q >= 0x80u)
         return PROJ_CLIPPED;
     quotient = (uint8_t)q;
 
     /* $22E9-$22FD — 60 either side of the camera's eye level, less the frame's smoothed pitch,
        and that is the scan line.  bit 7 of the height sign chooses above/below. */
-    if (mem[MEM_point_delta_sign + 1] & 0x80u)
+    if (d.rawHi & 0x80u)
         lineByte = (uint8_t)(0x3Cu - quotient);     /* $22ED — below: 60 - quotient */
     else
         lineByte = (uint8_t)(quotient + 0x3Cu);     /* $22F5 — above: quotient + 60 */
@@ -12073,8 +12084,9 @@ void apply_drag_terms(void)
       the other end of the routine — sign_last_index is only updated once the sign's bearing is
       more than $40 away from where the car is pointing, i.e. once it has left the view.
 
-   ⚠ object_width is shifted by `proj_width_shift - $0A` places (the `DEX` at $2A8A), and the
-   sign of that difference is the direction.
+   ⚠ object_width is $2000 / point_dist (object_width_for); the 6502 shifted project_point's
+   reciprocal mantissa by `proj_width_shift - $0A` places, the sign of that difference the
+   direction.
 
    No hardware writes anywhere in the group: signs live entirely in RAM. */
 
@@ -12215,18 +12227,20 @@ ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
    shape).  Bit 7 of car_flags_shape is the SLOT-EMPTY mark, and the reject arm is the only
    thing that sets it — draw_track_object reads exactly that bit to skip a slot.
 
-   ⭐ THE WIDTH RESCALE IS AN EXPONENT CORRECTION.  project_point leaves a mantissa in
-   proj_width and the number of places it had to shift to normalise in proj_width_shift; the
-   slot wants the value at a fixed scale, so this shifts it by proj_width_shift - $0A places,
-   LEFT when that is positive and RIGHT when it is negative.  ⚠ Both loops test X at the BOTTOM,
-   so an exponent outside +-8 walks up to 255 places and lands on 0 — reproduced, not clamped.
+   ⭐ THE WIDTH IS $2000 / point_dist.  On the 6502 it was an EXPONENT CORRECTION: project_point
+   left a mantissa in proj_width and its normalising shift count in proj_width_shift, and this
+   shifted the mantissa by proj_width_shift - $0A places, LEFT when positive and RIGHT when
+   negative — which is the same quotient at 8-bit precision.  One DIVU of the true operands here
+   (object_width_for), except at distances of 32 and under, where the 6502's left shift pushed
+   the mantissa's top bit out of the byte and the old computation is kept bit for bit.
 
    ⚠ Two rejects, and they are NOT the same test: C set out of project_point (the point is
    behind the near clip) rejects, and so does a projected line of 0, because the `SBC #1` then
    goes negative.  Everything else is drawn. */
-/* The slot-writer chain's exit ABI.  All three fixtures compare A/X/Y + N/Z/V/C, so the core
+/* The slot-writer chain's exit ABI.  The reject fixtures compare A/X/Y + N/Z/V/C, so the core
    returns every escaping value and the thin shim replays it into cpu; pass-through registers
-   (entry X/V/C on the reject arms) travel in as args and back out unchanged. */
+   (entry X/V/C on the reject arms) travel in as args and back out unchanged.  write_object_slot's
+   own fixture compares A/Y/N/Z only — its drawn exit's X/V/C are argued dead at the width below. */
 /* SlotExit is declared up by plot_object_core's forward declaration. */
 
 /* promoted for revs_native_abi.c */ void store_object_flags_core(uint8_t y, uint8_t a)
@@ -12247,7 +12261,6 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
                                        uint8_t entryV, uint8_t entryC)
 {
     unsigned width;
-    int      places;
     uint8_t  slot = shared_counter_42;                   /* $2A76 */
     SlotExit e;
     e.x = entryX; e.v = entryV; e.c = entryC; e.y = slot;
@@ -12269,38 +12282,25 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
     }
     mem[MEM_object_line + slot] = line;                      /* $2A7F */
 
-    /* $2A82-$2A99 — the exponent correction.  X carries the count and its own sign picks the
-       direction (kept in a signed int); both loops end with X at 0, and so does places==0.  The
-       subtract's own N/Z die at the DEX, but its V is the drawn path's exit V. */
-    uint8_t  xc     = (uint8_t)((uint8_t)(proj_width_shift - 0x09u) - 1u);   /* the count, pre-decremented for the loop */
-    uint8_t  exitC  = (proj_width_shift >= 0x09u) ? 1u : 0u;   /* the SBC's C — exit C when places==0 */
-    uint8_t  shiftV = sbc_overflow(proj_width_shift, 0x09u, 1);
-    uint8_t  exitX  = xc;
-    width  = proj_width;                                 /* $2A88 */
-    places = (int)(int8_t)xc;
-    /* ⚠ EACH LOOP'S LAST SHIFT LEAVES ITS BIT IN C, AND THAT C IS THE ROUTINE'S EXIT C —
-       nothing between here and the RTS writes it.  The twin replays that one bit from the
-       count instead of running the shift a bit at a time (698/4000 failed the first time). */
-    if (places < 0) {                                    /* $2A8F — LSR A / INX */
-        unsigned n = (unsigned)(uint8_t)(-places);
-        exitC = (uint8_t)((n <= 8u) ? ((width >> (n - 1u)) & 1u) : 0u);
-        width = (n >= 8u) ? 0u : (width >> n);
-        exitX = 0;
-    } else if (places > 0) {                             /* $2A95 — ASL A / DEX */
-        unsigned n = (unsigned)places;
-        exitC = (uint8_t)((n <= 8u) ? ((width >> (8u - n)) & 1u) : 0u);
-        width = (n >= 8u) ? 0u : (uint8_t)(width << n);
-        exitX = 0;
-    }
+    /* $2A82-$2A99 — the apparent width, $2000 / point_dist (object_width_for — the true ratio,
+       user decision).  The 6502 shifted project_point's reciprocal mantissa by its exponent less
+       $0A, one place per pass of an `LSR / INX` or `ASL / DEX` loop.
+       ⭐ THE LOOP'S EXIT X, C AND V ARE GONE WITH IT, AND THEY ARE ARGUED DEAD, NOT DROPPED: they
+       are the only parts of this exit that depended on the exponent.  X — every caller reloads
+       it at once ($4D20 RTS → $1728 `LDX #$17`; $29F9/$2A3D/$2A48/$2A4D `LDX`).  C and V — the
+       phase-15 note in race_main_loop_core carries the audit for build_road_sign's path, and
+       project_object_slot's shims declare them dead for the car path.  So SlotExit hands the
+       ENTRY X/V/C back, and the fixture compares A/Y/N/Z — the slot, the shape nibble, the ORA's
+       flags — which is what the callers can see. */
+    width = object_width_for((uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo));
     mem[MEM_object_width + slot] = (uint8_t)width;           /* $2A99 */
 
     /* $2A9C-$2AA3 — keep the surviving flag bits, drop this shape in the low nibble, store.
        The ORA's N/Z are the routine's exit flags. */
     uint8_t flagsA = (uint8_t)((mem[MEM_car_flags_shape + slot] & 0x70u) | plot_shape);
     store_object_flags_core(slot, flagsA);               /* $2AA3 JMP */
-    e.a = flagsA; e.x = exitX; e.y = slot;
+    e.a = flagsA; e.y = slot;                            /* X/V/C: the entry's — see above */
     e.n = (flagsA >> 7) & 1u; e.z = (flagsA == 0u);
-    e.v = shiftV; e.c = exitC;
     return e;
 }
 

@@ -833,6 +833,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   cannot afford. Exempt one only with a **written reader audit** (the readers include the
   transliteration a track hook re-enters, and the next pass in the pipeline), scoped through
   `set_ignore`. `docs/validation-harness.md` §THE RESULTS RULE.
+  ⭐ The audit instrument is `make rangeaudit DEFUSE=1` (each read paired with the store whose value
+  it saw), run on all five circuits and followed ONE HOP past any copy — a read is not yet a use.
+  ⭐⭐ **A twin that is deliberately BETTER than its oracle (a user-accepted departure, e.g. the true
+  68000 ratio) is gated by `set_tolerance`, never `set_ignore`**: the twin exact to its own spec,
+  the oracle within a DERIVED error model, a census that must fire, sabotage at bound + 1 — and
+  `viewdiff` against HEAD's own result on the same captures, every new gated byte classified.
+  `docs/validation-harness.md` §THE TOLERANCE MODE.
 - ⭐⭐ **`bus_write`/`bus_read` MUST NEVER BE USED WHERE THE TARGET IS KNOWN NOT TO NEED THEM**
   (user directive) **— and inside the renderer that is everywhere.** They exist for the HARDWARE
   window ($FC00-$FEFF); a pure-RAM access must not pay their range test. The transpiler already

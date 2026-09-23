@@ -1179,3 +1179,64 @@ step slots on `determinism`, `-steer` and `-crash`, plus `$2F18` on `-drive` (a 
 Nothing else moved, and `make viewdiff` is 0 differing bytes on the gated road view of all five
 circuits.  The markers never differ at all: their last-written value already equals the runtime
 image's own `CPX #imm`.
+
+### ⭐⭐ The def-use audit: "who reads the value THIS store left" (`make rangeaudit DEFUSE=1`)
+
+A plain range audit answers *who touches these cells*, and on a crowded scratch cell that is a
+dozen tenants — every one a "reader" of the cell and almost none a reader of the value under audit.
+`DEFUSE=1` pairs each READ with the PC that last WROTE the byte, grouped by writer, so the stores
+being freed read as a block and every line under them is a consumer of what they left. Several
+ranges go in one run (`RANGE=0074-0085,002A-002B`). Two lessons from its first use (the true ratio,
+below):
+
+1. **A read of the value is not yet a USE of it.** `plot_view_src_line` read the bearing's `$85` on
+   four circuits — it copies `$85` to `$7C` unconditionally at `$1C2A` — and the audit alone makes
+   that look like a live consumer of a lane the new maths stopped writing. One further hop settled
+   it: tagging each `$7C` read with the ORIGIN of the `$85` value it was copied from showed that on
+   all five circuits every `$7C` actually consumed came from the routine's own `$1C55`; the copies
+   of the bearing's byte are always overwritten first (mode 1 returns at `$1CA6` without reading
+   `$7C`). **When a def-use pair lands on a COPY, follow the copy one hop before believing it.**
+2. **Run it on all five circuits, and expect them to disagree.** Silverstone showed the unshifted
+   store reaching that copy; Brands Hatch, Oulton Park and Snetterton showed the SHIFTED one.
+
+## ⭐⭐ THE TOLERANCE MODE — a twin that is deliberately better than its oracle (2026-09-23)
+
+The RESULTS rule says which cells are results. This is for the other case: **a result the twin
+computes differently on purpose** — the user's "true 68000 ratio" decision, where `bearing_to_section`
+and `project_point` take `(S << 8) / L` in one `DIVU` instead of the 6502's quotient over a divisor
+truncated to its top byte, accepted at ±1 LSB against a real BBC. Equality cannot gate that and
+`set_ignore` would gate nothing, so `set_tolerance(fn)` installs a per-fixture hook that runs after
+the ignore list and before the exact compare: for each difference it ACCEPTS it copies the native
+value into the oracle's copy; one it rejects it prints (`[TOL DIFF]`) and fails. Everything it does
+not touch stays byte-exact. Rules, all four learned on the first four users:
+
+1. **Check in the space where the error model is exact, not as a ±N band on the output.** The
+   bearing fixture's arctan table is random bytes, so a band on the angle means nothing (its largest
+   accepted difference reads 8192). Instead: the TWIN must be exact to the true quotient `qt` (its
+   table byte, its angle), and the ORACLE must be the same computation for `qt+0..+2` or the 45°
+   door a quotient of 256 takes. Where no table is involved, a relative bound (road width
+   `(T >> 6) + 2`, object width ±2) is honest.
+2. **Derive the bound, and tighten it where arithmetic allows.** The projection's slack is +1, not
+   +2, and that is not a fixture gap: the truncated divisor's error is under 1/128 and a surviving
+   quotient is under `$80`, so the two differ by less than one before the floors. The bearing's
+   quotient runs to 255, which is why it really does reach +2.
+3. **A tolerance must FIRE and must be SABOTAGED.** Each user prints its census (which slack the
+   oracle used, how many cases differed, how many took an exact-path arm) and requires it non-zero,
+   or the relaxation proves nothing. Eight sabotages at bound + 1 and at each exact-arm boundary all
+   failed with distinct counts.
+4. **A fixture whose oracle and twin read DIFFERENT representations must stage both from ONE
+   value.** The width routines' oracle reads project_point's mantissa/exponent float; the twin reads
+   the distance. So the fixture draws a distance, writes it to `point_dist`, and writes the 6502's
+   float of it — against the REAL reciprocal table (§THE DOMAIN RULE: a random mantissa is not a
+   float of any distance, and the two models would not be computing the same number).
+
+⚠ **Only the direct fixtures need it.** Every composite fixture that reaches these routines
+(`road_edge_walk`, `build_road_sign`, the object projectors, …) still passes byte-exact, because its
+oracle's `JSR`s land on the native shims — both sides compute the new maths.
+
+⚠ **`viewdiff` is the gate that says the tolerance is the one the user accepted**, and it has no
+tolerance of its own: record what HEAD shows against the SAME BBC captures (a worktree build per
+circuit), then classify every new gated byte by decoding the pixels. For the true ratio: HEAD 0 on
+all five circuits, the change 1/5/17/0/3 bytes, every one an edge transition displaced along its own
+line — 20 of 26 lines by one pixel, one shallow kerb by one scan line (2..6 px sideways on a ~3:1
+slope). Quote that classification in the commit that re-records `make determinism*`.
