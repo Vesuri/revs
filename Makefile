@@ -1139,13 +1139,16 @@ srcaudit:
 # (docs/open-work.md entry 3) needs it once per set of intermediates it moves out of mem[].
 #   make rangeaudit RANGE=0080-0088          the camera-relative delta vector
 #   make rangeaudit RANGE=0080-0088 TRACK=3  ...on an expansion circuit
+#   make rangeaudit RANGE=0074-0085,002A-002B DEFUSE=1   several ranges, and each READ paired
+#                                            with the PC that last WROTE the byte — "who reads the
+#                                            value THIS store left", which is the RESULTS rule's question
 # ⚠ A range holding CODE reports the CPU as its own reader (opcode fetches come through readmem).
 RANGE ?= 0080-0088
 .PHONY: rangeaudit
 rangeaudit:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
-	    --range-audit=$(RANGE) --fill-frames=$(FILLFRAMES)
+	    --range-audit=$(RANGE) --fill-frames=$(FILLFRAMES) $(if $(filter 1,$(DEFUSE)),--defuse,)
 
 FILL ?= all
 FILLFRAMES ?= 9-23

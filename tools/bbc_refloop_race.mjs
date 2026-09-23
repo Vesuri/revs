@@ -737,12 +737,29 @@ const SRC_BASE = 0x3000, SRC_CELLS = 40, SRC_STRIDE = 0x80, SRC_LINES = 0x50;
    first use inside the window gets both: the real machine's table, and the whole window.
    ⭐ The "NOTHING touched the armed bytes" line in the report is what caught it — an instrument
    that cannot report its own silence is indistinguishable from a finding. */
+/* ⭐ Several ranges at once, comma-separated (`0074-0085,002A-002B`); "lines" are then the
+   ABSOLUTE addresses, since an offset from one base means nothing across two. */
 function rangeArm() {
-    const [lo, hi] = rangeAuditArg.split("-").map((v) => parseInt(v, 16));
-    for (let a = lo; a <= hi; a++) { srcFlags[a] = 1; srcCellOf[a] = -1; srcLineOf[a] = a - lo; srcArmed++; }
-    console.log(`\nrange audit armed at frame ${frames}: $${lo.toString(16)}..$${hi.toString(16)} ` +
-                `(${srcArmed} bytes).  "lines" below are OFFSETS from $${lo.toString(16)}.\n`);
+    const parts = rangeAuditArg.split(",");
+    for (const part of parts) {
+        const [lo, hi] = part.split("-").map((v) => parseInt(v, 16));
+        for (let a = lo; a <= (hi ?? lo); a++) {
+            srcFlags[a] = 1; srcCellOf[a] = -1;
+            srcLineOf[a] = parts.length > 1 ? a : a - lo; srcArmed++;
+        }
+    }
+    console.log(`\nrange audit armed at frame ${frames}: ${rangeAuditArg} (${srcArmed} bytes).  ` +
+                `"lines" below are ${parts.length > 1 ? "ABSOLUTE ADDRESSES" : "OFFSETS from the base"}.\n`);
 }
+
+/* ⭐⭐ `--defuse` (with --range-audit): pair every READ with the PC that last WROTE that byte.
+   The plain audit answers "who touches these cells"; the RESULTS rule asks the narrower question
+   "does anything read the value THIS store left?" — a scratch cell with a dozen tenants has a
+   dozen readers, and only the reads whose last writer is the store under audit are its readers.
+   A read whose byte has not been written since the window opened is charged to writer "?". */
+const defuse = argv.includes("--defuse");
+const lastWriter = new Int32Array(0x10000).fill(-1);
+const defusePairs = new Map();
 
 function srcArm() {
     if (rangeAuditArg) return rangeArm();
@@ -784,6 +801,12 @@ if (srcAuditArg || rangeAuditArg) {
         e.n++; e.cells.add(srcCellOf[addr]); e.lines.add(srcLineOf[addr]);
         if (e.sample.length < 6) e.sample.push(addr);
         srcReads++;
+        if (defuse) {
+            const key = `${lastWriter[addr]}:${pc}`;
+            let d = defusePairs.get(key);
+            if (!d) defusePairs.set(key, (d = { w: lastWriter[addr], r: pc, n: 0, cells: new Set() }));
+            d.n++; d.cells.add(addr);
+        }
     });
     tm.processor.debugWrite.add((addr, b) => {
         if (frames < fillFrameLo || frames > fillFrameHi) return;
@@ -795,6 +818,7 @@ if (srcAuditArg || rangeAuditArg) {
         e.n++; e.cells.add(srcCellOf[addr]); e.lines.add(srcLineOf[addr]);
         if (b === 0) e.zero++;
         srcWrites++;
+        lastWriter[addr] = pc;
     });
 }
 
@@ -1523,6 +1547,27 @@ if (srcAuditArg || rangeAuditArg) {
                     `(${f.pcs} PCs, ${Math.round(f.zero / nWin)}/frame wrote ZERO)`);
     if (srcReads === 0 && srcWrites === 0)
         console.log("   ⚠⚠ NOTHING touched the armed bytes — suspect the arming, not the engine.");
+    if (defuse) {
+        /* Grouped by the WRITING routine, then by writer PC, so the stores under audit read as a
+           block: every reader line under one of them is a consumer of the value it left. */
+        const hex = (v) => "$" + v.toString(16).toUpperCase().padStart(4, "0");
+        const byW = new Map();
+        for (const d of defusePairs.values()) {
+            const wfn = d.w < 0 ? "?" : nameOf(d.w).split("+")[0];
+            let g = byW.get(wfn);
+            if (!g) byW.set(wfn, (g = []));
+            g.push(d);
+        }
+        console.log(`\n   ⭐⭐ DEF-USE — each read charged to the PC that last WROTE the byte:`);
+        for (const [wfn, ds] of [...byW.entries()].sort()) {
+            console.log(`   writer ${wfn}:`);
+            ds.sort((a, b) => a.w - b.w || b.n - a.n);
+            for (const d of ds)
+                console.log(`      ${d.w < 0 ? "  ?  " : hex(d.w)} -> ${hex(d.r)} ${nameOf(d.r).padEnd(34)} ` +
+                            `${String(Math.round(d.n / nWin)).padStart(5)}/frame (${d.n})  ` +
+                            `cells ${[...d.cells].sort((a, b) => a - b).map(hex).join(",")}`);
+        }
+    }
 }
 
 // ── who filled those lines ────────────────────────────────────────────────────────────────
