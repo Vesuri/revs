@@ -76,19 +76,32 @@ by certainty × size:
 4. `build_track_geometry` −4.8, the sign/object pair −2.1, the tail −2.1, the small rows −1.3.
 5. Port-only: the drain's ~442 µs/cycle remainder (~4 ms), `prepareFrame`'s non-copper part.
 
-**STEP 1 PROGRESS (2026-09-23): 149.18 → 133.70 ms bracketed, −15.5.**
+**STEP 1 PROGRESS (2026-09-23): 149.18 → 133.24 ms bracketed, −15.9.**
 - ✅ 1.1 input: the MOS round trip → a direct Amiga answer + a reverse key map, **−4.04**
   (ph3 5.11 → 1.96 against the BBC's 1.0).
 - ✅ the span plotters inlined into the walk, **−2.23** (the `noinline` rested on a
   fetch-contention argument a cache-less 68000 does not have).
 - ✅ `normalise_for_divide`'s bit-at-a-time loop → a leading-zeros table + one shift, **−2.22**,
   found by the new PC sampler (below).
-- ⭐ **`draw_road`, priced by deletion** (`make ROADARM=1..4`): per-span setup **7.5 ms = the
-  BBC's 7.6**; the driver 7.9 against 3.3; **the walk + plot 17.3 (after inlining) against ~3.4**,
-  of which the plot body is 4.15 and the walk's loop/scaffolding ~11.9. The sampler puts the
-  shallow DDA step at ~15% of `interp_edge_core` and the rest spread over the plot's three stores,
-  the style-pattern loop and the epilogue — no single defect left; the next move there is the
-  DDA as 16-bit fixed point in registers (the carry as the 68000's own X flag, not byte math).
+- ⭐ **`draw_road`, MEASURED BY SINGLE-STEPPING, and the deletion-arm prices were wrong.**
+  `ROADARM=1..4` had put the walk + plot at 17.3 ms and the setup at BBC parity; a register walk
+  that took every piece of walk state out of `mem[]` then moved ph11 only **−0.46**. The truth came
+  from `amiga/steptrace.gdb` + `tools/steptrace_report.py` (single-step whole calls on the target,
+  map every PC to a source line): **~550 instructions per real `interp_edge_core` call, 52% of
+  them memory operands** — DDA step loop 132, setup ~157 (clip/endpoint 52, caps/pointers 49,
+  patterns 30, deltas 19), plot 46, guard/entry 44 — ×42 calls a frame is the whole ~32 ms of
+  `draw_surface_spans` (`ROADSPLIT` stage split: fill 3, spans 32, mark 1 of a 38 ms pass). The BBC
+  does the same call in ~180 instructions / ~590 cycles: its zero page costs 3 cycles an access and
+  a 1:1 `mem[]` mapping of it costs 12-20 — **the byte-at-a-time-in-memory paradigm loses by
+  construction** (user's reading, and now measured). The deletion arm over-priced the walk because
+  removing it also reshaped `interp_edge_core` around the setup — the RESIDUAL trap again.
+  ✅ **landed: `span_walk_fast`, −0.46** (ph11 32.86 → 32.34, byte-identical: validate, all five
+  determinism runs, per-circuit views) — the walk's state in locals behind a per-span footprint
+  guard, the old walk kept as `span_walk_exact`; the fixtures now reach it (real `row_base` table;
+  a walk climbing through page `$2F`, which also exposed and fixed an exact-walk gap).
+  ⏭ **NEXT: the walk + plot as a hand-written 68000 routine** — GCC keeps ~22 live values in 15
+  registers and spills 94-137 stack operands whatever the C shape (three shapes measured, CLOSED
+  below); an explicit allocation with the DDA carry in the X flag (`addx.b`) is the tool.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
   18.83**. `bearing_to_section` and `project_point` each take `(S << 8) / L` in one `DIVU` of the
   real operands where the 6502 divided by a divisor truncated to its top byte (0..+2 above the
@@ -740,6 +753,10 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ `span_walk_fast` in C, three shapes against the inlined 16-bit-index one (−0.46): one
+  out-of-line copy per arm **+0.63** (register pressure inside `interp_edge_core` was the wrong
+  mechanism), the same unrolled 8 columns **+0.39** (3014 instructions, 683 stack operands), real
+  68000 pointers instead of `mem[]`-base + index **−0.26** (five address registers beat one base).
 
 - ⛔ **THE BOTTOM BAND AS DYNAMIC RECTANGLES** (`make DASHOWN=1`, display lines 158..191; built,
   oracle-green over 75 checks, five sabotages) — **+8.12 ms of `decode()`**, and the painter is

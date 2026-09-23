@@ -197,7 +197,12 @@ make PROBES=1 ISRSPLIT=1  # ⭐ split the VERTB ISR into its own timed slots (am
 EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=x.gdb ./diag_run.sh 60   # ⭐⭐ ~4.9x faster, same numbers
 EXTRA_ARGS="--warp_mode=1" ./pcsample.sh 150 0.01   # ⭐⭐ STATISTICAL PC SAMPLER: where the time REALLY is
 python3 ../tools/pcsample_report.py .run/gdb-out.log --from-field=3000 [--fn=<name>]  # by function / source line
+EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=steptrace.gdb ./diag_run.sh 400   # ⭐⭐ SINGLE-STEP whole calls (edit the target in the .gdb)
+python3 ../tools/steptrace_report.py .run/gdb-out.log   # instructions + memory operands per source line — run from the repo root
 ```
+⭐⭐ **When a bracket and the source disagree by an order of magnitude, single-step a call** — the
+PC sampler costs ~1.2 s a sample through the gdb stub; a stepped trace of 24 calls is ~10k
+instructions in minutes and names every line.
 ⭐⭐ **Rank step-1 work against the REAL BBC, row for row: `make bbcprof` (repo root) brackets its 27
 main-loop call sites, `--flat` its functions.** A port row slower than the 6502's is a defect to
 find, not a trade; a routine the port already beats (`apply_driving_model`, 2.2×) says what native

@@ -7905,8 +7905,10 @@ unsigned sw_marker(int p2, uint8_t colMark, uint8_t y, unsigned carry)
    C.  ⭐ This is legal because the render path is only ever entered with D=0 (docs/static-map
    §Decimal mode: no SED on build_track_geometry→draw_road), so the 6502 byte adc/sbc here
    computed nothing a binary add/subtract does not. */
-static inline __attribute__((always_inline))
-void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+/* ⚠ OUT OF LINE: the exact walk runs only for a span span_walk_fast_ok cannot prove safe —
+   never in the game — so it must not share registers with the hot one (see span_walk_fast). */
+static __attribute__((noinline))
+void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 {
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 1
     /* ⚠⚠ `make ROADARM=1` — PICTURE WRONG BY CONSTRUCTION: no walk and no plot, the per-span
@@ -7950,8 +7952,13 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 #ifdef REVS_SPAN_SLOT_FALLBACK
     /* Is this the in-game-impossible entry documented above — running AWAY from the bound, so
        the walk wraps through page $2F and scribbles on its own opcode slots? */
+    /* ⚠ ...or an ASCENDING walk that starts BELOW page $30 and climbs through $2F on its way to
+       the bound — not only the above-bound start.  Found by planting one (validate_native.c,
+       test_span_arms): with only the wrap test this walk stored over the slots and kept its
+       cached direction, 7/400 and 14/400 on the two `fwd` arms. */
     { unsigned p2hi0 = plot_ptr2_v >> 8;
-      g_spanSlotsWrapped = arm->rev ? (p2hi0 < arm->bound) : (p2hi0 > arm->bound); }
+      g_spanSlotsWrapped = arm->rev ? (p2hi0 < arm->bound)
+                                    : (p2hi0 > arm->bound || p2hi0 < 0x30u); }
 #endif
 
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
@@ -8040,6 +8047,244 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 
     /* The descending arms' shared exit: cap the last line at the scan line y left off on. */
     if (arm->rev) span_walk_cap(y);     /* $2D9A's `JMP $2F12`, and $2E99's fall-through */
+}
+
+/* ⭐⭐⭐ THE SPAN WALK IN REGISTERS — the walk the game actually runs.
+   span_walk_exact above is written to survive something the game cannot do: a walk whose
+   stores land on its OWN state — the DDA deltas and the source block in zero page, the three
+   pointer lanes, the step and end-marker opcode slots and the patched destination operands in
+   page $2F.  To stay exact there it re-reads every one of them from mem[] on every column and
+   funnels every store through plot_store_resync.  That is the right oracle and the wrong
+   renderer: priced by deletion the walk and its plot scaffolding were ~14.5 ms a frame against
+   the real BBC's ~1.7 for all four arms (docs/open-work.md, step 1).
+   ⭐ THE FOOTPRINT IS MEASURED, NOT ASSUMED: a host census over 300 driving frames on each of the
+   five circuits put every cell and bearing store in $301C..$4439 and every surface_edge store in
+   $0555..$0692 — no store ever reached zero page or page $2F — which is what interp_edge's
+   own arithmetic says (the start page comes from a source block it has forced under $28).
+   So when span_walk_fast_ok proves, per span, that all three pointers stay in pages $30..$45
+   and both destinations in low RAM, none of that state can move under the walk, and it lives
+   in locals: the deltas, the end line, the source block, the three pointers, both destinations,
+   both Y steps, the marker switch and the bearing byte.  Written back once, at the exit.
+   ⚠ TWO THINGS STILL COME FROM mem[] EVERY TIME, and they are the aliasing the proof DOESN'T
+   exclude: dash_block_starts ($3900 — the dead offsets of block $12) and the colour pattern
+   and/or tables ($337C, $629C...) — a store can legally land on the first two, and reading them
+   live is what keeps this walk byte-identical to the exact one.
+   Anything the guard cannot prove — the fixtures' planted above-bound entry, a trapping slot,
+   an odd destination — takes span_walk_exact, unchanged. */
+
+/* The marking hooks plot_store_resync carries (census / dirty-map / event instruments — all
+   no-ops in a shipping build), without its zero-page lane switch, which the guard makes dead. */
+#define PLOT_STORE_MARK(addr, val) do { unsigned a_ = (unsigned)(addr) & 0xFFFFu;              \
+        PROBE_SHAPE_MARK(a_); VIEW_MARK_SOURCE(a_); VIEW_NOTE_SRC(a_, (val)); (void)a_; } while (0)
+
+/* One column of one span, span_plot_core's body over the walk's locals.  Returns the same pack;
+   on the ordinary exit the carry is 0 (the exit step cannot trap here, so the pre-step compare's
+   carry never survives — which is why this version computes none). */
+static inline __attribute__((always_inline))
+unsigned fast_plot(uint16_t cellBase, uint16_t lineBase, uint16_t dest, uint8_t block,
+                   uint8_t lineEnd, uint8_t bh, int stepIn, int stepOut,
+                   uint8_t column, uint8_t y, unsigned carryIn)
+{
+    unsigned cellAddr, cell, a;
+
+    ROAD_COUNT(g_roadCols);
+    y = (uint8_t)(y + stepIn);
+    if (y == lineEnd) return SPAN_PLOT_PACK(y, carryIn, 1);     /* the span's end: abandon */
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 3
+    (void)cellBase; (void)lineBase; (void)dest; (void)block; (void)bh; (void)column; (void)a;
+    (void)cell; (void)cellAddr;
+    return SPAN_PLOT_PACK((uint8_t)(y + stepOut), 0u, 0);      /* ROADARM=3: no plot body */
+#endif
+    { unsigned d = (uint16_t)(dest + y);                  /* which block feeds this scan line */
+      mem[d] = block; PLOT_STORE_MARK(d, block); }
+
+    cellAddr = (uint16_t)(cellBase + y);
+    cell     = mem[cellAddr];
+    if (cell == 0) {
+        a = mem[MEM_colour_pattern_tbl + column];          /* an empty cell takes the pattern whole */
+    } else {
+        if (y < 0x2Cu && !(y > mem[MEM_dash_block_starts + block]))     /* the block's first line */
+            return SPAN_PLOT_PACK((uint8_t)(y + stepOut), 0u, 0);
+        a = (cell == 0x55u) ? 0u : cell;                   /* "all four columns" reads as empty */
+        a = (a & mem[MEM_colour_pattern_and_tbl + column]) | mem[MEM_colour_pattern_or_tbl + column];
+        if (a == 0) a = 0x55u;                             /* ...and is substituted back */
+    }
+    mem[cellAddr] = (uint8_t)a; PLOT_STORE_MARK(cellAddr, a);
+    { unsigned l = (uint16_t)(lineBase + y);
+      mem[l] = bh; PLOT_STORE_MARK(l, bh); }
+    return SPAN_PLOT_PACK((uint8_t)(y + stepOut), 0u, 0);
+}
+
+/* Can this span take the register walk?  Everything span_walk_fast holds in a local must be
+   provably out of reach of every store the walk can make (see the banner). */
+static inline __attribute__((always_inline))
+int span_walk_fast_ok(const SpanArm *arm)
+{
+    unsigned p2hi, n, dest;
+
+    plot_ptrs_marshal_in();                         /* idempotent: the walk does it again */
+    if (g_spanStepIn == SPAN_STEP_TRAP || g_spanStepOut == SPAN_STEP_TRAP) return 0;
+    if (!arm->steep && g_spanMarkOn == SPAN_MARK_TRAP) return 0;
+
+    /* How many scan-line iterations: the walk stops when plot_ptr2's page reaches the bound, so
+       a start ON or PAST it (the fixture's planted wrap) is the exact walk's business. */
+    p2hi = plot_ptr2_v >> 8;
+    if (arm->rev) { if (p2hi <= arm->bound) return 0; n = p2hi - arm->bound; }
+    else          { if (p2hi >= arm->bound) return 0; n = arm->bound - p2hi; }
+
+    /* ...and every page each pointer visits in them — any y (0..255) from there stays in
+       $3000..$47FE, clear of zero page, page $2F and everything but the tables read live. */
+#define FAST_PAGES_OK(v) (arm->rev ? ((unsigned)((v) >> 8) - (n - 1u) >= 0x30u && ((v) >> 8) <= 0x45u) \
+                                   : (((v) >> 8) >= 0x30u && (unsigned)((v) >> 8) + (n - 1u) <= 0x45u))
+    if (!FAST_PAGES_OK(plot_ptr_v) || !FAST_PAGES_OK(plot_ptr2_v) || !FAST_PAGES_OK(plot_ptr3_v))
+        return 0;
+#undef FAST_PAGES_OK
+
+    /* Both surface_edge destinations (the patched operands): dest + y must stay in $0300..$08FF. */
+    dest = (unsigned)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
+    if (dest < 0x0300u || dest > 0x0800u) return 0;
+    dest = (unsigned)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
+    if (dest < 0x0300u || dest > 0x0800u) return 0;
+    return 1;
+}
+
+/* span_walk_exact's control flow, line for line, over locals.  Plotter 1 reads and writes its
+   cell through plot_ptr2 and copies bearing_hi through plot_ptr; plotter 2 through plot_ptr and
+   plot_ptr3 (SPAN_PLOT_1 / SPAN_PLOT_2).  Marker p1 stores through plot_ptr, p2 through plot_ptr2. */
+static inline __attribute__((always_inline))
+void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+{
+    int col, forced, runTop, first = 1;
+    uint8_t  y = startLine, colMark = 0x80u, acc;
+    unsigned carry;
+    uint16_t p1, p2, p3, dest1, dest2;
+    uint8_t  block, dx, dy, lineEnd, bh;
+    int      stepIn, stepOut, markOn;
+
+    mem[arm->operand] = mem[arm->table + phase];    /* the entry offset over the branch operand */
+    p1 = plot_ptr_v; p2 = plot_ptr2_v; p3 = plot_ptr3_v;   /* span_walk_fast_ok marshalled them */
+#ifdef REVS_SPAN_SLOT_FALLBACK
+    /* ⚠ The guard has just proved this span runs TOWARD its bound, so say so: span_walk_cap reads
+       this flag, span_walk_exact recomputes it per span, and span_plot_oracle leaves it SET — a
+       stale 1 made the cap decode an unwritten slot (interp_edge 78/600, but only after the
+       draw_span fixtures had run). */
+    g_spanSlotsWrapped = 0;
+#endif
+    if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
+    return;     /* ⚠⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only. */
+#endif
+
+    dx      = mem[arm->addend];                     /* $83/$84 — fixed for the span (see banner) */
+    dy      = mem[arm->subtrahend];
+    lineEnd = mem[SPAN_LINE_END];
+    block   = mem[SPAN_BLOCK];
+    bh      = bearing_hi;
+    dest1   = (uint16_t)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
+    dest2   = (uint16_t)(mem[MEM_span_dest_p2_operand] | (mem[MEM_span_dest_p2_operand + 1u] << 8));
+    stepIn  = (int)g_spanStepIn;
+    stepOut = (int)g_spanStepOut;
+    markOn  = (g_spanMarkOn == SPAN_MARK_ON);
+    acc     = (uint8_t)(0u - (unsigned)dy);
+    carry   = 0;
+
+/* One plot through plotter 1 or 2; an abandon writes the state back, caps if asked and leaves.
+   ⚠ dest1 and dest2 are the two plotters' patched operands and every writer makes them EQUAL
+   (draw_surface_spans_core stores one byte into both; every fixture plants them equal), so
+   giving plotter 2 dest1 is a sabotage that PASSES — no change at all; one byte off fails.
+   They stay two values because the exact walk treats them as two, and so does the 6502. */
+#define FAST_PLOT(usePlot2, column, r) do {                                                        \
+        (r) = (usePlot2) ? fast_plot(p1, p3, dest2, block, lineEnd, bh, stepIn, stepOut,           \
+                                     (uint8_t)(column), y, carry)                                  \
+                         : fast_plot(p2, p1, dest1, block, lineEnd, bh, stepIn, stepOut,           \
+                                     (uint8_t)(column), y, carry);                                 \
+        if (SPAN_PLOT_ABANDONED(r)) {                                                              \
+            FAST_WRITE_BACK();                                                                     \
+            if (span_cap_pending != 0) span_cap_line(SPAN_PLOT_Y(r), (uint8_t)(cpu.S + 2u));       \
+            return;                                                                                \
+        } } while (0)
+#define FAST_WRITE_BACK() do {                                                                     \
+        plot_ptr_v = p1; plot_ptr2_v = p2; plot_ptr3_v = p3;                                       \
+        mem[MEM_plot_ptr_hi] = (uint8_t)(p1 >> 8); mem[MEM_plot_ptr2_hi] = (uint8_t)(p2 >> 8);     \
+        mem[MEM_plot_ptr3_hi] = (uint8_t)(p3 >> 8); mem[SPAN_BLOCK] = block; } while (0)
+/* span_end_marker_body over the locals: a column that plotted nothing gets the $FF terminator. */
+#define FAST_MARKER(ptr) do {                                                                      \
+        if (markOn) {                                                                              \
+            if (colMark == 0x80u && (y >= 0x2Cu || y > mem[MEM_dash_block_starts + block])) {      \
+                unsigned m_ = (uint16_t)((ptr) + y);                                               \
+                mem[m_] = 0xFFu; PLOT_STORE_MARK(m_, 0xFFu); }                                     \
+            colMark = 0x80u; carry = 0u;                                                           \
+        } } while (0)
+
+    for (;;) {
+        ROAD_COUNT(g_roadSpanLines);
+        int startCol   = first ? col : 0;
+        int force      = first && forced;
+        int midAllowed = (startCol < 4);
+        int i;
+
+        if (!arm->steep && (!first || runTop)) colMark = 0x80u;
+
+        for (i = startCol; i < 8; i++) {
+            ROAD_COUNT(g_roadColSteps);
+            int column   = arm->rev ? 3 - (i & 3) : (i & 3);
+            int usePlot2 = arm->rev ? (i < 4) : (i >= 4);
+            unsigned r;
+
+            if (i == 4 && midAllowed) {
+                if (!arm->steep) { if (arm->rev) FAST_MARKER(p1); else FAST_MARKER(p2); }
+                block = (uint8_t)(block + (arm->rev ? -1 : 1));
+            }
+
+            if (arm->steep) {
+                for (;;) {
+                    FAST_PLOT(usePlot2, column, r);
+                    y = SPAN_PLOT_Y(r); carry = SPAN_PLOT_CARRY(r);
+                    { unsigned s = (unsigned)acc + dx + carry; acc = (uint8_t)s; carry = s >> 8; }
+                    if (carry) break;
+                }
+                { int d = (int)acc - dy - (int)(1u - carry); acc = (uint8_t)d; carry = (d >= 0); }
+            } else {
+                if (force) force = 0;
+                else {
+                    { unsigned s = (unsigned)acc + dx + carry; acc = (uint8_t)s; carry = s >> 8; }
+                    if (!carry) continue;
+                    { int d = (int)acc - dy - (int)(1u - carry); acc = (uint8_t)d; carry = (d >= 0); }
+                }
+                colMark = (uint8_t)column;
+                FAST_PLOT(usePlot2, column, r);
+                y = SPAN_PLOT_Y(r); carry = SPAN_PLOT_CARRY(r);
+            }
+        }
+
+        if (!arm->steep) { if (arm->rev) FAST_MARKER(p2); else FAST_MARKER(p1); }
+
+        if (arm->rev) { p1 -= 0x100u; p2 -= 0x100u; p3 -= 0x100u; block--; }
+        else          { p1 += 0x100u; p2 += 0x100u; p3 += 0x100u; block++; }
+
+        { unsigned p2hi = p2 >> 8;
+          if (p2hi == arm->bound) break;
+          carry = arm->rev ? 0u : (p2hi >= arm->bound); }
+        first = 0;
+    }
+
+    FAST_WRITE_BACK();
+    if (arm->rev) span_walk_cap(y);
+#undef FAST_PLOT
+#undef FAST_WRITE_BACK
+#undef FAST_MARKER
+}
+
+/* The dispatcher every caller uses: the register walk when the span provably cannot touch its own
+   state, the exact walk otherwise (in the game: never — see the census in the banner). */
+static inline __attribute__((always_inline))
+void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
+{
+#if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 1
+    (void)arm; (void)phase; (void)startLine; return;   /* ⚠⚠ ROADARM=1: no walk.  §ROADARM */
+#endif
+    if (span_walk_fast_ok(arm)) span_walk_fast(arm, phase, startLine);
+    else                        span_walk_exact(arm, phase, startLine);
 }
 
 void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine)

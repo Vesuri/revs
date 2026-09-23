@@ -3663,6 +3663,24 @@ void draw_corner_markers__t6502(void);
    arise.  plant_plotter_chains zeros the span-plotters' branch-offset tables so plot_shape_edges
    terminates.  Result-only: exit regs/flags are dead at the native caller (race_main_loop). */
 static void plant_plotter_chains(uint8_t* pre);   /* defined with the geometry fixtures below */
+/* ⭐ The four surface_edge buffers draw_surface_spans patches into both span plotters' store
+   operands: row_base_lo/hi ($2B22/$2B1E) is a constant table in the game ($05A4 $0650 $0600
+   $0554, disasm/revs_runtime.bin).  Left random it gave a destination anywhere in memory, which
+   the in-game footprint never has, so span_walk_fast_ok sent EVERY composite case to the exact
+   walk and the register walk ran in none of them (draw_surface_spans 0 of 380, draw_road 30 of
+   2376).  Seven cases in eight take the real table (THE DOMAIN RULE); the eighth keeps the
+   random one, so the exact walk's guard-failure arm stays covered through the composites too. */
+static void plant_row_base(uint8_t* pre)
+{
+    static const uint16_t ROW_BASE[4] = { 0x05A4u, 0x0650u, 0x0600u, 0x0554u };
+    unsigned i;
+    if (xs() % 8 == 0) return;
+    for (i = 0; i < 4; i++) {
+        pre[0x2B22 + i] = (uint8_t)ROW_BASE[i];
+        pre[0x2B1E + i] = (uint8_t)(ROW_BASE[i] >> 8);
+    }
+}
+
 
 static int marker_high_byte(const uint8_t* pre, unsigned y)
 {
@@ -5830,6 +5848,7 @@ static void plant_geometry_smc(uint8_t* pre)
    identical code in both models and are not what these fixtures compare. */
 static void plant_plotter_chains(uint8_t* pre)
 {
+    plant_row_base(pre);
     memset(pre + 0x3E50, 0x00, 0x100);
     memset(pre + 0x40D0, 0x00, 0x100);
 }
@@ -8138,7 +8157,7 @@ static int test_span_arms(void)
 
     for (a = 0; a < 4; a++) {
         int subFail = 0, midChain = 0, trapped = 0, multiLine = 0, markerTrap = 0,
-            carryIn = 0;
+            carryIn = 0, below30 = 0;
         if (!want(arms[a].name)) continue;
         for (t = 0; t < armCases; t++) {
             Cpu6502 c = zero_cpu();
@@ -8186,6 +8205,14 @@ static int test_span_arms(void)
             if (!arms[a].rev && xs() % 12 == 0) {
                 pre[0x0073] = (uint8_t)(arms[a].bound + 1 + (xs() % 3));
                 carryIn++;
+            } else if (!arms[a].rev && xs() % 6 == 0) {
+                /* ⭐ ...and one in six of the rest starts BELOW $30, so the walk climbs THROUGH page
+                   $2F — the step and marker slots and the patched destination operands.  The
+                   game cannot (its start page is $30..$43), and it is the case span_walk_fast_ok's
+                   PAGE check exists for: without it this one runs the register walk, which caches
+                   exactly the bytes those stores overwrite (sabotaged: it fails only with this). */
+                pre[0x0073] = (uint8_t)(0x28 + xs() % 7);
+                below30++;
             } else {
                 pre[0x0073] = (uint8_t)(arms[a].rev ? arms[a].bound + lines
                                                     : arms[a].bound - lines);
@@ -8216,17 +8243,18 @@ static int test_span_arms(void)
         }
         fail += subFail;
         if (midChain == 0 || trapped == 0 || multiLine == 0 || markerTrap == 0
-            || (!arms[a].rev && carryIn == 0)) {
+            || (!arms[a].rev && (carryIn == 0 || below30 == 0))) {
             printf("[VACUOUS] %s: %d mid-chain entries, %d trap offsets, %d multi-line, "
-                   "%d marker traps, %d carry-in of %d — all must be non-zero\n",
-                   arms[a].name, midChain, trapped, multiLine, markerTrap, carryIn, armCases);
+                   "%d marker traps, %d carry-in, %d through page $2F of %d — all must be "
+                   "non-zero\n", arms[a].name, midChain, trapped, multiLine, markerTrap, carryIn,
+                   below30, armCases);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
                "(%d entered mid-chain, %d trap offsets, %d ran >1 scan line, "
-               "%d unexecutable markers, %d with a carry into the DDA)\n",
+               "%d unexecutable markers, %d with a carry into the DDA, %d through page $2F)\n",
                arms[a].name, armCases, subFail, midChain, trapped, multiLine, markerTrap,
-               carryIn);
+               carryIn, below30);
     }
 
     set_ignore(0, 0);
@@ -8272,6 +8300,7 @@ static void plant_span_world(uint8_t* pre)
     pre[0x2F47] = pre[0x2F60] = pre[0x2F89] = pre[0x2FA2] = 0xC8;
     pre[0x2FC0] = pre[0x2FD7] = 0xE0;
     pre[0x1971] = 0x04;                        /* line_attr's fixed page */
+    plant_row_base(pre);
     plant_cap_smc(pre);
 }
 
