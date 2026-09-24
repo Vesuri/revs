@@ -4,10 +4,15 @@
 # prints every PC ("T <pc>"), with "C <n> <count>" closing each call.  Map it with
 # tools/steptrace_report.py (same relocation as the PC sampler: the OFF line).
 # ⚠ An instruction count is not a cycle count, and an interrupt taken mid-step shows up as
-#   ISR PCs inside the call.  Edit TARGET/SKIP/CALLS below.
+#   ISR PCs inside the call.  Edit the three TARGET lines (OFF's name, the break) and SKIP/CALLS
+#   below; the report reads the target's name off the OFF line.
+# ⚠ Give diag_run.sh a window long enough for the trace, and when the trace ends early STOP ITS
+#   WRAPPER by pid: it sleeps out the window and its cleanup then runs against whatever emulator
+#   `.run/fsuae.pid` names by then — a later run's.  Pass the trace's ELF to the report with
+#   --elf= if out/ has been rebuilt since.
 set pagination off
 set confirm off
-printf "OFF %x\n", &interp_edge_core
+printf "OFF %x interp_edge_core\n", &interp_edge_core
 break interp_edge_core
 ignore 1 4000
 continue

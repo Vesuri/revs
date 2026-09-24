@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report for amiga/steptrace.gdb: map single-stepped PCs to function and source line.
 
-  python3 tools/steptrace_report.py [log] [--top=N]
+  python3 tools/steptrace_report.py [log] [--top=N] [--elf=PATH]
 
 Counts INSTRUCTIONS (not cycles) per function and per source line over every traced call, and
 counts memory-operand instructions (anything addressing mem[], the stack or an absolute) so a
@@ -13,14 +13,16 @@ tool = lambda n: shutil.which(n) or os.path.join(BIN, n)
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 opt = dict(a[2:].split('=', 1) if '=' in a else (a[2:], '1') for a in sys.argv[1:] if a.startswith('--'))
 log = args[0] if args else 'amiga/.run/gdb-out.log'
-elf = 'amiga/out/Revs.elf'
+elf = opt.get('elf', 'amiga/out/Revs.elf')   # --elf= when the trace's binary has been rebuilt since
 lines = open(log).read().split('\n')
-off_rt = next(int(l.split()[1], 16) for l in lines if l.startswith('OFF '))
+off_line = next(l.split() for l in lines if l.startswith('OFF '))
+off_rt = int(off_line[1], 16)
+off_sym = off_line[2] if len(off_line) > 2 else 'interp_edge_core'   # older logs name no symbol
 tab = subprocess.run([tool('m68k-amiga-elf-objdump'), '-t', elf], capture_output=True, text=True).stdout
 syms = sorted((int(m.group(1), 16), m.group(2)) for m in
               (re.match(r'^([0-9a-f]{8})\s.*\sF\s\.text\s+[0-9a-f]+\s(.+)$', l) for l in tab.split('\n')) if m)
 addrs = [a for a, _ in syms]
-delta = off_rt - next(a for a, n in syms if n == 'interp_edge_core')
+delta = off_rt - next(a for a, n in syms if n == off_sym)
 pcs = [int(l.split()[1], 16) - delta for l in lines if l.startswith('T ')]
 calls = [int(l.split()[2]) for l in lines if l.startswith('C ')]
 def fn(pc):
