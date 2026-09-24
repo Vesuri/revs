@@ -2740,6 +2740,22 @@ the price, not the correctness.
 plumbing (~160 of the 237) is what is left to win, and that is the span pass's lesson: one
 register-resident routine.
 
+⭐ **AND WITH THE NEEDLES ON SPRITES IT SHIPPED — −0.41 ms** (frame 115.95 → 115.54; ph33 14.32 →
+11.77, ph24 20.16 → 22.12). The user's directive removed the window's reason to exist (§12d: the
+needles are prerendered sprites, so the dial art is on PF2 and PF1 has no hole), and run B's entry
+is appended by the SCAN as it passes cell `b0` (O(1), after that cell's own sources) instead of
+walked into each line's list. Re-traced: 23.8k instructions a sweep against 24.6k — the drivers
+10.9k → 2.7k, the terrain painter 3.9k → 10.8k (77 lines; ~170 a line on the low block), the scan
+7.1k → 8.2k (the seeds and their chains). ⇒ the painter is now 45% of the sweep and the C byte arm
+is what it pays, so the next move is that painter in asm. Gate: `make LOWFULLCHECK=1` (the
+visible-picture oracle, every owed cell poisoned), 0 of 295 200.
+⚠⚠ **And the oracle had the shared-input blind spot until it was sabotaged.** With the seed moved
+into the scan, the REFERENCE run painter saw the seed as a real event at its run's first cell and
+took it, so a wrong seed colour PASSED (0 mismatches) where the earlier variant — seeding after the
+reference ran — had caught it at 7129. The reference now gets a copy of the list without the seed
+(`s_lowSeedPos`), and the same sabotage fails at 7134. ⇒ **when a change MOVES a computation earlier
+in the pipeline, re-check that the oracle's reference still runs on the input from BEFORE it.**
+
 Two things this left that stand on their own:
 - ⚠ **A sabotage can survive by COINCIDENCE OF DATA, and that is a third outcome beside a fixture
   gap and an unreachable arm.** Dropping the seed, or seeding run A's colour, survived because on

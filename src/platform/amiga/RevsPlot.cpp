@@ -566,6 +566,58 @@ static unsigned plotModeOf(unsigned y)
    ⚠ Rows 158..178, where the rest of each mirror lives, are NOT the layer's — they stay the
    decode's and this returns without writing, so the mirror is painted by one owner per row. */
 static uint8_t* s_cockPlane;
+
+#ifdef REVS_LOW_FULL_CHECK
+/* ⭐⭐ THE LOW BLOCK'S ORACLE, AS THE PLAYER SEES IT (`make LOWFULLCHECK=1`).
+   The sweep runs the old RUN painter into the target first; this snapshots display lines
+   117..157 of both planes and then INVERTS every cell of them, because the full-width painter
+   owes every one — so a cell it skipped reads as changed; the painter then runs; and the compare
+   requires every PF1 bit the display can SHOW to equal the snapshot — the bits under a
+   transparent PF2 pixel (both PF2 plane bits clear, PF2 having priority).  It therefore checks
+   the whole claim the change rests on: that PF2 hides every cell the painter adds, and that the
+   run cells keep their colours (the scan's seeded run-B entry included).
+   ⚠ Its scope: the PF2 plane as it stands this frame.  DIAGNOSTIC ONLY — the reference painter
+   runs too, so no framerate may be quoted. */
+extern "C" {
+volatile unsigned long  g_lowFullChecks     = 0;
+volatile unsigned long  g_lowFullMismatch   = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned short g_lowFullMismatchAt = 0;   /* (display line << 8) | cell of the first */
+volatile unsigned long  g_lowFullNoCock     = 0;   /* compares skipped: no PF2 plane yet */
+}
+#define LOW_FULL_Y0     117u
+#define LOW_FULL_LINES  41u
+static uint8_t s_lowSnap[LOW_FULL_LINES * kRowBytes];
+
+extern "C" void revs_plot_low_snap(void)
+{
+    uint8_t* const p = s_target + LOW_FULL_Y0 * kRowBytes;     /* constants: folded */
+    unsigned i;
+    if (!s_target) return;
+    for (i = 0; i < sizeof s_lowSnap; i++) { s_lowSnap[i] = p[i]; p[i] = (uint8_t)~p[i]; }
+}
+
+extern "C" void revs_plot_low_compare(void)
+{
+    unsigned y, c;
+    const uint8_t *o, *n, *k;
+    if (!s_target) return;
+    if (!s_cockPlane) { g_lowFullNoCock++; return; }
+    o = s_lowSnap;
+    n = s_target + LOW_FULL_Y0 * kRowBytes;
+    k = s_cockPlane + LOW_FULL_Y0 * kRowBytes;
+    for (y = 0; y < LOW_FULL_LINES; y++, o += kRowBytes, n += kRowBytes, k += kRowBytes) {
+        for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+            const uint8_t shown = (uint8_t)~(k[c] | k[c + kPlaneGap]);
+            g_lowFullChecks++;
+            if ((uint8_t)((n[c] ^ o[c]) | (n[c + kPlaneGap] ^ o[c + kPlaneGap])) & shown) {
+                if (!g_lowFullMismatch)
+                    g_lowFullMismatchAt = (unsigned short)(((LOW_FULL_Y0 + y) << 8) | c);
+                g_lowFullMismatch++;
+            }
+        }
+    }
+}
+#endif
 /* ⭐ Not behind SPAN_STATS: it is the only evidence the mirrors reach the layer at all, and
    the writers that feed it fire ~24 times a frame — see the note above on what a `volatile` RMW
    costs in a HOT loop, which this is not. */

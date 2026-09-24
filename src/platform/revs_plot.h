@@ -503,6 +503,17 @@ extern volatile unsigned short g_plotChainNZLast; /* ...on the most recent sweep
 #define REVS_PLOT_LOW_LINE(a)   ((unsigned char*)0)
 #endif
 #define REVS_PLOT_OWN_RESET()   revs_plot_own_reset()
+#ifdef REVS_LOW_FULL_CHECK
+/* ⭐⭐ `make LOWFULLCHECK=1` — the low block through the full-width painter against the run painter
+   it replaced, compared as the PLAYER SEES IT: PF1 wherever PF2 is transparent (RevsPlot.cpp). */
+void revs_plot_low_snap(void);
+void revs_plot_low_compare(void);
+#define REVS_PLOT_LOW_SNAP()     revs_plot_low_snap()
+#define REVS_PLOT_LOW_COMPARE()  revs_plot_low_compare()
+#else
+#define REVS_PLOT_LOW_SNAP()     ((void)0)
+#define REVS_PLOT_LOW_COMPARE()  ((void)0)
+#endif
 
 #ifdef REVS_SPAN_OWN
 /* ⭐⭐⭐ NO MIRRORING IN THE SHIPPING ARM, AND THIS IS THE WHOLE POINT OF `REVS_SPAN_OWN`.
@@ -557,6 +568,8 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)
+#define REVS_PLOT_LOW_SNAP()     ((void)0)
+#define REVS_PLOT_LOW_COMPARE()  ((void)0)
 #define REVS_PLOT_RECTS_RUN()    ((void)0)
 #define REVS_NEEDLE_PIXEL(a, m)  ((void)0)
 #define REVS_NEEDLE_MARK()       ((void)0)

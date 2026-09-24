@@ -1113,6 +1113,14 @@ ifeq ($(LOWOWNCHECK),1)
 EXTRA_DEFINES += -DREVS_LOW_OWN_CHECK
 PROBE_SYMS_LOWOWN = g_lowOwnChecks g_lowOwnMismatch g_lowOwnMismatchAt
 endif
+# ⭐⭐ `make LOWFULLCHECK=1 PROBES=1` + `GDBSCRIPT=lowfullcheck.gdb` — THE LOW BLOCK THROUGH THE
+# FULL-WIDTH PAINTER against the run painter it replaced, compared AS THE PLAYER SEES IT: every PF1
+# bit under a transparent PF2 pixel of display lines 117..157 must be unchanged, with every owed
+# cell poisoned first (RevsPlot.cpp §revs_plot_low_compare).  Diagnostic only — both painters run.
+ifeq ($(LOWFULLCHECK),1)
+EXTRA_DEFINES += -DREVS_LOW_FULL_CHECK
+PROBE_SYMS_LOWOWN += g_lowFullChecks g_lowFullMismatch g_lowFullMismatchAt g_lowFullNoCock
+endif
 endif
 
 # ⭐⭐ `make SCANDOUBLE=1` — price the transposed scan without deleting it (src/gen/revs_native.c

@@ -1226,6 +1226,40 @@ static unsigned char s_lowConsume[VIEW_SPAN_CELLS] = {
     0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
     0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu };
 
+/* ⭐ THE LOW BLOCK PAINTS STRAIGHT INTO THE BITPLANES (§2a) on the Amiga with `LOWOWN=1`; the
+   host keeps the faithful `mem[]` arm.  Defined here, ahead of the scan, because the scan seeds
+   run B's entry for that arm (below). */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_LOW_OWN)
+#define LOW_PLANES 1
+#endif
+
+#ifdef LOW_PLANES
+/* ⭐⭐ RUN B's ENTRY, SEEDED INTO THE EVENT LIST BY THE SCAN.  On the plane arm the low block goes
+   through the full-width terrain painter, which walks a line as ONE run from cell 0 — the car's
+   cells in the middle are under the opaque cockpit layer, so the colour carried across them is
+   never seen.  But run B does not continue run A's colour: it enters with its own byte
+   (`view_right_start_src`), which `fill_dash_edge_columns` writes into that table INSTEAD of the
+   cell's source block, so the scan never finds an event there (measured: 6806 of 6806 lines).
+   ⇒ the scan appends it, once per line, as it passes cell `b0` — after that cell's own sources, so
+   a real event at `b0` (which the data does not produce) would win exactly as it did in the run
+   painter, whose first act at a run's first cell is to take the event there.
+   `s_lowSeedHead[cell]` chains the lines whose run B starts at that cell ($FF = none, until
+   `view_low_build` has run). */
+static unsigned char s_lowSeedHead[VIEW_SPAN_CELLS] = {
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu };
+static unsigned char s_lowSeedNext[VIEW_EV_LINES];
+#ifdef REVS_LOW_FULL_CHECK
+/* Where the scan put each line's seed ($FF = none) — so the oracle's REFERENCE painter can be
+   handed the list WITHOUT it.  ⚠ Without this the reference takes the seed as a real event at its
+   run's first cell and agrees with any seed at all: a sabotaged seed colour PASSED (a shared
+   input the in-process differential cannot see — CLAUDE.md §sabotage). */
+static unsigned char s_lowSeedPos[VIEW_EV_LINES];
+#endif
+#endif
+
 #if defined(REVS_SRC_EVENTS) || defined(REVS_SRC_EVENTS_CHECK)
 /* ⛔⛔⛔ PRODUCER-EMITTED SOURCE EVENTS (`make SRCEVENTS=1`) — BUILT, PROVED CORRECT, AND CLOSED
    ON COST: the scan really does go (−10.59 ms) and `draw_road` pays +15.28 for it.  NET +14 ms.
@@ -1606,8 +1640,12 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
 {
     unsigned cell, found = 0, line;
 
-    for (line = lo; line <= hi; line++)
+    for (line = lo; line <= hi; line++) {
         g_viewEvEnd[line] = &g_viewEv[line][0];
+#if defined(LOW_PLANES) && defined(REVS_LOW_FULL_CHECK)
+        s_lowSeedPos[line] = 0xFFu;
+#endif
+    }
 
     for (cell = 0; cell < VIEW_SPAN_CELLS; cell++) {
         MEM_QUAL unsigned char* const base = mem + MEM_view_src_blocks + cell * 0x80u + lo;
@@ -1643,6 +1681,23 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
                     view_scan_lanes(q, lo + (unsigned)(q - base), cell, &found, consume);
         }
         (void)k;
+#ifdef LOW_PLANES
+        if (consume) {                  /* run B's entry, for the lines whose run starts here */
+            unsigned l = s_lowSeedHead[cell];
+            while (l != 0xFFu) {
+                ViewSpan* const q = g_viewEvEnd[l];
+                if (q == &g_viewEv[l][0] || q[-1].start != cell) {
+                    q->start  = (unsigned char)cell;
+                    q->colour = mem[MEM_view_right_start_src + l];
+                    g_viewEvEnd[l] = q + 1;
+#ifdef REVS_LOW_FULL_CHECK
+                    s_lowSeedPos[l] = (unsigned char)(q - &g_viewEv[l][0]);
+#endif
+                }
+                l = s_lowSeedNext[l];
+            }
+        }
+#endif
     }
 
     for (line = lo; line <= hi; line++)
@@ -2640,6 +2695,16 @@ static void view_low_build(void)
         }
     }
 
+#ifdef LOW_PLANES
+    if (!bad) {                         /* the scan's run-B seed chains — see s_lowSeedHead */
+        unsigned cell;
+        for (cell = 0; cell < VIEW_SPAN_CELLS; cell++) s_lowSeedHead[cell] = 0xFFu;
+        for (line = VIEW_LOW_LO; line <= VIEW_LOW_HI; line++) {
+            s_lowSeedNext[line] = s_lowSeedHead[s_lowB0[line]];
+            s_lowSeedHead[s_lowB0[line]] = (unsigned char)line;
+        }
+    }
+#endif
     g_terrainClipBad += bad;
     if (!bad) s_lowBuilt = 1;
 }
@@ -2671,9 +2736,6 @@ static void revs_report_low(void)
    forty-unit chain in charge and stores nothing, so an owned line would be painted by nobody.
    The plane arm's oracle is `LOWOWNCHECK=1` below, which compares the plane bytes against the
    run's own colour walk. */
-#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_LOW_OWN)
-#define LOW_PLANES 1
-#endif
 #if defined(REVS_LOW_OWN) && !defined(REVS_TERRAIN_LOW)
 #error "LOWOWN=1 needs TERRAINLOW=1 — it retargets that painter's store, and with the chain in charge there is nothing to retarget"
 #endif
@@ -3008,6 +3070,9 @@ static void low_own_check(const unsigned char* plane, const ViewSpan* ev, unsign
 static void view_own_low(ViewState* v)
 {
     unsigned line = v->line;
+#ifdef LOW_PLANES
+    const unsigned firstLine = (unsigned char)(line - 1u);
+#endif
 
     PROBE_PHASE(PROBE_PHASE_VIEWP2);
     PROBE_VIEW_PHASE(1);
@@ -3024,12 +3089,11 @@ static void view_own_low(ViewState* v)
             const int       clip = s_lowClipped[line];
             const unsigned  base = plot_ptr_v;
             const ViewSpan* ev   = &g_viewEv[line][0];
+#ifndef LOW_PLANES
             /* ⭐⭐⭐ §2a — CLAIM THE DISPLAY LINE AND TAKE ITS PLANE BYTE, once per line.  On the
-               `mem[]` arm this is a null constant the compiler folds away with the test below.
-               ⚠ A null plane means there is no buffer this painted frame (MODE 7 and the frames
-               either side of it): paint NOTHING and leave the line unclaimed, so the decode
-               covers it — the same rule `revs_plot_terrain`'s `!s_target` return obeys. */
+               `mem[]` arm this is a null constant the compiler folds away with the test below. */
             unsigned char* const lowPlane = REVS_PLOT_LOW_LINE(base);
+#endif
 
             /* ⭐⭐⭐ PUBLISH THE TWO SURFACE PROBES (see view_low_run_colour_at above).  ONE line
                of the forty-one, so this is two walks of a ~3-entry event list a frame and it is
@@ -3068,7 +3132,7 @@ static void view_own_low(ViewState* v)
                 }
             }
 
-#ifdef REVS_LOW_DOUBLE
+#if defined(REVS_LOW_DOUBLE) && !defined(LOW_PLANES)
             /* ⭐⭐ `make LOWDOUBLE=1` — WHAT THE LOW BLOCK'S PAINTING COSTS, vs its per-line
                DRIVER, and it changes nothing to ask.  `view_low_run` is a pure function of the
                event list and the clip tables, and `LOW_PUT` writes the byte that is already
@@ -3085,6 +3149,36 @@ static void view_own_low(ViewState* v)
                 ev = evSave;
             }
 #endif
+#ifdef LOW_PLANES
+            /* ⭐⭐⭐ THE PLANE ARM PAINTS NOTHING HERE — the car is on its own playfield, so these
+               lines need no clipping to its outline (user directive) and go through the SAME
+               full-width terrain painter as the lines above, in one call after the loop.  This
+               loop only records each line, exactly as `view_own_full` does: its frame-buffer
+               address and run A's entry byte as the line's starting colour (the cells left of
+               `a0` are under PF2).  Run B's entry is already in the event list — the scan seeded
+               it (s_lowSeedHead). */
+#ifdef REVS_LOW_FULL_CHECK
+            {   /* the RUN painter first, into the same buffer, as the oracle's reference —
+                   on the list WITHOUT the scan's seed, which is the thing under test */
+                unsigned char* const lowPlane = REVS_PLOT_LOW_LINE(base);
+                if (lowPlane) {
+                    ViewSpan        ref[VIEW_EV_MAX + 1];
+                    const ViewSpan* e = &g_viewEv[line][0];
+                    unsigned        i = 0, k = 0;
+                    do { if (i != s_lowSeedPos[line]) ref[k++] = e[i]; }
+                    while (e[i++].start != 0xFFu);
+                    e = view_low_run(base, lowPlane, ref, s_lowA0[line],
+                                     s_lowA1[line], LOW_ENTRY_A, LOW_MASK_A,
+                                     LOW_FILL_A, line);
+                    (void)view_low_run(base, lowPlane, e, s_lowB0[line], s_lowB1[line],
+                                       LOW_ENTRY_B, LOW_MASK_B, LOW_FILL_B, line);
+                }
+            }
+#endif
+            g_viewRowAddr[line] = (unsigned short)base;
+            g_viewRowBg[line]   = (unsigned char)LOW_ENTRY_A;
+            (void)ev;
+#else
             if (LOW_PAINTABLE(lowPlane)) {
                 /* ⭐⭐⭐ §12f-ii — NO COMPOSED BOUNDARY CELLS ON THE PLANE ARM.  Each run's first
                    and last cell used to be `(source & mask) | fill`: the terrain pixels the mask
@@ -3109,10 +3203,28 @@ static void view_own_low(ViewState* v)
 
                 LOW_OWN_CHECK(lowPlane, &g_viewEv[line][0], line, edge, clip, base);
             }
+#endif /* LOW_PLANES */
         }
 
         if (line_is_last(line, VIEW_LOW_LO)) break;
     }
+
+#ifdef LOW_PLANES
+    REVS_PLOT_LOW_SNAP();
+    REVS_PLOT_TERRAIN(firstLine, line);
+    REVS_PLOT_LOW_COMPARE();
+#ifdef REVS_LOW_OWN_CHECK
+    {   /* the run cells against their own colour walk, now that the painter has run */
+        unsigned l;
+        for (l = line; l <= firstLine; l++) {
+            unsigned char* const plane = REVS_PLOT_LOW_LINE(g_viewRowAddr[l]);
+            if (plane)
+                LOW_OWN_CHECK(plane, &g_viewEv[l][0], l, mem[MEM_view_edge_phase + l],
+                              s_lowClipped[l], g_viewRowAddr[l]);
+        }
+    }
+#endif
+#endif
 
     v->byte = 0u;
     v->line = (unsigned char)line;

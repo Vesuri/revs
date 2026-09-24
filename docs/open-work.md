@@ -127,9 +127,12 @@ by certainty × size:
      single-stepped): ~23.7k instructions a sweep at ~10.3 cycles each, **29% the source scan
      (7.1k), 42% the low block (10.2k: 237 a line, of which the run fill is ~75 and the rest is
      per-run and per-line plumbing), 20% the full-width lines (4.9k)**. ⛔ Repainting the low block
-     through the group painter is CLOSED (+5.74, below). The span pass's lesson is what is left:
-     the win came from taking the LOOP and the per-call plumbing into one register-resident
-     routine — here the scan's lane bodies and the low block's run set-up — not from reshaping the C.
+     through the group painter now SHIPS (the needles are sprites, so there is no window): frame
+     115.95 → 115.54, and re-traced the sweep is 23.8k instructions — **the full-width painter 45%
+     (77 lines at ~140 a line, ~170 on the low block, whose ~2 events a line each cost the group
+     byte arm ~45), the scan 35%**. ⇒ NEXT: **the terrain painter in 68000 asm** (a group with an
+     event as a masked merge in registers; the C merge lost to GCC's register allocation, twice),
+     then the scan. The span pass's lesson: one register-resident routine, not reshaped C.
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
@@ -786,15 +789,11 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
-- ⛔ **THE LOW BLOCK THROUGH THE WHOLE-GROUP TERRAIN PAINTER** (display 117..157, the car's cells
-  painted under the opaque PF2, run B's entry seeded as an event, the needle window 128..157 ×
-  12..27 kept to the run cells) — correct (a visible-picture oracle, 0 of 272 240 cells, nine
-  sabotages) and **+5.74 ms** (ph33 14.32 → 20.06, frame 116.42 → 121.97). Single-stepped per line:
-  the group painter costs ~180 instructions a line on 117..127 with NO clipping code and ~246 on
-  the window lines, against the run painter's ~187 of painting, plus ~96 of recording and
-  seeding. The cost is its byte arm (~45 a group with an event in it, ~2 events a line); ⛔ a
-  masked-merge byte arm lost too (ph24 +0.44 / +0.73).
-  `docs/perf-method.md` §view_paint_lines, single-stepped.
+- ⛔ **THE LOW BLOCK THROUGH THE GROUP PAINTER WITH A NEEDLE WINDOW AND A PER-LINE SEED WALK** —
+  +5.74 ms (ph33 14.32 → 20.06). The window variant (~246 instructions a line) and walking each
+  line's list to insert run B's entry (~96 a line) were the loss, not the idea: with the needles on
+  sprites (no window) and the seed appended by the scan, the same routing SHIPPED at −0.41
+  (docs/perf-method.md §view_paint_lines, single-stepped). Do not rebuild the windowed form.
 - ⛔ `span_walk_fast` in C, three shapes against the inlined 16-bit-index one (−0.46): one
   out-of-line copy per arm **+0.63** (register pressure inside `interp_edge_core` was the wrong
   mechanism), the same unrolled 8 columns **+0.39** (3014 instructions, 683 stack operands), real
