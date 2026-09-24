@@ -2496,6 +2496,11 @@ this machine, and the reason is that the runs are only 18 of 40 cells while the 
 are a STATIC TABLE (§12's own measurement) that costs nothing to consult. Clipping is not the
 expensive part; **composing is**.
 
+⛔ **And the best GROUP shape loses too (2026-09-24, +5.74 ms)** — the low block sent through the
+full-width terrain painter, car cells as uniform longword groups under PF2: the car groups are
+cheap, but the run cells are event-dense and the group painter's byte arm is ~10 instructions a
+cell against the run fill's 4. docs/perf-method.md §view_paint_lines, single-stepped.
+
 ⛔ **And the longword fill LOSES by a further 5 ms at this segment length** — events are dense
 enough that a segment is ~5 cells, where the alignment head, the count split and the two
 broadcast loads outweigh two or three longword stores. This is `revs_plot_run`'s own finding

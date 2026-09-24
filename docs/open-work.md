@@ -122,12 +122,14 @@ by certainty × size:
   docs/perf-method.md §the span setup in 68000 asm.
 
   ⏭ **NEXT — the rest of step 1, in this order:**
-  1. **`view_paint_lines`** (ph24 + ph33, ~34.6 ms against the BBC's 23.5 — now the biggest excess
-     by far). **Single-step it first** (`steptrace.gdb` with the break target changed), because
-     brackets have been wrong twice in this subsystem, and read docs/span-render-plan.md §11-§12 and
-     CLAUDE.md's view-sweep rules before touching it. The span pass's lesson applies: the win came
-     from taking the LOOP and the per-call plumbing into one register-resident routine, not from
-     shaving the C.
+  1. **`view_paint_lines`** (ph24 20.20 + ph33 14.32 = **34.52 ms** against the BBC's 23.5 — now
+     the biggest excess by far). ✅ **SINGLE-STEPPED** (docs/perf-method.md §view_paint_lines,
+     single-stepped): ~23.7k instructions a sweep at ~10.3 cycles each, **29% the source scan
+     (7.1k), 42% the low block (10.2k: 237 a line, of which the run fill is ~75 and the rest is
+     per-run and per-line plumbing), 20% the full-width lines (4.9k)**. ⛔ Repainting the low block
+     through the group painter is CLOSED (+5.74, below). The span pass's lesson is what is left:
+     the win came from taking the LOOP and the per-call plumbing into one register-resident
+     routine — here the scan's lane bodies and the low block's run set-up — not from reshaping the C.
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
@@ -784,6 +786,15 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ **THE LOW BLOCK THROUGH THE WHOLE-GROUP TERRAIN PAINTER** (display 117..157, the car's cells
+  painted under the opaque PF2, run B's entry seeded as an event, the needle window 128..157 ×
+  12..27 kept to the run cells) — correct (a visible-picture oracle, 0 of 272 240 cells, nine
+  sabotages) and **+5.74 ms** (ph33 14.32 → 20.06, frame 116.42 → 121.97). Single-stepped: the car
+  groups ARE cheap (86 instructions a line on 117..127), but the RUN cells are event-dense, and
+  the group painter's byte arm is ~10 instructions a cell where the run painter's fill is 4 — 234
+  a line of painting against 187, plus 96 of recording and seeding. The `LOWWIDE` lesson from the
+  other side: the low block's cost is per RUN CELL, so no painter shape that walks them in C wins.
+  `docs/perf-method.md` §view_paint_lines, single-stepped.
 - ⛔ `span_walk_fast` in C, three shapes against the inlined 16-bit-index one (−0.46): one
   out-of-line copy per arm **+0.63** (register pressure inside `interp_edge_core` was the wrong
   mechanism), the same unrolled 8 columns **+0.39** (3014 instructions, 683 stack operands), real

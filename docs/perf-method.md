@@ -2694,6 +2694,59 @@ which the per-real-call arithmetic never counted.
    `span_walk_fast_run` and the allowlist row still said `span_walk_fast`. Run the lints in the
    commit that moves a `cpu` site, not in the next session.
 
+### ⭐⭐ VIEW_PAINT_LINES, SINGLE-STEPPED — and the low block through the group painter is a LOSS: +5.74 ms (2026-09-24)
+
+**The split** (`amiga/steptrace.gdb` targeted at `view_paint_lines`, three whole sweeps, driving;
+control ph24 20.20 + ph33 14.32 = 34.52 ms): **~24.6k instructions a sweep**, ~900 of them the
+VERTB ISR, so ~10.3 cycles an instruction — the step count and the phase table agree.
+
+| block | instructions a sweep | where |
+|---|---:|---|
+| `view_scan_all` — the transposed source scan | 7 114 | ~548 longword tests (the floor-skipping loop, 2× unrolled) + ~80 non-zero longwords' lane bodies |
+| the low block, display 117..157 (ph33) | ~10 200 | `view_low_run` 6 843 (fill 4 instructions a cell, ~46 a run of set-up), `view_own_low` 2 064, `revs_plot_low_line` 820 (a call a line), `step_scanline` ~500 |
+| the full-width lines 81..116 | ~4 900 | `revs_plot_terrain` 3 877 (108 a line), `view_own_full` 594, `step_scanline` ~430 |
+| `revs_plot_own_reset` | 638 | |
+
+So the low block is **237 instructions a line** and the full-width lines 108, and the difference is
+the clipping to the car's two runs.
+
+⛔⛔ **AND DELETING THAT CLIPPING LOSES.** With the cockpit on PF2, which is opaque over every cell
+of 117..157 outside the runs (RevsScreen.cpp §revs_cock_line), the car's own cells are invisible
+in PF1, so the low block was sent through the full-width group painter: the line recorded like
+the lines above it, run B's entry seeded into the event list, and inside the needle's window
+(128..157 × cells 12..27, where PF2 is transparent and PF1 is the needle painter's) only the run
+cells stored. It was **correct** — a new oracle compared the VISIBLE picture (every PF1 bit under a
+transparent PF2 pixel) against the run painter, with every owed cell poisoned first so an omission
+could not hide behind the reference: 0 mismatches in 272 240 cells, and the sabotages that
+intrude on the window, drop its edge cell, drop the window or seed a wrong colour all fail. And it
+was **+5.74 ms**: ph33 14.32 → 20.06, frame 116.42 → 121.97, phase 0 equal.
+
+Single-stepped again, the reason is plain: the car's groups ARE cheap (the eleven lines above the
+window painted at ~86 instructions), but **the run cells are event-dense**, and the group painter's
+byte arm costs ~10 instructions a cell where the run painter's fill costs 4 — **234 a line of
+painting against 187**, the window lines at 202 — before the 96 a line of recording and seeding.
+⇒ **the low block's cost is per RUN CELL, and a painter that walks those cells in C does not get
+cheaper by walking the car's cells too.** Same result as `LOWWIDE` (span-render-plan §12f-ii),
+reached with the best group shape instead of the byte loop. What is left to win there is the
+per-run and per-line plumbing (~160 of the 237), which is the span pass's lesson: one
+register-resident routine.
+
+Two things this left that stand on their own:
+- ⚠ **A sabotage can survive by COINCIDENCE OF DATA, and that is a third outcome beside a fixture
+  gap and an unreachable arm.** Dropping the seed, or seeding run A's colour, survived because on
+  the driving trajectory both screen edges are the same off-road surface — so the carried colour
+  equals the entry. Seeding `~entry` failed at 7 129 cells. ⇒ **when a sabotage survives, re-run it
+  with a value that ALWAYS differs before deciding which of the three it is.** And a census beats
+  argument: my first reading (a real event always sits at `b0`) was the exact opposite of the truth
+  — the seed inserted on 6 806 of 6 806 lines, because `fill_dash_edge_columns` diverts each fill
+  run's first cell into `view_right_start_src`.
+- ⭐ **A visible-picture oracle is the right gate for any change under a dual playfield**: compare
+  PF1 only where PF2 is transparent, and POISON the cells the new code owes after snapshotting the
+  reference, or an omission reads as agreement. (Built as `LOWFULLCHECK`, ~60 lines, and not
+  kept with the reverted painter: run the old painter into the target, snapshot the rows, invert
+  every cell the new painter owes, run it, then require `(old ^ new) & ~(pf2a | pf2b) == 0` per
+  byte on both planes.)
+
 ## Lessons — measurement
 
 - **Compare FPS row vectors, never the `total painted` line.** The total spans a partial
