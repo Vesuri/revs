@@ -135,8 +135,18 @@ by certainty × size:
      11.78 → 7.98. No masked merge after all — a split group is filled whole in the old colour and
      its tail overwritten. ✅ **The scan is in 68000 asm** too (`scan_m68k.s`, `SCANASM=0` the
      control): **ph24 20.55 → 18.00 (−2.55)**. The sweep now reads ph24 18.00 + ph33 8.14 =
-     26.1 ms against the BBC's 23.5. ⇒ single-step it once more before choosing between its
-     remainder and item 2. The span pass's lesson: one register-resident routine, not reshaped C.
+     26.1 ms against the BBC's 23.5. Re-stepped after both: **18.4k instructions a sweep — the
+     painter 6.9k, the scan 6.9k (72 hit calls, 41 seeds, 504 longwords), the drivers 2.7k**;
+     both asm routines are near their store floor, so the sweep's remainder is the drivers
+     (~1.5-2 ms, entangled with `step_scanline`/the `$7EEE` terminator) and STEP 2 below.
+  1b. ⭐ **`build_track_geometry` (ph5, 18.8 ms) is ~10.2k instructions a frame, single-stepped:
+     `emit_edge_width_offset_core` 3.5k (27 calls × ~131), `road_edge_walk_run` 2.1k,
+     `bearing_to_section` 2.0k (29 × 69), `project_point` 1.6k (28 × 58).** The emitter has a
+     frame pointer, stack spills and a six-byte struct returned through memory, and its exit-V
+     replay (`adc_overflow`, ~400 instructions a frame) feeds only the `$248B`/`$261A` hook seams,
+     where the code's own argument says V is unobservable — compute it lazily in those cold
+     paths (~1 ms). The coarse lever is the whole walk as one register-resident routine, as the
+     span pass was (~9.2k of the 10.2k).
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
