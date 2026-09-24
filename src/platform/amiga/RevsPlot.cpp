@@ -1605,15 +1605,25 @@ static void ndlTargetLost(void)
     g_needleMarks = 0;
 }
 
-/* A mark's list, reduced to a word.  Rotate-and-XOR — ⚠ never a multiply, which the 68000 does
-   not have at 32 bits (`make muldiv-audit`). */
+/* A mark's list, reduced to a word: two Fletcher sums, one over the offsets and one over the
+   pixel masks, all in 16-bit adds — ~40 cycles a pixel against the ~94 of the rotate-and-XOR it
+   replaced (a `rol.l #7` and two shifts a pixel; single-stepped at ~500 instructions a frame).
+   The running sum makes it ORDER-sensitive, and `ndlImage` also requires the count and both
+   endpoints to match, so a collision needs two different lists with the same length, the same
+   ends and the same sums.  `make NEEDLECHECK=1` checks every shown image against its list by a
+   second route, so a collision would fail there on the frame it was shown.
+   ⚠ Never a multiply (`make muldiv-audit`). */
 static uint32_t ndlHash(unsigned i0, unsigned n)
 {
-    uint32_t h = n;
-    unsigned i;
-    for (i = i0; i < i0 + n; i++)
-        h = ((h << 7) | (h >> 25)) ^ (((uint32_t)g_needlePo[i] << 3) | (g_needlePix[i] >> 2));
-    return h;
+    const uint16_t* po  = &g_needlePo[i0];
+    const uint16_t* pix = &g_needlePix[i0];
+    const uint16_t* const end = po + n;
+    uint16_t a = (uint16_t)n, b = 0, c = 0, d = 0;
+    while (po != end) {
+        a += *po++;  b += a;
+        c += *pix++; d += c;
+    }
+    return ((uint32_t)(uint16_t)(b ^ d) << 16) | (uint16_t)(a ^ (uint16_t)(c << 8));
 }
 
 /* Build the image for one mark into the pool: a sprite pair, 16 Amiga pixels a channel, pen 1

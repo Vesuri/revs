@@ -75,7 +75,9 @@ volatile uint8_t  g_bandOverflow = 0;          /* more bands than BBC_MAX_BANDS:
 volatile uint16_t g_bandDuration[BBC_MAX_BANDS] = {0};   /* microseconds until the next */
 volatile uint8_t  g_bandControl[BBC_MAX_BANDS] = {0};    /* $FE20 during this band */
 volatile uint8_t  g_bandState[BBC_MAX_BANDS] = {0};      /* $4F43: which band this IS */
-volatile uint8_t  g_bandPalette[BBC_MAX_BANDS][16] = {{0}};
+/* ⚠ aligned: RevsScreen::snapshotBands copies it a longword at a time, and the 68000 faults on a
+   longword access at an odd address. */
+volatile uint8_t  g_bandPalette[BBC_MAX_BANDS][16] __attribute__((aligned(4))) = {{0}};
 
 /* ⭐⭐ THE 1 MHz CLOCK BEHIND $FE68 (User VIA T2), Revs's only entropy source.
    Fields, counted here, are the one time base every backend already has: a band cycle is

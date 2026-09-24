@@ -106,11 +106,12 @@ private:
     /* The band record for ONE game frame, copied out of bbc_hw.cpp's live globals (which the
        IRQ1V band cycle rewrites 50 times a second). */
     struct BandSnapshot {
+        /* ⚠ FIRST, so it sits at an even address: snapshotBands copies it a longword at a time */
+        unsigned char  palette[5][16];
         unsigned char  count;
         unsigned char  state[5];
         unsigned short duration[5];
         unsigned char  control[5];
-        unsigned char  palette[5][16];
     };
     /* The raster boundaries derived from it, in display lines, band-state order. */
     struct BandPlan {

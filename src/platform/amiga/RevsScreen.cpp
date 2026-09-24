@@ -1307,8 +1307,14 @@ void RevsScreen::snapshotBands()
         m_bandSnap.state[i]    = g_bandState[i];
         m_bandSnap.duration[i] = g_bandDuration[i];
         m_bandSnap.control[i]  = g_bandControl[i];
-        for (unsigned c = 0; c < 16; c++)
-            m_bandSnap.palette[i][c] = g_bandPalette[i][c];
+    }
+    /* ⭐ THE PALETTE A LONGWORD AT A TIME: 20 volatile `move.l`s instead of 80 volatile byte
+       copies (~400 instructions a frame, single-stepped).  A byte-for-byte COPY, so byte order
+       is preserved and never interpreted; both arrays are aligned (bbc_hw.cpp, BandSnapshot). */
+    {
+        const volatile uint32_t* src = (const volatile uint32_t*)(const volatile void*)g_bandPalette;
+        uint32_t* dst = (uint32_t*)(void*)m_bandSnap.palette;
+        for (unsigned w = 0; w < 5u * 16u / 4u; w++) dst[w] = src[w];
     }
 }
 
