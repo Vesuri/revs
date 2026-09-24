@@ -178,6 +178,15 @@ intermediate between `draw_road` and `view_paint_lines` exists to serve the BBC'
 and with the car on its own playfield and no `mem[]` decode the constraints that closed the old
 direct-plot attempts (§CLOSED: `SPANPAINT`, the source-event consumer) have changed. **Re-price it
 with numbers after step 1, not before** — step 1 moves every denominator it depends on.
+⚠⚠ **RE-PRICED 2026-09-24, AND IT IS SMALLER THAN "the $3000 intermediate" SUGGESTS: ~6-9 ms net,
+not ~34.** `draw_road` (17.1 ms, at BBC parity) is the edge RASTERISATION — 43 spans stepped per
+line plus the pixel-precise boundary bytes, which any renderer must still compute; the scan is asm
+and ~6 ms, and producer-side notes would move its ~160 recordings a frame into the producers plus a
+per-line sort (~40k cycles against its ~44k — the SRCEVENTS closure still holds in substance). What
+is purely intermediate is the source-block traffic, `fill_dash_edge_columns` (6.5 ms; dropping its
+fill outright is ⛔ wrong on all five circuits) and `clear_surface_buffers` (0.9) — ~13 ms gross,
+and replacing it must carry §12b's same-cell composition. ⇒ the geometry walk in asm (entry 1b)
+goes first (user decision).
 
 ⇒ **The last 8 ms (48 → 40) is where the `50/N` ladder steps to 25 fps; not planned until 48.**
 
