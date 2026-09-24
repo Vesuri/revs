@@ -789,11 +789,11 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 - ⛔ **THE LOW BLOCK THROUGH THE WHOLE-GROUP TERRAIN PAINTER** (display 117..157, the car's cells
   painted under the opaque PF2, run B's entry seeded as an event, the needle window 128..157 ×
   12..27 kept to the run cells) — correct (a visible-picture oracle, 0 of 272 240 cells, nine
-  sabotages) and **+5.74 ms** (ph33 14.32 → 20.06, frame 116.42 → 121.97). Single-stepped: the car
-  groups ARE cheap (86 instructions a line on 117..127), but the RUN cells are event-dense, and
-  the group painter's byte arm is ~10 instructions a cell where the run painter's fill is 4 — 234
-  a line of painting against 187, plus 96 of recording and seeding. The `LOWWIDE` lesson from the
-  other side: the low block's cost is per RUN CELL, so no painter shape that walks them in C wins.
+  sabotages) and **+5.74 ms** (ph33 14.32 → 20.06, frame 116.42 → 121.97). Single-stepped per line:
+  the group painter costs ~180 instructions a line on 117..127 with NO clipping code and ~246 on
+  the window lines, against the run painter's ~187 of painting, plus ~96 of recording and
+  seeding. The cost is its byte arm (~45 a group with an event in it, ~2 events a line); ⛔ a
+  masked-merge byte arm lost too (ph24 +0.44 / +0.73).
   `docs/perf-method.md` §view_paint_lines, single-stepped.
 - ⛔ `span_walk_fast` in C, three shapes against the inlined 16-bit-index one (−0.46): one
   out-of-line copy per arm **+0.63** (register pressure inside `interp_edge_core` was the wrong

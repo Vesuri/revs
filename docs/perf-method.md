@@ -2721,14 +2721,23 @@ could not hide behind the reference: 0 mismatches in 272 240 cells, and the sabo
 intrude on the window, drop its edge cell, drop the window or seed a wrong colour all fail. And it
 was **+5.74 ms**: ph33 14.32 → 20.06, frame 116.42 → 121.97, phase 0 equal.
 
-Single-stepped again, the reason is plain: the car's groups ARE cheap (the eleven lines above the
-window painted at ~86 instructions), but **the run cells are event-dense**, and the group painter's
-byte arm costs ~10 instructions a cell where the run painter's fill costs 4 — **234 a line of
-painting against 187**, the window lines at 202 — before the 96 a line of recording and seeding.
-⇒ **the low block's cost is per RUN CELL, and a painter that walks those cells in C does not get
-cheaper by walking the car's cells too.** Same result as `LOWWIDE` (span-render-plan §12f-ii),
-reached with the best group shape instead of the byte loop. What is left to win there is the
-per-run and per-line plumbing (~160 of the 237), which is the span pass's lesson: one
+Single-stepped again and split PER LINE (the painter's loop head segments the trace), the full-width
+group painter costs **~110 instructions a line on display 81..116, ~180 on 117..127 with no
+clipping code at all, and ~246 on the window lines 128..157** — against the run painter's ~187 of
+painting — before ~96 a line of recording and seeding. ⚠ The first version of this note said the
+car groups cost "~86" and that the run cells were "event-dense"; both were inference, and both
+were wrong: a host census puts the low block at **~2 events a line**. The cost is the group
+painter's BYTE ARM — a group holding an event runs a four-iteration byte loop, ~45 instructions —
+so a line's price is ~25 + ~8 per uniform group + ~45 per group with an event in it, and the upper
+lines average 110 only because many of them are flat.
+⛔ **And a masked-merge byte arm is not the fix** — an event at byte `j` as one masked XOR per
+plane with a tail-mask table measured **ph24 +0.44** (a second accumulator pair made GCC spill
+`lo4` in the UNIFORM arm) and **+0.73** merged in place (no spill in the uniform arm): on this
+data the byte loop is cheaper than the merge's three table loads a event. Both reverted; the
+painter's oracle (`TERRAINCHECK`, 0 of 66 920 cells) and four sabotages were green, so it was
+the price, not the correctness.
+⇒ **The low block through this painter costs about what it saves in C**; the per-line and per-run
+plumbing (~160 of the 237) is what is left to win, and that is the span pass's lesson: one
 register-resident routine.
 
 Two things this left that stand on their own:

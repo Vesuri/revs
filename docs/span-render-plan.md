@@ -2497,9 +2497,9 @@ are a STATIC TABLE (§12's own measurement) that costs nothing to consult. Clipp
 expensive part; **composing is**.
 
 ⛔ **And the best GROUP shape loses too (2026-09-24, +5.74 ms)** — the low block sent through the
-full-width terrain painter, car cells as uniform longword groups under PF2: the car groups are
-cheap, but the run cells are event-dense and the group painter's byte arm is ~10 instructions a
-cell against the run fill's 4. docs/perf-method.md §view_paint_lines, single-stepped.
+full-width terrain painter, car cells as uniform longword groups under PF2: ~180 instructions a
+line with no clipping code (~246 in the needle window) against the run painter's ~187, because a
+group holding an event pays a ~45-instruction byte arm. docs/perf-method.md §view_paint_lines, single-stepped.
 
 ⛔ **And the longword fill LOSES by a further 5 ms at this segment length** — events are dense
 enough that a segment is ~5 cells, where the alignment head, the count split and the two
