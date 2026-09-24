@@ -2763,6 +2763,23 @@ move zero rows), re-proved per line by `TERRAINCHECK`. Gates: `TERRAINCHECK` 0 o
 row contiguity 0 bad, 0 fallbacks, `LOWFULLCHECK` 0 of 270 600; five assembled sabotages
 (`TERRAINASM_SABOTAGE=1..3,5,6`) each caught, by both oracles where the defect reaches the low block.
 
+⭐⭐ **AND THE SCAN IN 68000 ASM IS −2.55 ms OF ph24** (20.55 → 18.00; `src/platform/amiga/scan_m68k.s`,
+`make SCANASM=0` the control). The zero path is `move.l (a0)+,d0 / beq.s`, unrolled twenty deep and
+entered by a computed jump at the cell's floor group; the floor group's below-floor lanes (the car's
+interior, non-zero every frame because nothing consumes them) are masked out of its zero test in a
+register, so a car-only longword costs no call; a hit derives its line from `a0` and keeps every
+table in a register. Gate: `make SCANCHECK=1` runs the C scan and the asm on the same sources every
+sweep and compares every list through its sentinel, every cursor, the seed positions, the count and
+all forty blocks — 0 mismatches over 125 sweeps / 19 953 events, with `TERRAINCHECK` and
+`LOWFULLCHECK` also clean on that build. Sabotages 1-4 and 6 caught. ⚠ **Sabotage 5 (the group after
+the floor's skipped) SURVIVES BY DATA**: that group held no consumable source in 162 sweeps of this
+trajectory, and sabotage 6 (a fixed mid-screen group skipped) fails at 1056, which is the sibling
+case showing the oracle does see a skipped group.
+⚠⚠ **The frame total moved only −0.68, and that is the TRAJECTORY, not the scan**: phase 26 rose
++1.93 with `ONE BODY TICK` 1000 → 1297 µs while no body code changed (and the scan's output is
+byte-identical by SCANCHECK), and phase 0 grew 201 → 220 fields. So the scan is quoted by the one row
+it lives in. (The terrain painter's pair above had `ONE BODY TICK` 1008/1000 — a clean pricing.)
+
 ⚠⚠ **And the oracle had the shared-input blind spot until it was sabotaged.** With the seed moved
 into the scan, the REFERENCE run painter saw the seed as a real event at its run's first cell and
 took it, so a wrong seed colour PASSED (0 mismatches) where the earlier variant — seeding after the

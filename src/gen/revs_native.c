@@ -1722,7 +1722,96 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
    biggest single item in the sweep, not a rounding error.  ⇒ the fix is not this loop's shape but
    deleting the scan: the PRODUCER already knows every source byte it writes. */
 #if defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
+#if defined(REVS_SCAN_ASM) && defined(LOW_PLANES) && !defined(REVS_SRC_EVENTS)
+/* ⭐⭐⭐ THE AMIGA RUNS THE SCAN IN 68000 ASSEMBLY — src/platform/amiga/scan_m68k.s, whose banner has
+   the shape.  This body stays the reference: the host runs it, `make SCANASM=0` is the control, and
+   `make SCANCHECK=1` runs both on the same sources every sweep and compares everything either
+   writes: every line's list through its sentinel, every cursor, the run-B seed positions, the count
+   and all forty source blocks. */
+unsigned view_scan_m68k(MEM_QUAL unsigned char* src, ViewSpan* ev, ViewSpan** evEnd,
+                        const unsigned char* floor, MEM_QUAL const unsigned char* xlat,
+                        const unsigned char* seedHead, const unsigned char* seedNext,
+                        MEM_QUAL const unsigned char* rstart, unsigned char* seedPos);
+
+static unsigned view_scan_asm(void)
+{
+#ifdef REVS_LOW_FULL_CHECK
+    unsigned line;
+    for (line = 0; line < VIEW_EV_LINES; line++) s_lowSeedPos[line] = 0xFFu;
+#define SCAN_SEEDPOS s_lowSeedPos
+#else
+#define SCAN_SEEDPOS ((unsigned char*)0)
+#endif
+    return view_scan_m68k(mem + MEM_view_src_blocks, &g_viewEv[0][0], g_viewEvEnd, s_lowConsume,
+                          mem + MEM_view_cell_bytes, s_lowSeedHead, s_lowSeedNext,
+                          mem + MEM_view_right_start_src, SCAN_SEEDPOS);
+#undef SCAN_SEEDPOS
+}
+
+#ifdef REVS_SCAN_CHECK
+volatile unsigned long  g_scanChecks     = 0;
+volatile unsigned long  g_scanMismatch   = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned short g_scanMismatchAt = 0;   /* (what << 8) | line-or-cell of the first:
+                                                   1 count, 2 source, 3 cursor, 4 list, 5 seed */
+#define SCAN_SRC_BYTES (VIEW_SPAN_CELLS * 0x80u)
+static unsigned char  s_scanSrc[SCAN_SRC_BYTES], s_scanSrcC[SCAN_SRC_BYTES];
+static ViewSpan       s_scanEv[VIEW_EV_LINES][VIEW_EV_MAX];
+static unsigned short s_scanEnd[VIEW_EV_LINES];
+#ifdef REVS_LOW_FULL_CHECK
+static unsigned char  s_scanSeedPos[VIEW_EV_LINES];
+#endif
+static void scan_bad(unsigned what, unsigned at)
+{
+    if (!g_scanMismatch) g_scanMismatchAt = (unsigned short)((what << 8) | (at & 0xFFu));
+    g_scanMismatch++;
+}
+#endif
+
+static __attribute__((noinline)) void view_scan_all(void)
+{
+#ifdef REVS_SCAN_CHECK
+    const unsigned long before = g_viewEvents;
+    unsigned long foundC, foundA;
+    unsigned line, i;
+
+    memcpy(s_scanSrc, mem + MEM_view_src_blocks, SCAN_SRC_BYTES);
+    view_scan_body(0u, 79u, 1);                         /* the reference */
+    foundC = g_viewEvents - before;
+    memcpy(s_scanSrcC, mem + MEM_view_src_blocks, SCAN_SRC_BYTES);
+    memcpy(s_scanEv, g_viewEv, sizeof s_scanEv);
+    for (line = 0; line < VIEW_EV_LINES; line++)
+        s_scanEnd[line] = (unsigned short)(g_viewEvEnd[line] - &g_viewEv[line][0]);
+#ifdef REVS_LOW_FULL_CHECK
+    memcpy(s_scanSeedPos, s_lowSeedPos, sizeof s_scanSeedPos);
+#endif
+    memcpy(mem + MEM_view_src_blocks, s_scanSrc, SCAN_SRC_BYTES);   /* same input for the asm */
+    g_viewEvents = before;
+
+    foundA = view_scan_asm();
+    g_viewEvents += foundA;
+    g_scanChecks++;
+    if (foundA != foundC) scan_bad(1u, 0u);
+    for (i = 0; i < SCAN_SRC_BYTES; i++)
+        if (mem[MEM_view_src_blocks + i] != s_scanSrcC[i]) { scan_bad(2u, i >> 7); break; }
+    for (line = 0; line < VIEW_EV_LINES; line++) {
+        const unsigned n = (unsigned)(g_viewEvEnd[line] - &g_viewEv[line][0]);
+        if (n != s_scanEnd[line]) { scan_bad(3u, line); continue; }
+        for (i = 0; i <= n; i++)
+            if (g_viewEv[line][i].start  != s_scanEv[line][i].start
+             || (i < n && g_viewEv[line][i].colour != s_scanEv[line][i].colour)) {
+                scan_bad(4u, line); break;
+            }
+#ifdef REVS_LOW_FULL_CHECK
+        if (s_lowSeedPos[line] != s_scanSeedPos[line]) scan_bad(5u, line);
+#endif
+    }
+#else
+    g_viewEvents += view_scan_asm();
+#endif
+}
+#else
 static __attribute__((noinline)) void view_scan_all(void)  { view_scan_body(0u, 79u, 1); }
+#endif
 #endif
 #if defined(REVS_TERRAIN_SPANS)
 static __attribute__((noinline)) void view_scan_high(void) { view_scan_body(44u, 79u, 1); }

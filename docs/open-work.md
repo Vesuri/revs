@@ -133,8 +133,10 @@ by certainty × size:
      byte arm ~45), the scan 35%**. ✅ **The terrain painter is in 68000 asm** (`terrain_m68k.s`,
      `TERRAINASM=0` the control): frame **115.51 → 110.13 (−5.38)**, ph24 22.12 → 20.55, ph33
      11.78 → 7.98. No masked merge after all — a split group is filled whole in the old colour and
-     its tail overwritten. ⇒ NEXT: **the scan in asm** (`view_scan_all`, the biggest remaining row
-     of the sweep). The span pass's lesson: one register-resident routine, not reshaped C.
+     its tail overwritten. ✅ **The scan is in 68000 asm** too (`scan_m68k.s`, `SCANASM=0` the
+     control): **ph24 20.55 → 18.00 (−2.55)**. The sweep now reads ph24 18.00 + ph33 8.14 =
+     26.1 ms against the BBC's 23.5. ⇒ single-step it once more before choosing between its
+     remainder and item 2. The span pass's lesson: one register-resident routine, not reshaped C.
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.

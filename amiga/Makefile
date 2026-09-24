@@ -1163,6 +1163,21 @@ PROBE_SYMS_TERRAIN += g_terrainRowBad
 endif
 endif
 TERRAINASM_SABOTAGE ?= 0
+# ⭐⭐ `SCANASM=1` (the DEFAULT) — the transposed source scan (`view_scan_all`) in 68000 assembly
+# (src/platform/amiga/scan_m68k.s).  `make SCANASM=0` is the C control.  ⭐⭐ `make SCANCHECK=1` is
+# its gate: every sweep runs the C scan and the asm on the same sources and compares every list,
+# cursor, seed, the count and all forty blocks (amiga/scan_check.gdb) — ⚠ a correctness arm, its
+# phase rows are void.  `SCANASM_SABOTAGE=N` assembles deliberate defect N for it to catch.
+SCANASM ?= 1
+ifeq ($(SCANASM),1)
+EXTRA_DEFINES += -DREVS_SCAN_ASM
+ASM_SRCS += $(AMIGA_SRC)/scan_m68k.s
+ifeq ($(SCANCHECK),1)
+EXTRA_DEFINES += -DREVS_SCAN_CHECK
+PROBE_SYMS_TERRAIN += g_scanChecks g_scanMismatch g_scanMismatchAt
+endif
+endif
+SCANASM_SABOTAGE ?= 0
 # ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
 # the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
 # ⚠ Diagnostic only; no framerate may be quoted from such a build.
@@ -1663,6 +1678,10 @@ obj/span_pass_m68k.o : $(AMIGA_SRC)/span_pass_m68k.s
 obj/terrain_m68k.o : $(AMIGA_SRC)/terrain_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(TERRAINASM_SABOTAGE) -o $@ "$<"
+
+obj/scan_m68k.o : $(AMIGA_SRC)/scan_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SCANASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk
