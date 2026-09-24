@@ -130,9 +130,11 @@ by certainty × size:
      through the group painter now SHIPS (the needles are sprites, so there is no window): frame
      115.95 → 115.54, and re-traced the sweep is 23.8k instructions — **the full-width painter 45%
      (77 lines at ~140 a line, ~170 on the low block, whose ~2 events a line each cost the group
-     byte arm ~45), the scan 35%**. ⇒ NEXT: **the terrain painter in 68000 asm** (a group with an
-     event as a masked merge in registers; the C merge lost to GCC's register allocation, twice),
-     then the scan. The span pass's lesson: one register-resident routine, not reshaped C.
+     byte arm ~45), the scan 35%**. ✅ **The terrain painter is in 68000 asm** (`terrain_m68k.s`,
+     `TERRAINASM=0` the control): frame **115.51 → 110.13 (−5.38)**, ph24 22.12 → 20.55, ph33
+     11.78 → 7.98. No masked merge after all — a split group is filled whole in the old colour and
+     its tail overwritten. ⇒ NEXT: **the scan in asm** (`view_scan_all`, the biggest remaining row
+     of the sweep). The span pass's lesson: one register-resident routine, not reshaped C.
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.

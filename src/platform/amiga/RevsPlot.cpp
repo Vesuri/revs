@@ -402,6 +402,41 @@ volatile unsigned short g_terrainMismatchAt = 0;  /* (addr << 8) | cell of the f
         }                                                                               \
     } while (0)
 
+#ifdef REVS_TERRAIN_CHECK
+static void terrain_check_line(unsigned off, unsigned background, const ViewSpan* evHead)
+{
+    const uint8_t* const p1 = s_target + s_planeOff[off];
+    /* ⭐⭐ THE PAINTER'S ORACLE (`make TERRAIN=1 TERRAINCHECK=1`), and it is the only one this
+       path can have.  A cross-run picture diff is invalid — a faster build has painted a
+       different game frame by the same field, measured at 63 frames against 59 — and
+       `SPANVERIFY`/`DIRECTCHECK` both need the forty-unit chain to keep writing `mem[]`, which is
+       exactly what this deletes.  So the differential is IN PROCESS and against the same data:
+       walk the event list one cell at a time, the way `view_consume` does, and require every one
+       of the eighty bytes the unrolled groups wrote to match.
+       ⚠ What it covers is the PAINTER — the sentinel, the group unroll, the uniform test and the
+       byte arm.  That the events themselves equal the chain's non-zero cells is an argument, not
+       a measurement: `view_scan_events` reads the same bytes from the same blocks and zeroes them
+       (see it), and the picture is the backstop on the line map. */
+    {
+        /* ⚠ FROM THE SAVED HEAD — the group macros advance `ev`, so reading the parameter here
+           starts at the sentinel and compares every line against a flat background.  That first
+           version read 32% mismatch on a correct painter, which is the oracle failing its own
+           sabotage test by accident (CLAUDE.md §verify the instrument). */
+        const ViewSpan* e = evHead;
+        unsigned        v = background, c;
+        for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+            if (e->start == c) { v = e->colour; e++; }
+            g_terrainChecks++;
+            if (p1[c] != g_bbcExpandLo[v] || p1[c + kPlaneGap] != g_bbcExpandHi[v]) {
+                if (!g_terrainMismatch)
+                    g_terrainMismatchAt = (unsigned short)((s_lineOf[off] << 8) | c);
+                g_terrainMismatch++;
+            }
+        }
+    }
+}
+#endif
+
 static inline void plot_terrain_line(unsigned short addr, unsigned background, const ViewSpan* ev)
 {
     const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
@@ -447,46 +482,61 @@ static inline void plot_terrain_line(unsigned short addr, unsigned background, c
     }
 #endif
 #ifdef REVS_TERRAIN_CHECK
-    /* ⭐⭐ THE PAINTER'S ORACLE (`make TERRAIN=1 TERRAINCHECK=1`), and it is the only one this
-       path can have.  A cross-run picture diff is invalid — a faster build has painted a
-       different game frame by the same field, measured at 63 frames against 59 — and
-       `SPANVERIFY`/`DIRECTCHECK` both need the forty-unit chain to keep writing `mem[]`, which is
-       exactly what this deletes.  So the differential is IN PROCESS and against the same data:
-       walk the event list one cell at a time, the way `view_consume` does, and require every one
-       of the eighty bytes the unrolled groups wrote to match.
-       ⚠ What it covers is the PAINTER — the sentinel, the group unroll, the uniform test and the
-       byte arm.  That the events themselves equal the chain's non-zero cells is an argument, not
-       a measurement: `view_scan_events` reads the same bytes from the same blocks and zeroes them
-       (see it), and the picture is the backstop on the line map. */
-    {
-        /* ⚠ FROM THE SAVED HEAD — the group macros advance `ev`, so reading the parameter here
-           starts at the sentinel and compares every line against a flat background.  That first
-           version read 32% mismatch on a correct painter, which is the oracle failing its own
-           sabotage test by accident (CLAUDE.md §verify the instrument). */
-        const ViewSpan* e = evHead;
-        unsigned        v = background, c;
-        for (c = 0; c < BBC_SCREEN_CELLS; c++) {
-            if (e->start == c) { v = e->colour; e++; }
-            g_terrainChecks++;
-            if (p1[c] != g_bbcExpandLo[v] || p1[c + kPlaneGap] != g_bbcExpandHi[v]) {
-                if (!g_terrainMismatch)
-                    g_terrainMismatchAt = (unsigned short)((s_lineOf[off] << 8) | c);
-                g_terrainMismatch++;
-            }
-        }
-    }
+    terrain_check_line(off, background, evHead);
 #endif
 }
 
 /* ⭐⭐⭐ THE WHOLE SWEEP, in ONE call.  Lines run DOWNWARD (`first` is the top display row's sweep
    line and `last` is where the driver stopped), and the driver's own loop is then call-free —
    which the carve ladder priced at 107 us a line, more than the fill itself costs. */
+#ifdef REVS_TERRAIN_ASM
+extern "C" void terrain_paint_m68k(unsigned lines, uint8_t* plane, uint8_t* own,
+                                   const uint8_t* bgEnd, const ViewSpan* ev,
+                                   const unsigned long* expand4);
+/* ⚠ ALWAYS COMPILED, like g_decodeGapFrames: a block whose ends are not the contiguous rows the
+   asm needs falls back to the C painter, and that must be visible in a plain build — it reads 0 in
+   every run measured, because both drivers step one display row a sweep line. */
+extern "C" { volatile unsigned long g_terrainAsmFallback = 0; }
+#ifdef REVS_TERRAIN_CHECK
+extern "C" { volatile unsigned long g_terrainRowBad = 0; }     /* ⚠⚠ MUST BE 0 */
+#endif
+#endif
+
 extern "C" void revs_plot_terrain(unsigned first, unsigned last)
 {
     unsigned line;
 
     if (!s_target) { SPAN_STAT(g_plotNoTarget++); return; }
     if (last > first) return;
+
+#ifdef REVS_TERRAIN_ASM
+    /* ⭐⭐⭐ THE WHOLE BLOCK IN 68000 REGISTERS (terrain_m68k.s, whose banner has the shape).  It
+       walks the plane rows by +80 with no per-line lookup, which needs the block's display rows to
+       be CONTIGUOUS: both ends in the frame buffer and `first - last` rows apart.  A scan-line step
+       moves exactly one row (step_scanline), and it cannot move none, so ends that agree mean
+       every row between them does. */
+    {
+        const unsigned off0 = (unsigned)g_viewRowAddr[first] - BBC_SCREEN_BASE;
+        const unsigned offN = (unsigned)g_viewRowAddr[last]  - BBC_SCREEN_BASE;
+        if (off0 < FB_BYTES && offN < FB_BYTES
+                && (unsigned)s_lineOf[offN] - s_lineOf[off0] == first - last) {
+            const unsigned y0 = s_lineOf[off0];
+            terrain_paint_m68k(first - last + 1u, s_target + s_planeOff[off0], &g_plotOwn[y0],
+                               &g_viewRowBg[first] + 1, &g_viewEv[first][0], &g_bbcExpand4[0][0]);
+#ifdef REVS_TERRAIN_CHECK
+            /* the oracle, per line, on what the asm wrote — and the contiguity it assumed */
+            for (line = first; ; line--) {
+                const unsigned off = (unsigned)g_viewRowAddr[line] - BBC_SCREEN_BASE;
+                if (off >= FB_BYTES || s_lineOf[off] != y0 + (first - line)) g_terrainRowBad++;
+                else terrain_check_line(off, g_viewRowBg[line], &g_viewEv[line][0]);
+                if (line == last) break;
+            }
+#endif
+            return;
+        }
+        g_terrainAsmFallback++;
+    }
+#endif
 
     for (line = first; ; line--) {
         plot_terrain_line(g_viewRowAddr[line], g_viewRowBg[line], &g_viewEv[line][0]);

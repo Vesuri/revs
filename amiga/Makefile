@@ -1147,6 +1147,22 @@ PROBE_SYMS_TERRAIN = g_viewEvents
 ifneq ($(TERRAINCARVE),)
 EXTRA_DEFINES += -DREVS_TERRAIN_CARVE=$(TERRAINCARVE)
 endif
+# ⭐⭐ `TERRAINASM=1` (the DEFAULT) — the terrain painter in 68000 assembly
+# (src/platform/amiga/terrain_m68k.s): one computed-jump longword fill per EVENT instead of two tests
+# per group, and no per-line address lookup.  `make TERRAINASM=0` is the C control.  Its gates are
+# `TERRAINCHECK=1` (every line, cell by cell, plus the row contiguity it assumes) and `LOWFULLCHECK=1`;
+# `TERRAINASM_SABOTAGE=N` assembles deliberate defect N for them to catch.  `g_terrainAsmFallback`
+# counts blocks handed back to the C painter and must read 0.
+TERRAINASM ?= 1
+ifeq ($(TERRAINASM),1)
+EXTRA_DEFINES += -DREVS_TERRAIN_ASM
+ASM_SRCS += $(AMIGA_SRC)/terrain_m68k.s
+PROBE_SYMS_TERRAIN += g_terrainAsmFallback
+ifeq ($(TERRAINCHECK),1)
+PROBE_SYMS_TERRAIN += g_terrainRowBad
+endif
+endif
+TERRAINASM_SABOTAGE ?= 0
 # ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
 # the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
 # ⚠ Diagnostic only; no framerate may be quoted from such a build.
@@ -1643,6 +1659,10 @@ obj/span_walk_m68k.o : $(AMIGA_SRC)/span_walk_m68k.s
 obj/span_pass_m68k.o : $(AMIGA_SRC)/span_pass_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SETUPASM_SABOTAGE) -o $@ "$<"
+
+obj/terrain_m68k.o : $(AMIGA_SRC)/terrain_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(TERRAINASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

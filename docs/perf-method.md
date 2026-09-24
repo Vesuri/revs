@@ -2749,6 +2749,20 @@ walked into each line's list. Re-traced: 23.8k instructions a sweep against 24.6
 7.1k → 8.2k (the seeds and their chains). ⇒ the painter is now 45% of the sweep and the C byte arm
 is what it pays, so the next move is that painter in asm. Gate: `make LOWFULLCHECK=1` (the
 visible-picture oracle, every owed cell poisoned), 0 of 295 200.
+⭐⭐ **AND THE PAINTER IN 68000 ASM IS −5.38 ms** (frame 115.51 → 110.13; ph24 22.12 → 20.55, ph33
+11.78 → 7.98; `src/platform/amiga/terrain_m68k.s`, `make TERRAINASM=0` the control, both arms in one
+session at `PROBEFIELDS=3000`). Three moves, all in the file's banner: the question "does a run
+change here?" is asked once per EVENT, never per group — the groups before an event's group are one
+computed jump into ten unrolled `move.l` pairs, entered at −(cells to fill) because a group is four
+cells AND four bytes of code; a group an event SPLITS is filled whole in the old colour by that same
+jump and only its tail rewritten (a byte, a word, or both, per plane), so the masked merge the C lost
+twice is not needed at all; and there is no per-line address lookup, because both drivers step one
+display row per sweep line (`step_scanline`), so a line's plane-1 row starts where the previous
+line's plane-2 pointer stopped — proved at the block's two ends by the caller (a scan-line step cannot
+move zero rows), re-proved per line by `TERRAINCHECK`. Gates: `TERRAINCHECK` 0 of 508 200 cells,
+row contiguity 0 bad, 0 fallbacks, `LOWFULLCHECK` 0 of 270 600; five assembled sabotages
+(`TERRAINASM_SABOTAGE=1..3,5,6`) each caught, by both oracles where the defect reaches the low block.
+
 ⚠⚠ **And the oracle had the shared-input blind spot until it was sabotaged.** With the seed moved
 into the scan, the REFERENCE run painter saw the seed as a real event at its run's first cell and
 took it, so a wrong seed colour PASSED (0 mismatches) where the earlier variant — seeding after the
