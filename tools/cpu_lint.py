@@ -40,9 +40,9 @@ ALLOWED = {
   #    is `cpu.S` read as a VALUE: engine_init_core hands it to `top_level_stack` (abort's unwind
   #    target) and span_abandon_chain passes `cpu.S + 2u` as an argument.
   'engine_init_core': 'cpu.S is an address', 'span_abandon_chain': 'cpu.S is an address',
-  #    span_walk_fast's abandon cap is span_abandon_chain's same `cpu.S + 2u` (the walk's own
+  #    span_walk_fast_run's abandon cap is span_abandon_chain's same `cpu.S + 2u` (the walk's own
   #    abandon path, which reached the lint once it stopped being written inside a #define).
-  'span_walk_fast': 'cpu.S is an address',
+  'span_walk_fast_run': 'cpu.S is an address',
 
   # -- class 4: a decimal-mode clear inside a core.  `cpu.D = 0` is the 6502's own CLD.
   #    ⚠⚠ THE OLD ARGUMENT HERE WAS WRONG AND IS THE REASON THESE THREE STAY.  It read
