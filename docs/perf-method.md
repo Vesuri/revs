@@ -34,6 +34,7 @@ and it is printed beside the figure so the figure is never read without it.
 | **the real BBC, its own hardware** | **97.0** | 1.00× |
 | the port, bracketed | ~190 | **1.96× slower** |
 | the port, less `decode()` (phase 27, work the BBC never did) | ~173 | 1.78× |
+| **the port at `c07761b`**, bracketed (`docs/open-work.md` header) | **104.83** | **1.08×** — within 1.15× of the comparable 91.0 |
 | the stated **floor**, 25 FPS | 40 | **2.43× FASTER than the original** |
 | the stated **target**, 50 FPS | 20 | **4.85× FASTER than the original** |
 
@@ -134,6 +135,30 @@ reachable remains to be seen".
   change" conclusion was disproven by hand-asm — the ceiling was GCC, not the algorithm. That
   cuts both ways: don't declare it impossible from reasoning, and don't declare it reached from
   optimism.)
+
+### ⭐⭐⭐ GAME SPEED IS THE FRAMERATE — the race clock is calibrated to a 93.6 ms frame
+
+The engine has **no fixed-rate simulation**: `tick_race_timers` (phase 1), `apply_driving_model`
+(phase 4) and every other sim step run **once per main-loop frame**, and `add_frame_time` adds a
+fixed **9.36 hundredths of a second** per frame to the race clock (+$09 BCD, +$18 once every
+`time_tick_period + 1` = 25 frames). ⇒ **the clock — and the car, the other drivers, the lap
+times — run at real time only at a 93.6 ms frame**, which is the frame rate Crammond calibrated to
+([DERIVED] from the constants; `disasm/symbols.csv` `add_frame_time`).
+
+| frame | game speed |
+|---|---:|
+| 93.6 ms — the calibration | 1.00× real time |
+| 97.0 ms — the real BBC in this scene (its 6 ms practice pad included) | 0.965× |
+| 104.83 ms — the port at `c07761b` | 0.89× |
+| 48 ms — the target | **1.95× — the game would run double speed** |
+
+⭐ **This is why the port "feels right" once it is near BBC speed** (user, playing `c07761b`: the
+in-game clock runs at about real time and the game plays well) — and why a faster port is, today,
+a **faster game**, not a smoother one. ⇒ **Reaching the 48 ms target requires decoupling the
+simulation from painting** (a fixed-rate sim tick with the paint decimated, or the sim run N times
+per painted frame) — the user's stated future goal, deliberately deferred (`docs/open-work.md`
+§The rest of the port). Until it lands, every frame-time win below ~93.6 ms speeds the game up,
+and `determinism` still holds because the sim is framerate-locked, not wall-clock-locked.
 
 ## ⭐⭐ THE CURRENT NUMBERS
 

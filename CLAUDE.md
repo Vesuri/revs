@@ -374,7 +374,7 @@ menu's fields hand the engine a backlog to run in one burst. Reasoning: `docs/am
 
 ⭐⭐⭐ **THE REAL BBC RUNS THIS SCENE AT 97.0 ms/frame — 10.31 fps (`make refloop` measures it and
 prints its own calibration).** That is the yardstick: quote every frame figure against it. The
-port at ~190 ms is **1.96× the original hardware** — a 2× problem, not a 10× one.
+port's current bracketed frame, and its ratio to 97.0, is the header of `docs/open-work.md`.
 
 **⭐⭐ TARGET: ~48 ms a frame, 2× the original game** (user decision, superseding "50 FPS / floor
 25 FPS", taken once the original's own cost was known). **Stretch: 40 ms**, and the reason is the
@@ -386,14 +386,18 @@ the last 8 ms is the only part of that band a player can see.
 advantage — a 68000's bus cycle is 564 ns against the 6502's 500 — which wins only on batching,
 and the BBC's 8-byte-apart destination cells and 128-byte-apart sources forbid it by construction.
 ⇒ **no code shape reaches these numbers; only changing the layouts on both producer and consumer
-sides does.** `docs/perf-method.md` §what the original hardware achieves. The **50 Hz sim tick is separate and not
-negotiable** — 25 FPS means painting every other frame with the simulation still at full rate.
+sides does.** `docs/perf-method.md` §what the original hardware achieves.
+⚠⚠ **GAME SPEED IS THE FRAMERATE — the engine has no fixed-rate sim.** Every sim step runs once per
+main-loop frame and the race clock adds 9.36 cs a frame (calibrated to a 93.6 ms frame), so a
+faster frame is a FASTER GAME: real time at 93.6 ms, 1.95× at the 48 ms target. Decoupling the
+simulation from painting is the user's stated future goal, **deferred — do not start it unasked**
+(`docs/open-work.md` §FRAME-RATE-INDEPENDENT SIMULATION, `docs/perf-method.md` §GAME SPEED).
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: a ~193 ms FRAME** — i.e. ~9.7 display fields (`PROBES=1 FIXED_RNG=1
-STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000` + `phase4_prof.gdb`, warp, driving,
-2026-09-17 at `151e282`). **This is the number a change is sized against**, and it is both the
+**Baseline: the bracketed FRAME in `docs/open-work.md`'s header** (`PROBES=1 FIXED_RNG=1
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000` + `phase4_prof.gdb`, warp, driving, priced with
+`diag_run.sh 45`). **This is the number a change is sized against**, and it is both the
 bracketed total (`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to
 0.02 ms, so the brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` is NOT
 the frame**: phase 0 is boot plus the engine's own 2-second crash pauses.

@@ -26,12 +26,13 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 116.47 ms bracketed** (149.18 at the plan's start) for the DEFAULT — measured
-2026-09-24: `SETUPASM=0` control 126.64 → the whole span pass in 68000 asm 116.47 (ph11 26.62 → 17.10), phase 0 equal on both arms. Before it, 2026-09-23 in one session: `SPANASM=0` control 132.90 → asm walk 128.23 → direct entry 127.02 → setup over locals 126.68, every arm with phase 0 = 120 fields and runs deterministic to the tick. The context line that follows is the
-2026-09-22 measurement at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
-HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
-`FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
-measured against). ⚠ `ph34` is a ONE-SHOT (`calls=1`), so the RECURRING frame is **~146.7 ms**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 104.83 ms bracketed at `c07761b`** (149.18 at the plan's start) — **1.08× the
+real BBC's 97.0, and 0.89× real-time game speed** (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
+FRAMERATE). 2026-09-24, one session, every arm `PROBEFIELDS=3000` with phase 0 checked equal: terrain painter in asm
+115.51 → 110.13; source scan in asm ph24 20.55 → 18.00 (quoted by its row — that pair's `ONE BODY TICK` moved, a trajectory);
+own-reset memoised ph24 → 17.68; `prepareFrame` ph27 7.65 → 6.74 (frame 108.39); the walk's width emitter in asm ph5
+18.91 → 16.13, frame 108.39 → **104.83**. Before that session: the whole span pass in asm, 126.64 → 116.47 (ph11 26.62 → 17.10).
+The per-phase table below is the 2026-09-23 snapshot (port ~143.5) and its BBC column still ranks what is left.
 ⭐⭐⭐ **THE PER-PHASE COMPARISON — the port against a real BBC, row for row (2026-09-23).**
 `make bbcprof` brackets the real BBC's 24 main-loop call sites plus the three tail calls, one row
 per Amiga phase id; its site MEANS sum to 96.4 of 97.0 ms, so it IS the BBC frame. The port side
@@ -792,6 +793,16 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.
+
+### ⏸ FRAME-RATE-INDEPENDENT SIMULATION — **the user's stated future goal, deferred**
+The engine steps its whole simulation once per painted frame and its clock is calibrated to a
+93.6 ms frame (`docs/perf-method.md` §GAME SPEED IS THE FRAMERATE), so at ~105 ms the port plays at
+0.89× real time — and at the 48 ms target it would play at **1.95×**. The fix is a fixed-rate sim
+tick decoupled from painting. **Not started, and not to be started unasked** ("we'll keep pushing
+and eventually make the physics frame rate independent. But that's in the future"). Owed before
+the performance campaign can ship a frame much below ~93.6 ms. Gates to design against: the
+50 Hz body drain (`docs/amiga-arch.md`), `determinism` (must stay framerate-locked or be re-argued),
+and the faithfulness seam — it is a departure from the BBC and needs its own written argument.
 
 ### 🔧 The sound BY-EAR pass (`docs/phases.md` §5.4)
 Owed since sound landed, and the one thing in the project that **cannot be verified headlessly**.
