@@ -70,10 +70,18 @@ static const uint8_t  kDisplayBP  = kBP;
 /* COLOR00..03 for PF1, then COLOR09/10/11 for PF2.  COLOR08 is PF2's pen 0, which dual
    playfield never displays (it is the transparency that lets PF1 through), so it is not
    written at all. */
-#define PAL_WORDS       7
+#define PAL_BASE_WORDS  7
 #else
 #define IDX_BPL_WORDS   4                       /* 2 interleaved planes */
-#define PAL_WORDS       4                       /* COLOR00..03 */
+#define PAL_BASE_WORDS  4                       /* COLOR00..03 */
+#endif
+#ifdef REVS_NEEDLE_PLANES
+/* ...then COLOR21 and COLOR25: pen 1 of sprite pairs 2/3 (the rev needle) and 4/5 (the steering
+   mark), PER BAND, because the rev needle crosses the band 3/4 boundary at display line 166 and
+   its colour is whatever the game's palette makes its BBC pen in each band (revs_plot.h §12d). */
+#define PAL_WORDS       (PAL_BASE_WORDS + 2)
+#else
+#define PAL_WORDS       PAL_BASE_WORDS
 #endif
 #define IDX_BPL         (IDX_PLAYFIELD + 3)
 #define IDX_TOPPAL      (IDX_BPL + IDX_BPL_WORDS)  /* the palette for display line 0 */
@@ -674,6 +682,17 @@ void RevsScreen::initialize()
     for (unsigned s = 0; s < 8; s++)
         m_copper->showSprite(IDX_SPRITES + s * 2, (uint16_t)s, *m_nullSprite);
 
+#ifdef REVS_NEEDLE_PLANES
+    /* ⭐ THE NEEDLE IMAGES' CHIP POOL, allocated HERE and never inside a frame (a chip-RAM
+       allocation mid-race is a multi-second freeze).  ~233 images over every input the game can
+       produce, the largest a 32 x 29 pair: 20 K words covers them with room, and
+       `g_needlePoolFull` counts an image that did not fit (it is then not shown). */
+    {
+        const unsigned long words = 20480u;
+        unsigned short* pool = (unsigned short*)AllocMem(words * 2u, MEMF_CHIP | MEMF_CLEAR);
+        revs_needle_pool(pool, pool ? words : 0u);
+    }
+#endif
 #ifdef REVS_TYRE_SPRITES
     /* ⭐ TWO CHANNELS, TWO IMAGES EACH.  A channel shows one horizontal position per line and the
        two wheel arches are 304 pixels apart, so one channel cannot carry both sides however the
@@ -740,6 +759,10 @@ void RevsScreen::initialize()
 #ifdef REVS_DUAL_PLAYFIELD
     for (unsigned pen = 1; pen < 4; pen++)
         d[IDX_TOPPAL + 3 + pen] = copperMove(color00 + ((8u + pen) << 1), 0x000);
+#endif
+#ifdef REVS_NEEDLE_PLANES
+    d[IDX_TOPPAL + PAL_BASE_WORDS + 0] = copperMove(color00 + (21u << 1), 0x000);
+    d[IDX_TOPPAL + PAL_BASE_WORDS + 1] = copperMove(color00 + (25u << 1), 0x000);
 #endif
 
     /* ⭐ LAST LINE OF THE FUNCTION, deliberately: this is what opens the scene to the VERTB
@@ -1140,6 +1163,19 @@ void RevsScreen::buildBands()
         d[at + 6] = copperMove(color00 + (11u << 1),
                                bbcColour(s.palette[rec][kLogicalForPen[0]]));
 #endif
+#ifdef REVS_NEEDLE_PLANES
+        /* ⭐ THE NEEDLE SPRITES' PENS, from the same band record as the playfields — so a needle
+           pixel is exactly the colour the BBC's own plotted pixel would have been on this line.
+           $FF (no image built yet) leaves the pen black; nothing shows until an image does. */
+        {
+            unsigned k;
+            for (k = 0; k < 2u; k++) {
+                const unsigned pen = g_needlePen[k];
+                d[at + PAL_BASE_WORDS + k] = copperMove(color00 + ((k ? 25u : 21u) << 1),
+                    pen < 4u ? bbcColour(s.palette[rec][kLogicalForPen[pen]]) : 0x000);
+            }
+        }
+#endif
 #ifdef REVS_TYRE_SPRITES
         /* ⭐ The tyre patch lives at display lines 130..140, so whichever band covers line 130 is
            the one whose pens the sprites must use.  Taken from the same record as the playfield's
@@ -1216,6 +1252,23 @@ void RevsScreen::present()
         const unsigned ph = g_tyrePhase & 1u;
         m_copper->showSprite(IDX_SPRITES + 0, 0, *m_tyre[0][ph]);
         m_copper->showSprite(IDX_SPRITES + 2, 1, *m_tyre[1][ph]);
+    }
+#endif
+#ifdef REVS_NEEDLE_PLANES
+    /* ⭐⭐ THE TWO NEEDLES: FOUR POINTER WRITES.  The images were chosen at this frame's decode
+       tail (revs_needle_paint), so they belong to the buffer just flipped on — the BBC's needle
+       and its terrain were one frame buffer, and here they are one flip.  A channel with no
+       image shows the empty sprite.  ⚠ MODE 7 has no needles (revs_plot_target(0) clears them). */
+    {
+        unsigned k;
+        for (k = 0; k < REVS_NEEDLE_CHANNELS; k++) {
+            const unsigned short* img = tt_active() ? 0 : revs_needle_sprite(k);
+            const uint32_t a  = (uint32_t)(img ? img : m_nullSprite->data());
+            const unsigned ch = REVS_NEEDLE_CHANNEL0 + k;
+            uint32_t* const d = m_copper->data();
+            d[IDX_SPRITES + ch * 2u]      = copperMove(0x120u + (ch << 2), (uint16_t)(a >> 16));
+            d[IDX_SPRITES + ch * 2u + 1u] = copperMove(0x122u + (ch << 2), (uint16_t)a);
+        }
     }
 #endif
 }
@@ -1592,27 +1645,12 @@ static int revs_cockpit_runs(void)
    ⚠ `make DUALPFCHECK=1` IS THE COMPLETENESS GATE, every painted frame over all 41 lines x 40
    cells.  It found this list: the first cut refreshed edge strips only and read 203 mismatches
    at display line 157 cell 17 — the steering mark, which is nowhere near an edge. */
-/* ⚠ THE NEEDLE RECTANGLE IS DERIVED FROM THE PAINTER'S OWN COLUMN, never from a census.  A
-   needle ROTATES, so what a run happens to touch is not its range — and the run that sized this
-   by hand drove in a STRAIGHT LINE, which leaves the steering mark almost still (measured: one
-   cell, one frame in 31).  `REVS_NEEDLE_Y0`/`_C0`/`_CELLS` are the bound the DDA is clipped to,
-   so they are the bound PF2 must keep out of; a hand-written 129..157 x 16..23 was short on
-   both axes. */
+/* ⭐ THE CELLS OF 117..157 THIS LAYER LEAVES TRANSPARENT FOR SOMEONE ELSE.  There used to be a
+   needle column here (cells 12..27 of 128..157, the §12d painter's PF1 hole); the needles are
+   prerendered SPRITES now (revs_plot.h §12d), in front of both playfields, so the dial art under
+   them is ordinary static cockpit and this layer paints it like the rest of the car. */
 static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
-    /* ⭐ THE REV-COUNTER / STEERING COLUMN stays transparent because a PAINTER owns it: the
-       needle writes these plane bytes itself, in both buffers, over a cached clean-cockpit base
-       (§12d) — and with §2a's rows owned that base is now laid down in full at every rebase
-       (RevsPlot.cpp §ndlBaseBlitBoth), which is what keeps the art the needle never sweeps. */
-#ifdef REVS_NEEDLE_PLANES
-    { REVS_NEEDLE_Y0, COCK_Y1,
-      REVS_NEEDLE_C0, REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS - 1u },
-#else
-    /* ⚠ `NEEDLE=0` — the needle is back in `mem[]`, so the column is not a painter's and the
-       layer must PAINT it rather than leave it transparent.  The rectangle is the DDA's own clip
-       bound either way; without the geometry painter those constants do not exist, and a
-       hand-written substitute would be the very census-derived guess the comment above rejects.
-       The control arm therefore simply has no dynamic needle rectangle. */
-#endif
+    { 1u, 0u, 0u, 0u },   /* never matches (y0 > y1): keeps the table non-empty in every build */
     /* ⭐⭐ THE FRONT-WHEEL DITHER IS NOT DYNAMIC ANY MORE — `TYRESPRITE=1` makes the wheels a
        SPRITE, so `tick_wheel_spin` no longer EORs `mem[]` (revs_native.c §tick_wheel_spin) and
        the art underneath is static like the rest of the car.  ⇒ the layer PAINTS it, and two of
@@ -1624,8 +1662,8 @@ static const struct { unsigned char y0, y1, c0, c1; } s_cockDyn[] = {
     /* ⭐⭐ THE WING MIRRORS ARE NOT A HOLE EITHER: a reflection is cockpit, so it is painted ON
        THIS LAYER — `mirror_draw_car` writes one opaque PF2 byte pair per store through
        `REVS_COCKPIT_BYTE` (§12f-iv), and the static art around it comes from the rebuild like the
-       rest of the car.  ⇒ every cell of 117..157 now has exactly one owner, and the only
-       transparent window left is the needle's own column above. */
+       rest of the car.  ⇒ every cell of 117..157 now has exactly one owner, and with the
+       needles on sprites no transparent window is left at all. */
 };
 #define COCK_DYNS (sizeof s_cockDyn / sizeof s_cockDyn[0])
 
@@ -2282,19 +2320,10 @@ void RevsScreen::prepareFrame()
             unsigned c;
             if (m_lineMode[y] != 5u) continue;
             for (c = 0; c < BBC_SCREEN_CELLS; c++) {
-#ifdef REVS_NEEDLE_PLANES
-                /* ⚠⚠ THE ONE PLACE mem[] STOPS BEING THE REFERENCE.  With the needles painted
-                   from GEOMETRY (§12d) `plot_line_octant` no longer writes the frame buffer, so
-                   expanding `mem[]` over the needle column yields a picture with no needle in
-                   it — the composite is RIGHT and the reference is stale.  Measured: 198
-                   mismatches, all of them here, first at display line 129 cell 20.  That column
-                   has its own oracle (`NEEDLECHECK=1`), which is why this one steps around it
-                   rather than being widened. */
-                if (y >= REVS_NEEDLE_Y0 &&
-                    c >= REVS_NEEDLE_C0 && c < REVS_NEEDLE_C0 + REVS_NEEDLE_CELLS) continue;
-#endif
-                /* ⭐⭐⭐ ...AND THE SECOND PLACE `mem[]` STOPS BEING THE REFERENCE, which is the
-                   whole terrain half of this band.  PF1's cells inside the two runs are painted
+                /* ⭐⭐⭐ THE PLACE `mem[]` STOPS BEING THE REFERENCE, which is the whole terrain
+                   half of this band.  (The needle column used to be a second one; the needles
+                   are sprites now, never in `mem[]` or either plane, so the dial art under them
+                   is checked here like the rest of the car.)  PF1's cells inside the two runs are painted
                    by the SPAN SWEEP, which runs after present()'s flip — so the bytes in this
                    buffer describe an earlier `mem[]` than the one being read here.  While the
                    conversion still ran every frame it re-expanded them and hid the skew; with
@@ -2346,11 +2375,10 @@ void RevsScreen::prepareFrame()
 #endif
     REVS_PLOT_RECTS_RUN();
 
-    /* ⭐⭐⭐ §12d — AND THE TWO DASH NEEDLES, LAST OF ALL.  The list was filled by
+    /* ⭐⭐⭐ §12d — AND THE TWO DASH NEEDLES: choose each mark's prerendered sprite image (and
+       build it, the first time its pixel list is seen).  The list was filled by
        `draw_dash_needles`, `race_main_loop`'s closing draw, so it describes the same game frame
-       the conversion above just painted; it goes on last because the conversion may well have
-       repainted a line of the needle column out of `mem[]` (128..157 are the view sweep's).
-       Erase, draw, remember — revs_plot.h §12d. */
+       this decode prepared; `present()` shows the images with that frame's flip. */
     REVS_NEEDLE_PAINT();
 
 #ifdef REVS_TYRE_SPRITES

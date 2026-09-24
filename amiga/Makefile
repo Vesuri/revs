@@ -1007,48 +1007,40 @@ EXTRA_DEFINES += -DREVS_TYRE_SPRITES
 PROBE_SYMS_TYRE = g_tyreBuilds g_tyrePeriodBad g_tyrePhase g_tyreZeroAnim
 endif
 
-# ⭐⭐⭐ `make NEEDLE=1` — THE TWO DASH NEEDLES STRAIGHT INTO THE PLANES (§12d, user directive).
-# `plot_line_octant` stops reading and writing the frame buffer and stops filling the 248-entry
-# undo list `undraw_plot_lines` replayed backwards every frame; it appends (address, mask index)
-# instead, and the renderer paints those pixels into the plane pair at the end of the decode.
-# Last frame's mark is erased by copying the needle column's BOUNDING RECTANGLE back out of a
-# cached expansion of the clean cockpit — 32 Amiga pixels to a group, one aligned plane longword,
-# so the erase is a run of `move.l` and nothing else.
-# ⚠⚠ THE INVARIANT: `mem[]` under the needle never changes.  That is what makes the cached
-# backdrop legal AND what stops the dirty decode repainting over the mark.  `make NEEDLECHECK=1`
-# is its oracle — the column is re-expanded from `mem[]` every painted frame and compared against
-# the cache, so a writer with no rectangle of its own shows up on the frame it writes.
-# ⚠ THREE COUNTERS MUST READ 0: `g_needleOutside` (a pixel outside the column, which the
-# rectangle copy could never erase — the column is the DDA's arithmetic bound, not the sampled
-# footprint), `g_needleMaskBad` (the game's two mask tables not pixel-aligned, which is what
-# licenses turning the byte OR into two plane bits) and `g_needleOverflow`.
+# ⭐⭐⭐ `make NEEDLE=1` — THE TWO DASH NEEDLES AS PRERENDERED HARDWARE SPRITES (§12d, user
+# directive: "drawn either to the second playfield or to sprites ... in no case anything to do
+# with the terrain rendering").  `plot_line_octant` stops reading and writing the frame buffer and
+# stops filling the undo list `undraw_plot_lines` replayed every frame; it appends (position, mask
+# index) instead, and the renderer turns each mark's list into a sprite image the first time it
+# sees it — 118 rev-needle and 115 steering-mark images over every input, the largest 32 x 29 —
+# so a frame costs a hash and four sprite-pointer writes.  Neither playfield holds a needle pixel.
+# ⚠ COUNTERS THAT MUST READ 0: `g_needleOutside` (a pixel off the display), `g_needleMaskBad` (the
+# game's two mask tables not pixel-aligned), `g_needleOverflow`, `g_needlePoolFull`,
+# `g_needleTooWide` and `g_needleColourBad`.  `g_needleRenders` is the images built (~233 a
+# session, then flat).  amiga/needle_probe.gdb prints them.
 # ⭐ Amiga only by construction: the host keeps the faithful undo-list plotter, so `make validate`
 # and every `determinism` trajectory are untouched.
-# ⭐⭐⭐ AND IT IS WHAT MAKES DISPLAY LINES 158..191 OWNABLE — the decode's second-biggest prize,
-# ~2.9 ms (docs/open-work.md 2d).  With the needles off `mem[]` and the wing mirrors mirrored at
-# their store site, the delta domain's third block turns on with this switch and `convertRace`
-# stops scanning 34 rows.  `make DELTACHECK=1` is the staleness oracle over all three blocks;
-# ⚠ it deliberately does NOT cover the needle column, which has NEEDLECHECK's two instead.
-# ⭐ DEFAULT ON since 2026-09-21: six gates green, and measured -0.98 ms of ph27 / -0.80 ms of
-# Sigma(1..39)-ph28 as the default flip, -1.21 / -1.39 alongside DUALPF=1.  ⚠ Size it against
-# Sigma-ph28: the raw frame total reads +0.08 because ph28, the 50/N vblank pad, absorbs it.
-# It is also a PRECONDITION of LOWOWN=1 (revs_native.c #errors on it) — plot_line_octant writes
-# display lines 129..157, and an owned line is painted by the renderer alone.
+# ⭐⭐⭐ It is what makes display lines 158..191 OWNABLE (the delta domain's third block turns on with
+# this switch) and what lets the cockpit layer paint the dial art under the needles, so PF1 has no
+# hole anywhere.  A PRECONDITION of LOWOWN=1 (revs_native.c #errors on it).
 NEEDLE ?= 1
 ifeq ($(NEEDLE),1)
 EXTRA_DEFINES += -DREVS_NEEDLE_PLANES
-PROBE_SYMS_NEEDLE = g_needleOutside g_needleMaskBad g_needleOverflow \
-                    g_needlePaints g_needleBases g_needlePixLast g_needleLwLast
+PROBE_SYMS_NEEDLE = g_needleOutside g_needleMaskBad g_needleOverflow g_needlePaints \
+                    g_needleRenders g_needlePoolFull g_needleTooWide g_needleColourBad \
+                    g_needlePixLast g_needlePen
+# ⭐⭐ `make NEEDLECHECK=1` — every shown sprite image against the pixel list it was chosen for,
+# by a second route (RevsPlot.cpp §ndlSpriteCheck): each listed pixel's two bits present, and NO
+# other bit.  `g_needleSpriteMismatch` must be 0.
 ifeq ($(NEEDLECHECK),1)
 EXTRA_DEFINES += -DREVS_NEEDLE_CHECK
-PROBE_SYMS_NEEDLECHK = g_needleBaseChecks g_needleBaseMismatch g_needleBaseMismatchAt \
-                       g_needleRestoreChecks g_needleRestoreMismatch g_needleRestoreMismatchAt
+PROBE_SYMS_NEEDLECHK = g_needleSpriteChecks g_needleSpriteMismatch
 endif
-# ⭐⭐⭐ `make NEEDLEVERIFY=1` — THE PAINTER AGAINST THE DECODE, pixel for pixel, in process.
-# `plot_line_octant` takes BOTH arms of its pixel site, so the decode converts the real needle
-# out of `mem[]` and the painter's own answer is compared against it instead of being drawn.
-# `g_needleVerifyMismatch` must be 0.  ⚠ Its scope is the DRAW; the erase's gates are
-# NEEDLECHECK's two.  Diagnostic only — the mem[] plot is live, so quote no framerate from it.
+# ⭐⭐⭐ `make NEEDLEVERIFY=1` — THE LIST AGAINST THE BBC'S OWN PLOT, pixel for pixel, in process.
+# `plot_line_octant` takes BOTH arms of its pixel site, so the undo list the 6502 path fills and
+# the pixel list are built in the same loop iteration; each entry's address and plotted colour
+# must match.  With NEEDLECHECK (image == list) that closes the chain from the BBC's plot to the
+# sprite.  `g_needleVerifyMismatch` must be 0.  Diagnostic only — quote no framerate from it.
 ifeq ($(NEEDLEVERIFY),1)
 EXTRA_DEFINES += -DREVS_NEEDLE_VERIFY
 PROBE_SYMS_NEEDLEVFY = g_needleVerifyChecks g_needleVerifyMismatch g_needleVerifyMismatchAt

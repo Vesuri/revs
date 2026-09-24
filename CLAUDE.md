@@ -572,8 +572,10 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   the one MEASUREMENT in them: a cross-TU call placed in a writer's own loop is an aliasing barrier
   and cost **+3.45 ms**, so a retarget must be inline or the writer must be retargeted wholesale.
   ⭐ The live shape is neither a mirror nor a per-store retarget: the writer stops writing `mem[]`
-  and hands the renderer its GEOMETRY (§12d's needles — a pixel list and a rectangle copy), which
-  has no per-store term, no undo list and no `mem[]` traffic at all.
+  and hands the renderer its GEOMETRY (§12d's needles — a pixel list, turned into a PRERENDERED
+  HARDWARE SPRITE on first sight), which has no per-store term, no undo list, no `mem[]` traffic
+  and nothing in either playfield. ⭐ **Anything that moves over the cockpit belongs on a sprite or
+  on PF2, never in the terrain's PF1** (user directive) — a hole in PF1 taxes every terrain painter.
   ⚠⚠ **And the arithmetic error that made the needles look like −4.67 is the transferable half: A
   MEASURED DELTA BELONGS TO EVERYTHING THAT CHANGED BETWEEN ITS TWO ARMS, so name what else moved
   before quoting it as one part's price.** §11d's headline −5.44 ms is arm B − arm 0, and arm B owns

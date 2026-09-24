@@ -12,6 +12,8 @@
    redeclares them incompatibly and the build fails.  The fixed-width names below come from it. */
 #include "../bbc_screen.h"
 #include "../../cpu/mem_decl.h"
+#include "../../cpu/m68k_math.h"   /* the 68000 has NO 32-bit mul/div (make muldiv-audit) */
+#include "../../gen/mem.h"         /* MEM_<name> offsets — NEEDLEVERIFY reads the undo list */
 
 extern "C" MEM_QUAL uint8_t mem[65536];
 
@@ -1336,14 +1338,14 @@ static void plotDeltaCheck(void)
                 const uint8_t v  = *src;
                 const uint8_t lo = (kind == 4u) ? (uint8_t)0 : g_bbcExpandLo[v];
                 const uint8_t hi = (kind == 4u) ? v           : g_bbcExpandHi[v];
-#ifdef REVS_NEEDLE_PLANES
-                /* ⚠⚠ THE NEEDLE COLUMN IS NOT THIS ORACLE'S — STATED SCOPE, NOT A HOLE.  §12d
-                   paints pixels there that are deliberately absent from `mem[]`, so comparing
-                   the buffers against `mem[]` would fire on every needle pixel.  That region has
-                   two oracles of its own (`make NEEDLECHECK=1`: the cached cockpit against
-                   `mem[]`, and the column against the cache after the erase). */
-                if ((unsigned)(y - REVS_NEEDLE_Y0) < REVS_NEEDLE_YN &&
-                    (unsigned)(c - REVS_NEEDLE_C0) < REVS_NEEDLE_CELLS) continue;
+#ifdef REVS_PLOT_RECTS
+                /* ⚠ THE RECTANGLE COLUMN IS NOT THIS ORACLE'S — kDynRect[0] is re-expanded into
+                   the DRAWN buffer only, every painted frame, so the other buffer is a frame
+                   behind by design; `plotRectCheck` is its oracle.  (The needles themselves are
+                   sprites now and in neither buffer, so the rest of the old needle column is
+                   checked here like any other owned cell.) */
+                if (y >= kDynRect[0].y0 && y <= kDynRect[0].y1 &&
+                    c >= kDynRect[0].c0 && c <= kDynRect[0].c1) continue;
 #endif
                 if (s_plane[0][rowOff + c] != lo || s_plane[0][rowOff + c + kPlaneGap] != hi ||
                     s_plane[1][rowOff + c] != lo || s_plane[1][rowOff + c + kPlaneGap] != hi) {
@@ -1383,89 +1385,53 @@ extern "C" void revs_plot_byte(unsigned short addr, unsigned char value)
 }
 #endif /* REVS_PLOT_DELTA */
 
-/* ═══ §12d — THE TWO DASH NEEDLES ══════════════════════════════════════════════════════════
-   revs_plot.h carries the design and the invariant this rests on.  In one line: the needle is
-   a list of pixels now, the cockpit under it never changes, and last frame's mark is erased by
-   copying longwords back out of a cached expansion of that cockpit. */
+/* ═══ §12d — THE TWO DASH NEEDLES, AS PRERENDERED SPRITES ════════════════════════════════════
+   revs_plot.h carries the design.  In one line: a mark's pixel list is rendered ONCE into a
+   hardware sprite image, positioned by its own control words, and after that choosing it is the
+   whole per-frame cost — neither playfield is touched and nothing is ever erased. */
 #ifdef REVS_NEEDLE_PLANES
-
-/* ⭐⭐ THE NEEDLE COLUMN — display lines 128..191, BBC cells 12..27.
-   Both needles live in it.  The rev counter's pivot is cell 19/20 of display line 168 (the
-   game's own `dial_needle_origin_lo_tbl` $66 $67 $5F $5E masked to $F8, over page $75) and the
-   steering-wheel mark sits around cell 20 of character rows 16..20; `make DASHBARE=1` enumerated
-   the pair over a driving window at lines 129..191 x cells 16..23.  ⭐ The column is WIDER than
-   that enumeration on purpose — the DDA runs at most 28 steps and a step is one BBC pixel, so
-   seven cells either side of the pivot is the ARITHMETIC bound and the enumeration is only a
-   sample of it (CLAUDE.md: enumerate a footprint, never sample it).  `g_needleOutside` is what
-   settles the difference on the target, and it must read 0.
-   ⚠ 12 and 16 are both multiples of 4, so a group is one aligned plane longword — the "32 pixel
-   granularity" the copy is built on. */
-#define NDL_Y0        128u
-#define NDL_YN         64u                    /* ...through 191 */
-#define NDL_C0         12u                    /* first cell = first plane byte */
-#define NDL_GROUPS      4u                    /* 32 Amiga pixels each */
-#define NDL_CELLS      (NDL_GROUPS * 4u)      /* cells 12..27 */
 
 extern "C" {
 unsigned short g_needlePo[REVS_NEEDLE_MAX];
 unsigned short g_needlePix[REVS_NEEDLE_MAX];
-unsigned char  g_needleRect[REVS_NEEDLE_MARKS][4];
 unsigned char  g_needleCount;
 unsigned char  g_needleMarkAt[REVS_NEEDLE_MARKS];
 unsigned char  g_needleMarks;
+/* The BBC pen each mark draws in, $FF until its first image is built — `buildBands` turns it into
+   the sprite pair's colour from each raster band's own palette record. */
+unsigned char  g_needlePen[2] = { 0xFFu, 0xFFu };
 }
 #ifdef REVS_SPAN_STATS
 extern "C" {
-volatile unsigned long  g_needleOutside  = 0;
-volatile unsigned long  g_needleMaskBad  = 0;
-volatile unsigned long  g_needleOverflow = 0;
-volatile unsigned long  g_needlePaints   = 0;
-volatile unsigned long  g_needleBases    = 0;
-volatile unsigned short g_needlePixLast  = 0;
-volatile unsigned short g_needleLwLast   = 0;   /* longword pairs the erase copied, last frame */
+volatile unsigned long  g_needleOutside   = 0;
+volatile unsigned long  g_needleMaskBad   = 0;
+volatile unsigned long  g_needleOverflow  = 0;
+volatile unsigned long  g_needlePaints    = 0;
+volatile unsigned long  g_needleRenders   = 0;
+volatile unsigned long  g_needlePoolFull  = 0;
+volatile unsigned long  g_needleTooWide   = 0;
+volatile unsigned long  g_needleColourBad = 0;
+volatile unsigned short g_needlePixLast   = 0;
 }
 #define NDL_STAT(stmt) do { stmt; } while (0)
 #else
 #define NDL_STAT(stmt) ((void)0)
 #endif
 
-/* THE CLEAN COCKPIT — the column expanded from `mem[]`, plane 1's groups then plane 2's.
-   ⚠ Indexed as bytes when it is filled and as longwords when it is copied out, which is a
-   BLIT and never a value: the bytes go to the plane in the order they were written, so no byte
-   order can tell the difference.  (It is not an alias of `mem[]`; the endian rule is about
-   reading BBC bytes as a wide number, which nothing here does.) */
-static uint32_t s_ndlBase[NDL_YN][2][NDL_GROUPS];
-static uint8_t  s_ndlBased;
-static uint32_t s_ndlBandSig;                 /* the band record, as far as the cache cares */
-/* Last frame's marks, PER BUFFER — the two buffers alternate on screen and each carries its own.
-   An empty rectangle is y0 > y1, which is what `ndlRestoreRect` tests. */
-struct NdlRect { uint8_t y0, y1, g0, g1; };
-static NdlRect s_ndlRect[2][REVS_NEEDLE_MARKS];
-
-static void ndlTargetLost(void)
-{
-    unsigned b, m;
-    s_ndlBased = 0;
-    for (b = 0; b < 2u; b++)
-        for (m = 0; m < REVS_NEEDLE_MARKS; m++) { s_ndlRect[b][m].y0 = 0xFFu; s_ndlRect[b][m].y1 = 0u; }
-    g_needleCount = 0;
-    g_needleMarks = 0;
-}
-
 /* ⭐ THE PIXEL TRANSFORM, TAKEN FROM THE GAME'S OWN TWO TABLES rather than restated here.
    `plot_line_octant` computes `(background & pixel_keep_others_tbl[m]) | plot_line_colour_tbl[m]`
    with `m = ((x >> 1) & 3) | hypot_min_hi` — pixel index in the low two bits, and bit 2 selecting
    the rev needle's pattern ($80 $40 $20 $10, i.e. colour 2) from the steering mark's ($00, i.e.
    colour 0).  In MODE 5 pixel p owns bits 7-p (colour bit 1) and 3-p (colour bit 0), so that byte
-   operation is a per-pixel COLOUR REPLACEMENT and becomes two bits in each plane.
+   operation is a per-pixel COLOUR REPLACEMENT — one pixel, one pen.
    ⚠⚠ "Per-pixel" is the assumption the whole conversion rests on, so it is CHECKED, not assumed:
    `g_needleMaskBad` counts any entry whose keep-mask is not exactly the complement of its own
    pixel's two bits, or whose OR mask reaches outside them. */
 #define NDL_COLOUR_TBL 0x34F8u                /* plot_line_colour_tbl */
 #define NDL_KEEP_TBL   0x3FE8u                /* pixel_keep_others_tbl */
-/* ⭐ ONE table of eight 4-byte entries {and, lo, hi, -}, not three of eight bytes: the inner
-   loop then loads one base and three fixed displacements off it, where three separate arrays
-   cost three `lea`s of absolute addresses per pixel (measured — see the header). */
+/* Per mask index: {plane-1 bits, plane-2 bits, pen, -} for `NEEDLEVERIFY`'s comparison, and the
+   pen is what the sprite colour is taken from.  (Four bytes an entry because `g_needlePix` is
+   the index already scaled by four.) */
 static uint8_t s_ndlPix[8][4];
 static uint8_t s_ndlMasksBuilt;
 
@@ -1478,204 +1444,180 @@ static void ndlBuildMasks(void)
         const unsigned bits = 0xC0u >> (p << 1);      /* ...the same pixel, two Amiga pixels wide */
         const uint8_t  keep = mem[NDL_KEEP_TBL + i];
         const uint8_t  orm  = mem[NDL_COLOUR_TBL + i];
+        const unsigned b0   = (orm & (0x08u >> p)) ? 1u : 0u;      /* colour bit 0 */
+        const unsigned b1   = (orm & (0x80u >> p)) ? 1u : 0u;      /* colour bit 1 */
         if (keep != (uint8_t)~own || (orm & ~own) != 0u) NDL_STAT(g_needleMaskBad++);
-        s_ndlPix[i][0] = (uint8_t)~bits;
-        s_ndlPix[i][1] = (orm & (0x08u >> p)) ? (uint8_t)bits : (uint8_t)0u;   /* colour bit 0 */
-        s_ndlPix[i][2] = (orm & (0x80u >> p)) ? (uint8_t)bits : (uint8_t)0u;   /* colour bit 1 */
+        s_ndlPix[i][0] = b0 ? (uint8_t)bits : (uint8_t)0u;
+        s_ndlPix[i][1] = b1 ? (uint8_t)bits : (uint8_t)0u;
+        s_ndlPix[i][2] = (uint8_t)((b1 << 1) | b0);
         s_ndlPix[i][3] = 0u;
     }
     s_ndlMasksBuilt = 1;
 }
 
-/* ⭐⭐ THE BACKDROP'S STALENESS TEST, and it is a SIGNATURE rather than a per-line scan.
-   The cache depends on exactly two things: the `mem[]` bytes — which the invariant above says
-   never change — and the MODE each line of the column expands under.  A per-line kind table
-   answered that in 64 byte compares a frame and measured **0.62 ms**; this is five.
-   ⚠ THE MERGE IS THE WHOLE POINT, not a tidy-up: band 3's boundary IS THE HORIZON and it moves
-   with the hills every frame, while bands 2, 3 and 4 are all MODE 5 — so a signature over the
-   raw band list would re-expand 1024 cells every frame for a change that alters nothing here.
-   Adjacent bands of the same mode are therefore folded together before the boundary is hashed.
-   ⚠ Shifts, never `sig * 33`: a 32-bit multiply emits __mulsi3 and the 68000 has none. */
-static uint32_t ndlBandSig(void)
+/* ── the images ──────────────────────────────────────────────────────────────────────────────
+   ⭐ WHERE A SPRITE LANDS, and both constants are measured, not derived: DIWSTRT is $2C81, so
+   display line 0 is hardware line $2C, and a sprite whose HSTART is $80 lands on the playfield's
+   first pixel (RevsScreen.cpp §the tyre sprites — at $81 every pixel straddled a MODE 5 pair). */
+#define NDL_SPR_V0   0x2Cu
+#define NDL_SPR_H0   0x80u
+#define NDL_SLOTS    256u                     /* per mark; a power of two — 118 and 115 are used */
+
+struct NdlImg {
+    uint32_t  hash;
+    uint16_t  first, last;                    /* the list's first and last `po`, beside the hash */
+    uint8_t   n, used;
+    uint16_t* ch[2];                          /* a sprite pair's two images, or 0 */
+};
+static NdlImg          s_ndlImg[2][NDL_SLOTS];
+static uint16_t*       s_ndlPool;
+static uint32_t        s_ndlPoolWords, s_ndlPoolUsed;
+static const uint16_t* s_ndlShow[REVS_NEEDLE_CHANNELS];
+
+extern "C" void revs_needle_pool(unsigned short* pool, unsigned long words)
 {
-    uint32_t sig = 0;
-    unsigned n, prev = 0xFFu;
-    for (n = 0; n < s_bandCount; n++) {
-        const unsigned m = (s_bandMode[n] == 4u) ? 4u : 5u;
-        int f = (int)s_bandFirst[n];
-        if (m == prev) continue;                       /* same mode: the boundary is invisible */
-        prev = m;
-        if (f < (int)NDL_Y0)                f = (int)NDL_Y0;
-        if (f > (int)(NDL_Y0 + NDL_YN))     f = (int)(NDL_Y0 + NDL_YN);
-        sig = ((sig << 5) ^ (sig >> 27)) ^ (uint32_t)(((unsigned)f << 3) | m);
+    s_ndlPool = pool; s_ndlPoolWords = words; s_ndlPoolUsed = 0;
+}
+
+extern "C" const unsigned short* revs_needle_sprite(unsigned k)
+{
+    return k < REVS_NEEDLE_CHANNELS ? s_ndlShow[k] : 0;
+}
+
+static void ndlTargetLost(void)
+{
+    unsigned k;
+    for (k = 0; k < REVS_NEEDLE_CHANNELS; k++) s_ndlShow[k] = 0;
+    g_needleCount = 0;
+    g_needleMarks = 0;
+}
+
+/* A mark's list, reduced to a word.  Rotate-and-XOR — ⚠ never a multiply, which the 68000 does
+   not have at 32 bits (`make muldiv-audit`). */
+static uint32_t ndlHash(unsigned i0, unsigned n)
+{
+    uint32_t h = n;
+    unsigned i;
+    for (i = i0; i < i0 + n; i++)
+        h = ((h << 7) | (h >> 25)) ^ (((uint32_t)g_needlePo[i] << 3) | (g_needlePix[i] >> 2));
+    return h;
+}
+
+/* Build the image for one mark into the pool: a sprite pair, 16 Amiga pixels a channel, pen 1
+   wherever the list has a pixel.  Runs once per distinct image (~233 a session), never per frame. */
+static void ndlRender(unsigned m, unsigned i0, unsigned n, NdlImg* e)
+{
+    unsigned i, k, x0 = 0xFFFFu, x1 = 0, y0 = 0xFFFFu, y1 = 0, h, nch, words;
+    NDL_STAT(g_needleRenders++);
+    e->ch[0] = e->ch[1] = 0;
+    for (i = i0; i < i0 + n; i++) {
+        const unsigned y   = revs_divu16(g_needlePo[i], REVS_NEEDLE_LINE_STRIDE);
+        const unsigned c   = g_needlePo[i] - revs_mulu16((uint16_t)y, REVS_NEEDLE_LINE_STRIDE);
+        const unsigned x   = (c << 3) + (((unsigned)g_needlePix[i] >> 1) & 6u);   /* p * 2 */
+        const unsigned pen = s_ndlPix[g_needlePix[i] >> 2][2];
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+        if (x < x0) x0 = x;
+        if (x + 1u > x1) x1 = x + 1u;
+        if (g_needlePen[m] == 0xFFu) g_needlePen[m] = (unsigned char)pen;
+        else if (g_needlePen[m] != pen) NDL_STAT(g_needleColourBad++);
     }
-    return sig;
-}
-
-/* One line of the column, out of `mem[]`.  ⚠ Shifts, never a multiply: `row * 320` with a
-   runtime operand emits __mulsi3 and the 68000 has none (`make muldiv-audit` fails the link). */
-static void ndlBaseRow(unsigned y)
-{
-    const unsigned row = y >> 3;
-    MEM_QUAL const uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6))
-                                + (y & 7u) + (NDL_C0 << 3);
-    uint8_t* const lo = (uint8_t*)(void*)&s_ndlBase[y - NDL_Y0][0][0];
-    uint8_t* const hi = (uint8_t*)(void*)&s_ndlBase[y - NDL_Y0][1][0];
-    const int mode4 = (plotModeOf(y) == 4u);            /* a rebase only — five compares */
-    unsigned c;
-    for (c = 0; c < NDL_CELLS; c++, src += BBC_SCREEN_LINES) {
-        const uint8_t v = *src;
-        if (mode4) { lo[c] = 0u;                 hi[c] = v; }
-        else       { lo[c] = g_bbcExpandLo[v];   hi[c] = g_bbcExpandHi[v]; }
+    if (!n) return;
+    if (x1 - x0 >= 32u) { NDL_STAT(g_needleTooWide++); x1 = x0 + 31u; }
+    nch   = (x1 - x0 >= 16u) ? 2u : 1u;
+    h     = y1 - y0 + 1u;
+    words = (2u + 2u * h + 2u) << (nch - 1u);                  /* x nch — ⚠ never a multiply */
+    if (!s_ndlPool || s_ndlPoolUsed + words > s_ndlPoolWords) { NDL_STAT(g_needlePoolFull++); return; }
+    for (k = 0; k < nch; k++) {
+        uint16_t* const d = s_ndlPool + s_ndlPoolUsed;
+        const unsigned V = NDL_SPR_V0 + y0, E = V + h, H = NDL_SPR_H0 + x0 + (k << 4);
+        unsigned w;
+        s_ndlPoolUsed += 2u + 2u * h + 2u;
+        d[0] = (uint16_t)(((V & 0xFFu) << 8) | ((H >> 1) & 0xFFu));
+        d[1] = (uint16_t)(((E & 0xFFu) << 8) | (((V >> 8) & 1u) << 2) | (((E >> 8) & 1u) << 1)
+                          | (H & 1u));
+        for (w = 2; w < 2u + 2u * h + 2u; w++) d[w] = 0;       /* lines, then the 0,0 end */
+        e->ch[k] = d;
     }
-}
-
-static void ndlRestoreRect(uint8_t* plane, NdlRect* r);
-
-/* ⭐⭐⭐ §12f-iii — LAY THE WHOLE CLEAN COLUMN INTO BOTH BUFFERS, ONCE PER REBASE.  The needle's
-   own erase only restores the rectangles it DIRTIED, which is right while the decode owns these
-   rows and paints everything else.  Once §2a claims display lines 117..157 the decode stops, and
-   then nobody paints the part of the column the needle never reached — the dash art around the
-   rev counter goes stale in whatever the buffers last held.
-   ⭐ The cache is already the answer: `s_ndlBase` is the CLEAN cockpit for the whole column,
-   expanded from `mem[]` (which the dashboard painter still fills), so one full-rectangle restore
-   into each buffer is the base — no new expansion path, no second copy of the geometry.
-   ⚠ Per REBASE, not per frame: `ndlBase` runs on the first paint and when the band schedule moves
-   the column's MODE, so this is ~2 KB a few times a session against 480 cells a frame if the
-   whole rectangle were repainted.
-   ⚠ BOTH BUFFERS, because the needle's erase is cross-frame stateful (revs_plot.h §delta): a base
-   in one buffer only would leave the other showing two-frame-old art wherever the needle has not
-   swept. */
-static void ndlBaseBlitBoth(void)
-{
-    unsigned b;
-    for (b = 0; b < 2u; b++) {
-        NdlRect all;
-        if (!s_plane[b]) continue;
-        all.y0 = (unsigned char)NDL_Y0;
-        all.y1 = (unsigned char)(NDL_Y0 + NDL_YN - 1u);
-        all.g0 = 0u;
-        all.g1 = (unsigned char)(NDL_GROUPS - 1u);
-        ndlRestoreRect(s_plane[b], &all);        /* ⚠ takes a LOCAL: it empties the rect it copies */
-    }
-}
-
-static void ndlBase(void)
-{
-    unsigned y;
-    for (y = 0; y < NDL_YN; y++) ndlBaseRow(NDL_Y0 + y);
-    s_ndlBased = 1;
-    NDL_STAT(g_needleBases++);
-    ndlBaseBlitBoth();
-}
-
-/* ⭐⭐ THE ERASE — the whole of it.  `move.l` out of the clean cockpit and nothing else: no undo
-   list, no saved bytes, no second pass over the pixels, and no read of the screen.
-   ⚠ THE LOOP SHAPE IS PART OF THE MEASUREMENT.  Written with the indices inside — `d[g]`,
-   `s[NDL_GROUPS + g]` off two 2-D bases recomputed per line — it cost ~128 cycles for a pair of
-   longwords, because every one of the four accesses re-derived its address.  The ADVANCING
-   pointers are the only copies here: one line of the cache is `2 * NDL_GROUPS` longwords and one
-   line of the plane pair is twenty, so both walk by a constant.
-   ⚠ Both are aligned by construction: a row base is `y * 80` off an 8-byte-aligned chip
-   allocation, NDL_C0 is a multiple of 4, and the two planes are forty bytes = ten longwords
-   apart. */
-static void ndlRestoreRect(uint8_t* plane, NdlRect* r)
-{
-    unsigned lines, wide;
-    uint32_t* d;
-    const uint32_t* sp;
-    /* Empty is y0 > y1 — and the `< NDL_Y0` half is not belt and braces: static storage starts
-       ZEROED, so without it the very first call would index the cache at `0 - NDL_Y0`. */
-    if (r->y0 < NDL_Y0 || r->y0 > r->y1) return;
-    lines = (unsigned)(r->y1 - r->y0) + 1u;
-    wide  = (unsigned)(r->g1 - r->g0) + 1u;
-    NDL_STAT(g_needleLwLast = (unsigned short)(g_needleLwLast + lines * wide));
-    d  = (uint32_t*)(void*)(plane + ((unsigned)r->y0 << 6) + ((unsigned)r->y0 << 4) + NDL_C0)
-       + r->g0;
-    sp = &s_ndlBase[r->y0 - NDL_Y0][0][r->g0];
-    do {
-        uint32_t*       dd = d;
-        const uint32_t* ss = sp;
-        unsigned        g  = wide;
-        do {
-            dd[0]  = ss[0];              /* plane 1 */
-            dd[10] = ss[NDL_GROUPS];     /* plane 2, forty bytes on */
-            dd++; ss++;
-        } while (--g);
-        d  += 20u;                       /* one display line of the plane pair  */
-        sp += 2u * NDL_GROUPS;           /* ...and one of the cache             */
-    } while (--lines);
-    r->y0 = 0xFFu;                       /* this buffer now holds no mark here */
-    r->y1 = 0u;
-}
-
-#ifdef REVS_NEEDLE_CHECK
-extern "C" {
-volatile unsigned long  g_needleBaseChecks        = 0;
-volatile unsigned long  g_needleBaseMismatch      = 0;
-volatile unsigned short g_needleBaseMismatchAt    = 0xFFFFu;
-volatile unsigned long  g_needleRestoreChecks     = 0;
-volatile unsigned long  g_needleRestoreMismatch   = 0;
-volatile unsigned short g_needleRestoreMismatchAt = 0xFFFFu;
-}
-/* ⭐⭐ THE ONE THING THIS MECHANISM OWES: that the cockpit under the needle really is static.
-   Re-expand the column from `mem[]` every painted frame and compare it against the cache — so a
-   routine that writes here with no rectangle of its own shows up on the frame it writes, rather
-   than as a smear that survives until the next re-base.
-   ⚠ It cannot be `revs_screen_convert_reference`: that reads `m_lineMode`, which the carve has
-   zeroed on owned lines (§10k trap 1).  It expands from the band record the painter itself uses. */
-static void ndlBaseCheck(void)
-{
-    unsigned y;
-    g_needleBaseChecks++;
-    for (y = 0; y < NDL_YN; y++) {
-        const unsigned line = NDL_Y0 + y;
-        const unsigned row  = line >> 3;
-        MEM_QUAL const uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6))
-                                    + (line & 7u) + (NDL_C0 << 3);
-        const uint8_t* const lo = (const uint8_t*)(const void*)&s_ndlBase[y][0][0];
-        const uint8_t* const hi = (const uint8_t*)(const void*)&s_ndlBase[y][1][0];
-        const int mode4 = (plotModeOf(NDL_Y0 + y) == 4u);
-        unsigned c;
-        for (c = 0; c < NDL_CELLS; c++, src += BBC_SCREEN_LINES) {
-            const uint8_t v = *src;
-            const uint8_t wantLo = mode4 ? (uint8_t)0u : g_bbcExpandLo[v];
-            const uint8_t wantHi = mode4 ? v           : g_bbcExpandHi[v];
-            if (lo[c] != wantLo || hi[c] != wantHi) {
-                g_needleBaseMismatch++;
-                if (g_needleBaseMismatchAt == 0xFFFFu)
-                    g_needleBaseMismatchAt = (unsigned short)((line << 8) | (NDL_C0 + c));
-            }
+    for (i = i0; i < i0 + n; i++) {
+        const unsigned y = revs_divu16(g_needlePo[i], REVS_NEEDLE_LINE_STRIDE);
+        const unsigned c = g_needlePo[i] - revs_mulu16((uint16_t)y, REVS_NEEDLE_LINE_STRIDE);
+        const unsigned x = (c << 3) + (((unsigned)g_needlePix[i] >> 1) & 6u);
+        unsigned xx;
+        for (xx = x; xx < x + 2u; xx++) {                       /* a MODE 5 pixel is two wide */
+            const unsigned dx = xx - x0;
+            if (dx >= (nch << 4)) continue;                     /* past a TooWide clamp */
+            e->ch[dx >> 4][2u + ((y - y0) << 1)] |= (uint16_t)(0x8000u >> (dx & 15u));
         }
     }
 }
 
-/* ⭐⭐ ...AND THAT THE ERASE IS COMPLETE.  Run straight after `ndlRestore`, before a pixel is
-   drawn: every byte of the column in this buffer must equal the clean cockpit.  A rectangle one
-   group too narrow, a plane-2 displacement that is not ten longwords, a restore skipped on a
-   buffer — each of them leaves last frame's mark standing and each fails here on the next frame.
-   ⚠ It is only exact while the decode owns these lines: it is the decode that paints the rest of
-   the column, out of the same `mem[]` the cache came from.  The commit that gives 128..157 to
-   the terrain painter has to revisit this. */
-static void ndlRestoreCheck(unsigned buf)
+static const NdlImg* ndlImage(unsigned m, unsigned i0, unsigned n)
 {
-    const uint8_t* const plane = s_plane[buf];
-    unsigned y;
-    if (!plane) return;
-    g_needleRestoreChecks++;
-    for (y = 0; y < NDL_YN; y++) {
-        const uint8_t* const d = plane + (((NDL_Y0 + y) << 6) + ((NDL_Y0 + y) << 4)) + NDL_C0;
-        const uint8_t* const lo = (const uint8_t*)(const void*)&s_ndlBase[y][0][0];
-        const uint8_t* const hi = (const uint8_t*)(const void*)&s_ndlBase[y][1][0];
-        unsigned c;
-        for (c = 0; c < NDL_CELLS; c++)
-            if (d[c] != lo[c] || d[c + kPlaneGap] != hi[c]) {
-                g_needleRestoreMismatch++;
-                if (g_needleRestoreMismatchAt == 0xFFFFu)
-                    g_needleRestoreMismatchAt =
-                        (unsigned short)(((NDL_Y0 + y) << 8) | (NDL_C0 + c));
-            }
+    const uint32_t h = ndlHash(i0, n);
+    const uint16_t first = g_needlePo[i0], last = g_needlePo[i0 + n - 1u];
+    unsigned slot = (unsigned)(h ^ (h >> 16)) & (NDL_SLOTS - 1u), probes;
+    for (probes = 0; probes < NDL_SLOTS; probes++, slot = (slot + 1u) & (NDL_SLOTS - 1u)) {
+        NdlImg* const e = &s_ndlImg[m][slot];
+        if (!e->used) {
+            e->used = 1; e->hash = h; e->n = (uint8_t)n; e->first = first; e->last = last;
+            ndlRender(m, i0, n, e);
+            return e;
+        }
+        if (e->hash == h && e->n == n && e->first == first && e->last == last) return e;
     }
+    NDL_STAT(g_needlePoolFull++);                               /* the table itself is full */
+    return 0;
+}
+
+#ifdef REVS_NEEDLE_CHECK
+extern "C" {
+volatile unsigned long g_needleSpriteChecks   = 0;
+volatile unsigned long g_needleSpriteMismatch = 0;
+}
+/* ⭐⭐ `make NEEDLECHECK=1` — THE SHOWN IMAGE AGAINST THE LIST IT WAS CHOSEN FOR, by a second
+   route.  The render places each pixel with `revs_divu16`; this walks the list again with
+   repeated subtraction, requires both of the pixel's Amiga bits in the image, and then requires
+   the image to hold NO OTHER bit — so a hash hit on the wrong image, a stale slot, a misplaced
+   control word or a stray bit all fail here on the frame they are shown. */
+static void ndlSpriteCheck(const NdlImg* e, unsigned i0, unsigned n)
+{
+    unsigned i, set = 0, want = 0, k, nch, h, x0, y0;
+    const uint16_t* d0;
+    g_needleSpriteChecks++;
+    if (!e || !e->ch[0]) { g_needleSpriteMismatch++; return; }
+    d0  = e->ch[0];
+    nch = e->ch[1] ? 2u : 1u;
+    y0  = (unsigned)(d0[0] >> 8) + (((unsigned)d0[1] >> 2) & 1u) * 256u - NDL_SPR_V0;
+    h   = (unsigned)(d0[1] >> 8) + (((unsigned)d0[1] >> 1) & 1u) * 256u - NDL_SPR_V0 - y0;
+    x0  = (((unsigned)d0[0] & 0xFFu) << 1) + ((unsigned)d0[1] & 1u) - NDL_SPR_H0;
+    for (i = i0; i < i0 + n; i++) {
+        unsigned po = g_needlePo[i], y = 0, x, xx;
+        while (po >= REVS_NEEDLE_LINE_STRIDE) { po -= REVS_NEEDLE_LINE_STRIDE; y++; }
+        x = (po << 3) + (((unsigned)g_needlePix[i] >> 1) & 6u);
+        for (xx = x; xx < x + 2u; xx++) {
+            const unsigned dx = xx - x0;
+            if (y < y0 || y - y0 >= h || dx >= (nch << 4) ||
+                !(e->ch[dx >> 4][2u + ((y - y0) << 1)] & (0x8000u >> (dx & 15u))))
+                { g_needleSpriteMismatch++; return; }
+        }
+    }
+    /* every set bit must be one the list asked for: count both sides (a pixel listed twice sets
+       its bits once, so the list side counts DISTINCT (y, x) pairs by clearing as it goes) */
+    for (k = 0; k < nch; k++)
+        for (i = 0; i < h; i++) {
+            unsigned v = e->ch[k][2u + (i << 1)];
+            while (v) { set += v & 1u; v >>= 1; }
+            if (e->ch[k][3u + (i << 1)]) { g_needleSpriteMismatch++; return; }   /* pen 1 only */
+        }
+    for (i = i0; i < i0 + n; i++) {
+        unsigned j, dup = 0;
+        for (j = i0; j < i; j++)
+            if (g_needlePo[j] == g_needlePo[i] &&
+                ((g_needlePix[j] ^ g_needlePix[i]) & 0x0Cu) == 0u) { dup = 1; break; }
+        if (!dup) want += 2u;
+    }
+    if (set != want) g_needleSpriteMismatch++;
 }
 #endif /* REVS_NEEDLE_CHECK */
 
@@ -1685,28 +1627,31 @@ volatile unsigned long  g_needleVerifyChecks     = 0;
 volatile unsigned long  g_needleVerifyMismatch   = 0;
 volatile unsigned short g_needleVerifyMismatchAt = 0xFFFFu;
 }
-/* ⭐⭐⭐ `make NEEDLEVERIFY=1` — THE PAINTER AGAINST THE DECODE, pixel for pixel, in process.
+/* ⭐⭐⭐ `make NEEDLEVERIFY=1` — THE LIST AGAINST THE BBC'S OWN PLOT, pixel for pixel, in process.
    On this arm `plot_line_octant` takes BOTH arms of its pixel site: it plots into `mem[]` the
-   6502's way AND appends to the list.  The decode has therefore just converted the real needle
-   into the plane pair, and this asks whether the painter's own answer agrees with it — which
-   is the painter's entire contribution: the address -> plane-offset map, the mask index ->
-   bit-position map, and the OR mask -> colour map taken off the game's two tables.
-   ⚠⚠ ITS SCOPE, stated here because an in-process differential always has one: it checks the
-   PIXELS, not the erase.  Nothing is restored or painted on this arm (the decode already did
-   both), so `g_needleBaseMismatch`/`g_needleRestoreMismatch` are the erase's gates and this is
-   the draw's.  Diagnostic only — the mem[] plot is live, so no framerate may be quoted. */
-static void ndlVerify(const uint8_t* plane, unsigned n)
+   6502's way, undo entry and all, AND appends to the list — the two in the same loop iteration,
+   so undo entry i IS list entry i.  Each entry's frame-buffer address must be the list's
+   position, and the byte now at that address must carry the list's colour in the list's pixel.
+   With `NEEDLECHECK=1` (image == list) this closes the chain: the sprite shows what the BBC drew.
+   ⚠ Diagnostic only — the mem[] plot is live, so no framerate may be quoted. */
+static void ndlVerify(unsigned n)
 {
     unsigned i;
     g_needleVerifyChecks++;
+    if (mem[MEM_plot_undo_count] != n) { g_needleVerifyMismatch++; g_needleVerifyMismatchAt = 0xFFFEu; return; }
     for (i = 0; i < n; i++) {
-        const uint8_t* const q = &s_ndlPix[0][0] + g_needlePix[i];
-        const unsigned bits    = (unsigned)(uint8_t)~q[0];
-        const unsigned po      = g_needlePo[i];
-        if ((plane[po] & bits) != q[1] || (plane[po + kPlaneGap] & bits) != q[2]) {
+        const unsigned addr = (unsigned)mem[MEM_plot_undo_ptr_lo + i]
+                            | ((unsigned)mem[MEM_plot_undo_ptr_hi + i] << 8);
+        const unsigned off  = addr - BBC_SCREEN_BASE;
+        const unsigned idx  = g_needlePix[i] >> 2, p = idx & 3u;
+        const unsigned b    = mem[addr];
+        const unsigned pen  = (((b >> (7u - p)) & 1u) << 1) | ((b >> (3u - p)) & 1u);
+        if (off >= (unsigned)FB_BYTES
+            || (unsigned)revs_mulu16(s_lineOf[off], REVS_NEEDLE_LINE_STRIDE)
+               + (unsigned)(s_planeOff[off] - revs_mulu16(s_lineOf[off], kRowBytes)) != g_needlePo[i]
+            || pen != s_ndlPix[idx][2]) {
             g_needleVerifyMismatch++;
-            if (g_needleVerifyMismatchAt == 0xFFFFu)
-                g_needleVerifyMismatchAt = (unsigned short)i;
+            if (g_needleVerifyMismatchAt == 0xFFFFu) g_needleVerifyMismatchAt = (unsigned short)i;
         }
     }
 }
@@ -1718,7 +1663,7 @@ extern "C" void revs_needle_origin(unsigned short addr, unsigned char scanLine,
                                    unsigned short* po, unsigned char* line, unsigned char* cell)
 {
     const unsigned off = ((unsigned)addr - BBC_SCREEN_BASE) + (unsigned)scanLine;
-    if (off >= (unsigned)FB_BYTES || !s_mapBuilt) { *po = 0; *line = 0; *cell = 0xFFu; return; }
+    if (off >= (unsigned)FB_BYTES || !s_mapBuilt) { *po = 0; *line = 0xFFu; *cell = 0xFFu; return; }
     {
         const unsigned y = s_lineOf[off];
         const unsigned p = s_planeOff[off];
@@ -1728,73 +1673,37 @@ extern "C" void revs_needle_origin(unsigned short addr, unsigned char scanLine,
     }
 }
 
-/* Erase, draw, remember — once per painted frame, from `decode()`'s tail. */
+/* Choose — and on first sight build — each mark's image, once per painted frame, from `decode()`'s
+   tail.  `present()` shows them with the buffer flip. */
 extern "C" void revs_needle_paint(void)
 {
-    uint8_t* const plane = s_target;
-    unsigned buf, i, n, mk;
+    const unsigned n = g_needleCount, marks = g_needleMarks;
+    unsigned m;
 
-    n = g_needleCount;
-    if (!plane || !s_bandCount) return;
-    buf = (plane == s_plane[1]) ? 1u : 0u;
-
+    if (!s_target) return;
     if (!s_ndlMasksBuilt) ndlBuildMasks();
-    /* The rebuild runs unconditionally — it is the table `ndlBaseRow` reads, not merely the
-       staleness test — so it must not sit behind `||`'s short circuit. */
-    {
-        const uint32_t sig = ndlBandSig();
-        if (sig != s_ndlBandSig || !s_ndlBased) { s_ndlBandSig = sig; ndlBase(); }
-    }
-#ifdef REVS_NEEDLE_VERIFY
-    /* The decode has just painted the real needle out of `mem[]`; nothing here restores or
-       draws, it only compares.  See ndlVerify. */
-    ndlVerify(plane, n);
-    return;
-#endif
-#ifdef REVS_NEEDLE_CHECK
-    ndlBaseCheck();
-#endif
-
-    NDL_STAT(g_needleLwLast = 0);
-    for (mk = 0; mk < REVS_NEEDLE_MARKS; mk++) ndlRestoreRect(plane, &s_ndlRect[buf][mk]);
-#ifdef REVS_NEEDLE_CHECK
-    ndlRestoreCheck(buf);
-#endif
-
     NDL_STAT(g_needlePaints++);
     NDL_STAT(g_needlePixLast = (unsigned short)n);
     if (n >= REVS_NEEDLE_MAX) NDL_STAT(g_needleOverflow++);
+#ifdef REVS_NEEDLE_VERIFY
+    ndlVerify(n);
+#endif
 
-    /* ⭐⭐ THE DRAW, and it is now a blit: the plotter already put each pixel's plane offset on
-       the list, and the clip and the rectangle came with it.  Load, two read-modify-writes, next
-       — no address map, no multiply, no min/max. */
-    {
-        uint8_t* const        base = plane;
-        const uint8_t* const  pixB = &s_ndlPix[0][0];
-        const unsigned short* pos  = g_needlePo;
-        const unsigned short* pxi  = g_needlePix;
-        unsigned k = n;
-        while (k--) {
-            uint8_t* const       p = base + *pos++;
-            const uint8_t* const q = pixB + *pxi++;
-            p[0]         = (uint8_t)((p[0]         & q[0]) | q[1]);
-            p[kPlaneGap] = (uint8_t)((p[kPlaneGap] & q[0]) | q[2]);
+    for (m = 0; m < 2u; m++) {
+        const NdlImg* e = 0;
+        if (m < marks) {
+            const unsigned i0 = g_needleMarkAt[m];
+            const unsigned i1 = (m + 1u < marks) ? g_needleMarkAt[m + 1u] : n;
+            if (i1 > i0) {
+                e = ndlImage(m, i0, i1 - i0);
+#ifdef REVS_NEEDLE_CHECK
+                ndlSpriteCheck(e, i0, i1 - i0);
+#endif
+            }
         }
+        s_ndlShow[2u * m]      = e ? e->ch[0] : 0;
+        s_ndlShow[2u * m + 1u] = e ? e->ch[1] : 0;
     }
-
-    /* Remember each mark's rectangle for THIS buffer, so next frame's erase knows what to undo.
-       ⚠ The group clamp is a safety net on `g_needleOutside == 0`: a pixel outside the column
-       would have been dropped by the plotter, but its cell would still have moved the group. */
-    for (mk = 0; mk < g_needleMarks && mk < REVS_NEEDLE_MARKS; mk++) {
-        const unsigned char* const r = g_needleRect[mk];
-        unsigned g0 = r[2], g1 = r[3];
-        if (g0 >= NDL_GROUPS) g0 = 0;
-        if (g1 >= NDL_GROUPS) g1 = NDL_GROUPS - 1u;
-        s_ndlRect[buf][mk].y0 = r[0];        s_ndlRect[buf][mk].y1 = r[1];
-        s_ndlRect[buf][mk].g0 = (uint8_t)g0; s_ndlRect[buf][mk].g1 = (uint8_t)g1;
-    }
-    for (mk = g_needleMarks; mk < REVS_NEEDLE_MARKS; mk++)
-        { s_ndlRect[buf][mk].y0 = 0xFFu; s_ndlRect[buf][mk].y1 = 0u; }
 }
 #endif /* REVS_NEEDLE_PLANES */
 

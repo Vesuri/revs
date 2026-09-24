@@ -349,102 +349,71 @@ extern volatile unsigned long g_plotRectPasses;
 #endif
 
 #ifdef REVS_NEEDLE_PLANES
-/* ⭐⭐⭐ §12d — THE TWO DASH NEEDLES, PAINTED STRAIGHT INTO THE PLANES AND ERASED BY A
- * RECTANGLE COPY.  The user's directive, and the fourth ownership mechanism:
+/* ⭐⭐⭐ §12d — THE TWO DASH NEEDLES ARE PRERENDERED HARDWARE SPRITES.  The user's directive:
  *
- *     "Instead of undoing the previous needle with XOR and all the logic associated with that,
- *      just keep track of the bounding rectangle for the needle and copy that from the original
- *      cockpit image with no needle instead.  Use 32 pixel granularity so the copy can be just
- *      a number of move.l instructions."
+ *     "The needle should be drawn either to the second playfield (the cockpit) or to sprites.
+ *      In no case should it have anything to do with the terrain rendering."  ...  "Both can and
+ *      should even use prerendered sprites."
  *
  * WHAT GOES.  `plot_line_octant` drew each pixel with a read-modify-write through `($70),Y` and
- * saved the byte it displaced into a 248-entry undo list, which `undraw_plot_lines` replayed
- * backwards at the top of the next frame: per needle pixel, one `bus_read`, one `bus_write`,
- * three undo stores and, next frame, one more `bus_write`.  ⭐ `bus_read`/`bus_write` inside the
- * renderer is the standing red flag (CLAUDE.md) and this is the last of them on the dash.
+ * an undo list `undraw_plot_lines` replayed next frame; the port's first replacement painted the
+ * pixels into both PF1 buffers and erased them by copying a cached clean cockpit back over a
+ * bounding rectangle, which put a needle-shaped hole in the terrain's playfield (cells 12..27 of
+ * display lines 128..157) and a special case in every terrain painter that crossed it.
  *
- * WHAT REPLACES IT.  The DDA still runs in the game's own twin — it is the game's line, not
- * ours — but its per-pixel action is now an APPEND to `g_needlePo`/`g_needlePix` (two stores,
- * no read).  The renderer then:
- *   1. copies last frame's bounding rectangle back out of `s_ndlBase`, the CLEAN COCKPIT — the
- *      needle column expanded from `mem[]`, which holds no needle any more because nothing
- *      writes one there;
- *   2. paints the listed pixels into the plane pair;
- *   3. records the new bounding rectangle.
- * The rectangle is tracked in 32-Amiga-pixel groups — one plane longword — so step 1 is a run of
- * `move.l`s and nothing else, and it is tracked PER BUFFER because the two alternate on screen
- * and each carries its own mark.
+ * WHAT REPLACES IT.  The DDA still runs in the game's own twin — it is the game's line — and its
+ * per-pixel action is still an APPEND to `g_needlePo`/`g_needlePix`.  The renderer turns a mark's
+ * pixel list into a SPRITE IMAGE the first time it sees that list, with the position built into
+ * the image's own control words, and keeps it (RevsPlot.cpp §the needle sprites): there are 118
+ * distinct rev-needle images and 115 steering-mark images over every input the game can produce
+ * (enumerated on the host, docs/perf-method.md), the widest 32 pixels and the tallest 29 lines.
+ * After that a frame costs a hash of ~30 pixels and three sprite-pointer writes; no plane byte is
+ * touched, nothing is erased, and neither playfield knows the needles exist.  The rev needle is
+ * sprite pair 2/3 and the steering mark pair 4/5; the tyres keep 0/1.
  *
- * ⚠⚠ WHAT THE SCHEME RESTS ON, and it is one sentence: `mem[]` UNDER THE NEEDLE NEVER CHANGES.
- * That is what makes a cached backdrop legal, and it is also what stops the dirty decode from
- * repainting over the needle (an unchanged cell is one it skips).  `make NEEDLECHECK=1` is the
- * oracle for exactly that — it re-expands the column from `mem[]` every painted frame and
- * compares it against the cache — and `g_needleOutside` is the companion gate on the geometry:
- * a pixel outside the column would be one the rectangle copy could never erase.
- *
- * ⚠ Called from `decode()`'s tail, beside the rectangle pass, and NOT from the game's frame
- * tail: the decode may repaint a line of the column out of `mem[]` (lines 128..157 are the view
- * sweep's), so the needle has to go on last.  The list it consumes was filled by
- * `draw_dash_needles`, `race_main_loop`'s closing draw — the same one-frame relationship the
- * whole decode already has with `mem[]`. */
+ * ⚠ The list is filled by `draw_dash_needles`, `race_main_loop`'s closing draw, and consumed at
+ * `decode()`'s tail; the chosen images are shown by `present()` with the frame's own buffer flip,
+ * so the needles on screen always belong to the terrain on screen. */
 #define REVS_NEEDLE_MAX   64u
 #define REVS_NEEDLE_MARKS  4u
-/* ⭐⭐⭐ THE LIST IS PLANE OFFSETS, NOT BBC ADDRESSES — AND THAT IS THE MEASUREMENT, NOT TASTE.
-   Written the obvious way, with the painter turning each pixel's `mem[]` address back into a
-   plane offset through `s_lineOf`/`s_planeOff` and a `cell = po - y*80`, the loop came out at
-   ~45 instructions a pixel — five `lea`s of absolute table bases and a `mulu.w #80` — and
-   **35 pixels cost 3.2 ms**.  The plotter already HAS the position: its DDA walks a cell at a
-   time (±1 plane byte) and a scan line at a time (±80), so carrying the plane offset alongside
-   the plot pointer is two `addq`s in a loop that was doing six `mem[]` accesses a pixel before.
-   ⇒ the painter becomes a blit: load, two read-modify-writes, next. */
+/* THE LIST IS PLANE OFFSETS (`y * 80 + cell`), which the DDA carries beside the plot pointer by
+   ±1 and ±80 — a sprite render reads the position straight back out of it. */
 #define REVS_NEEDLE_LINE_STRIDE  80u   /* one display line of the interleaved plane PAIR */
 #define REVS_NEEDLE_PLANE_GAP    40u   /* ...and the second plane's displacement within it */
-extern unsigned short g_needlePo[REVS_NEEDLE_MAX];     /* plane-1 byte offset of the pixel */
-/* ⭐ The game's mask index 0..7, ALREADY SCALED BY THE ENTRY SIZE.  The painter then adds it to
-   one base; handed the bare index it spent six instructions a pixel re-deriving the address
-   (zero-extend, mask, two `adda`s to multiply by four, and an absolute `adda`). */
+extern unsigned short g_needlePo[REVS_NEEDLE_MAX];     /* `y * 80 + cell` of the pixel */
+/* The game's mask index 0..7, scaled by the pixel table's entry size (4). */
 extern unsigned short g_needlePix[REVS_NEEDLE_MAX];
 extern unsigned char  g_needleCount;
-/* Each mark's bounding rectangle, published by the plotter: y0, y1, g0, g1 — display lines and
-   32-pixel groups, INCLUSIVE, and y0 > y1 means the mark drew nothing.
-   ⭐ The plotter needs no min/max to fill it: an octant DDA takes ONE x-step opcode and ONE
-   y-step opcode for the whole line, so the mark is MONOTONE in both axes and the rectangle is
-   just its first and last pixel.  ⚠ That is an argument, so it has a gate: a non-monotone line
-   would leave pixels outside the rectangle, and `make NEEDLECHECK=1`'s restore oracle fires on
-   exactly that on the next frame. */
-extern unsigned char  g_needleRect[REVS_NEEDLE_MARKS][4];
-/* ⚠⚠ ONE RECTANGLE PER MARK, NOT ONE ROUND BOTH — MEASURED, AND IT IS THE DIFFERENCE BETWEEN
-   4.74 ms AND 0.4.  The rev-counter needle pivots at display line 168 and the steering-wheel mark
-   sits thirty lines above it, so their COMBINED bounding box is very nearly the whole 64-line
-   column and the erase copies ~500 longwords to put back ~35 pixels.  `plot_line_octant` opens a
-   mark per call and each keeps its own rectangle.  ⭐ The general form: a bounding box is only a
-   good erase when the thing inside it is CONNECTED. */
 extern unsigned char  g_needleMarkAt[REVS_NEEDLE_MARKS];   /* first pixel of each mark */
 extern unsigned char  g_needleMarks;
-/* ⚠⚠ ALL THREE MUST READ 0.  `Outside` is a pixel the rectangle copy could not erase (the column
-   is too narrow); `MaskBad` is the game's two mask tables not being pixel-aligned, which is what
-   licenses turning a byte OR into two plane bits; `Overflow` is a line longer than the list. */
+/* ⚠⚠ ALL MUST READ 0.  `Outside` is a pixel off the display (it cannot be in a sprite);
+   `MaskBad` is the game's two mask tables not being pixel-aligned, which is what licenses
+   reading a byte OR as one pixel's colour; `Overflow` is a line longer than the list;
+   `PoolFull` an image the chip pool had no room for (that mark is not shown); `TooWide` an
+   image wider than a sprite pair; `ColourBad` a mark whose pixels are not all one colour. */
 #ifdef REVS_SPAN_STATS
 #define REVS_NEEDLE_OUTSIDE()  (g_needleOutside++)
 extern volatile unsigned long  g_needleOutside;
 extern volatile unsigned long  g_needleMaskBad;
 extern volatile unsigned long  g_needleOverflow;
 extern volatile unsigned long  g_needlePaints;
-extern volatile unsigned long  g_needleBases;
+extern volatile unsigned long  g_needleRenders;   /* sprite images built — ~233 a session */
+extern volatile unsigned long  g_needlePoolFull;
+extern volatile unsigned long  g_needleTooWide;
+extern volatile unsigned long  g_needleColourBad;
 extern volatile unsigned short g_needlePixLast;
-extern volatile unsigned short g_needleLwLast;
 #else
 #define REVS_NEEDLE_OUTSIDE()  ((void)0)
 #endif
 #ifdef REVS_NEEDLE_CHECK
-/* `make NEEDLECHECK=1` — the backdrop's staleness oracle.  `g_needleBaseMismatch` must be 0. */
-extern volatile unsigned long  g_needleBaseChecks;
-extern volatile unsigned long  g_needleBaseMismatch;
-extern volatile unsigned short g_needleBaseMismatchAt;   /* (line << 8) | cell */
+/* `make NEEDLECHECK=1` — every shown image against the pixel list it was chosen for, bit for
+   bit (RevsPlot.cpp §ndlSpriteCheck).  `g_needleSpriteMismatch` must be 0. */
+extern volatile unsigned long  g_needleSpriteChecks;
+extern volatile unsigned long  g_needleSpriteMismatch;
 #endif
 
 /* Drop the pixel the DDA just computed onto the list.  Two stores and a bound test — the whole
-   of what a needle pixel costs the game side now. */
+   of what a needle pixel costs the game side. */
 #define REVS_NEEDLE_PIXEL(po, m)                                             \
     do {                                                                     \
         const unsigned rnp_ = g_needleCount;                                 \
@@ -456,17 +425,18 @@ extern volatile unsigned short g_needleBaseMismatchAt;   /* (line << 8) | cell *
     } while (0)
 
 /* Where the plotter's (cell base, entry scan line) lands: the plane offset it walks from, plus
-   the display line and cell it has to clip against.  ONCE per mark — the address map stays the
-   plot module's, and the DDA never consults it again. */
+   the display line and cell it has to clip against.  ONCE per mark. */
 void revs_needle_origin(unsigned short addr, unsigned char scanLine,
                         unsigned short* po, unsigned char* line, unsigned char* cell);
-/* The column the rectangle copy can erase.  A pixel outside it is dropped and counted. */
-#define REVS_NEEDLE_Y0      128u
-#define REVS_NEEDLE_YN       64u
-#define REVS_NEEDLE_C0       12u
-#define REVS_NEEDLE_CELLS    16u
+/* The clip: anywhere on the race display.  A sprite has no column to stay inside, so the only
+   bound left is that `po` must name a real pixel — the old 12..27 x 128..191 column dropped the
+   steering mark's pixels beyond cell 27 at full lock (the enumeration reaches cells 7..32). */
+#define REVS_NEEDLE_Y0        0u
+#define REVS_NEEDLE_YN      208u
+#define REVS_NEEDLE_C0        0u
+#define REVS_NEEDLE_CELLS    40u
 #define REVS_NEEDLE_CLEAR()  (g_needleCount = 0, g_needleMarks = 0)
-/* Open a mark — one `plot_line_octant` call, one rectangle — and close it with its bounds. */
+/* Open a mark — one `plot_line_octant` call, one sprite image. */
 #define REVS_NEEDLE_MARK()                                                   \
     do {                                                                     \
         const unsigned rnm_ = g_needleMarks;                                 \
@@ -475,23 +445,19 @@ void revs_needle_origin(unsigned short addr, unsigned char scanLine,
             g_needleMarks        = (unsigned char)(rnm_ + 1u);               \
         }                                                                    \
     } while (0)
-#define REVS_NEEDLE_CLOSE(yA, yB, gA, gB)                                    \
-    do {                                                                     \
-        const unsigned rnc_ = (unsigned)g_needleMarks - 1u;                  \
-        if (rnc_ < REVS_NEEDLE_MARKS) {                                      \
-            unsigned char* const r_ = g_needleRect[rnc_];                    \
-            r_[0] = (unsigned char)((yA) < (yB) ? (yA) : (yB));              \
-            r_[1] = (unsigned char)((yA) < (yB) ? (yB) : (yA));              \
-            r_[2] = (unsigned char)((gA) < (gB) ? (gA) : (gB));              \
-            r_[3] = (unsigned char)((gA) < (gB) ? (gB) : (gA));              \
-        }                                                                    \
-    } while (0)
 void revs_needle_paint(void);
 #define REVS_NEEDLE_PAINT()  revs_needle_paint()
+/* The screen's side: the chip pool the images live in (allocated once, at start-up — never inside
+   a frame), the image each of the four needle channels shows (0 = none), and the BBC pen each
+   mark is drawn in, which `buildBands` turns into the sprite pair's colour per raster band. */
+#define REVS_NEEDLE_CHANNEL0  2u        /* channels 2..5: two marks, a sprite pair each */
+#define REVS_NEEDLE_CHANNELS  4u
+void revs_needle_pool(unsigned short* pool, unsigned long words);
+const unsigned short* revs_needle_sprite(unsigned k);
+extern unsigned char g_needlePen[2];
 #else
 #define REVS_NEEDLE_PIXEL(a, m)  ((void)0)
 #define REVS_NEEDLE_MARK()       ((void)0)
-#define REVS_NEEDLE_CLOSE(a,b,c,d) ((void)0)
 #define REVS_NEEDLE_OUTSIDE()    ((void)0)
 #define REVS_NEEDLE_CLEAR()      ((void)0)
 #define REVS_NEEDLE_PAINT()      ((void)0)
@@ -594,7 +560,6 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_RECTS_RUN()    ((void)0)
 #define REVS_NEEDLE_PIXEL(a, m)  ((void)0)
 #define REVS_NEEDLE_MARK()       ((void)0)
-#define REVS_NEEDLE_CLOSE(a,b,c,d) ((void)0)
 #define REVS_NEEDLE_OUTSIDE()    ((void)0)
 #define REVS_NEEDLE_CLEAR()      ((void)0)
 #define REVS_NEEDLE_PAINT()      ((void)0)

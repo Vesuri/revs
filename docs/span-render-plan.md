@@ -2194,6 +2194,28 @@ and the **3.02 ms remainder**. 5 ms of overhead around 7.2 ms of real conversion
 
 ### ⭐⭐⭐ §12d — THE TWO DASH NEEDLES AS GEOMETRY: `make NEEDLE=1` (2026-09-21)
 
+⭐⭐⭐ **SUPERSEDED 2026-09-24: THE NEEDLES ARE PRERENDERED HARDWARE SPRITES NOW** (user directive:
+*"The needle should be drawn either to the second playfield (the cockpit) or to sprites. In no case
+should it have anything to do with the terrain rendering … Both can and should even use
+prerendered sprites."*). The geometry half below stands — `plot_line_octant` still appends a pixel
+list and writes no `mem[]` — but the PF1 painter, its cached clean cockpit and its rectangle erase
+are GONE. Each mark's list becomes a sprite image the first time it is seen (a chip pool
+allocated at start-up, the position in the image's own control words), and a frame costs a hash
+and four sprite-pointer writes at `present()`: the rev needle is pair 2/3, the steering mark pair
+4/5, their pens set per raster band from the game's own palette. The cockpit layer now paints the
+dial art under them, so PF1 has no needle hole at all.
+- **Sized by enumerating every input on the host** (every `engine_revs`, every steering angle, the
+  game's own code in a memory snapshot): **118 rev-needle images, 115 steering-mark images, the
+  largest 32 × 29** — two channels and one. ⚠ The same enumeration showed the old 12..27 × 128..191
+  column was never the footprint: the steering mark reaches cells 7..32 and the rev needle line 203
+  over the full input range; a sprite has no column to fall out of.
+- **Gated as a chain from the BBC's own plot to the screen**: `NEEDLEVERIFY=1` (the list against
+  the 6502 path's undo list and plotted bytes, same loop iteration), `NEEDLECHECK=1` (the shown
+  image against the list by a second route, no stray bit), and `needle_probe.gdb`'s colour walk of
+  the live copper list (COLOR21 = COLOR02, COLOR25 = COLOR00 in every band). 0 mismatches over 258
+  painted frames; six sabotages each fail on the oracle meant to catch them.
+- **Price: −0.47 ms** (frame 116.42 → 115.95); it was not the point — the terrain's PF1 hole was.
+
 User directive, and the third writer of the §12 block to stop touching `mem[]`:
 
 > *"For the needle, go for the 'render to the other playfield' option. Instead of undoing the

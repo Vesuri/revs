@@ -474,8 +474,8 @@ LOSES (+4.86 ms of extra cells against ~2.3 of saved machinery), and a longword 
 further 5 ms at ~5-cell segments (§12f-ii).
 
 ✅ **ALL FIVE RECTANGLES ARE CLOSED and every cell of 117..157 has exactly one owner**: the
-terrain runs are the PF1 painter's, everything else the cockpit layer's, the needle's column its
-own painter's over a base now laid into both buffers (`ndlBaseBlitBoth`), the wheel art static
+terrain runs are the PF1 painter's, everything else the cockpit layer's — including the dial art
+under the needles, which are prerendered SPRITES since 2026-09-24 (§12d) — the wheel art static
 under `TYRESPRITE=1`, and the WING MIRRORS painted onto PF2 by `mirror_draw_car`'s own store site
 (`REVS_COCKPIT_BYTE`, §12f-iv — the PF1 delta domain was the wrong home because its base and its
 oracle both re-expand a `mem[]` that is frozen for those rows' terrain cells).
