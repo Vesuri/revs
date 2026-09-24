@@ -1178,6 +1178,21 @@ PROBE_SYMS_TERRAIN += g_scanChecks g_scanMismatch g_scanMismatchAt
 endif
 endif
 SCANASM_SABOTAGE ?= 0
+# ⭐⭐ `GEOASM=1` (the DEFAULT) — road_edge_walk's width emitter in 68000 assembly
+# (src/platform/amiga/emit_width_m68k.s).  `make GEOASM=0` is the C control.  ⭐⭐ `make GEOCHECK=1`
+# is its gate: every call runs the C core and the asm on the same 64 KB and compares all of it and
+# the exit V (amiga/geo_check.gdb) — ⚠ a correctness arm, its phase rows are void.
+# `GEOASM_SABOTAGE=N` assembles deliberate defect N for it to catch.
+GEOASM ?= 1
+ifeq ($(GEOASM),1)
+EXTRA_DEFINES += -DREVS_GEO_ASM
+ASM_SRCS += $(AMIGA_SRC)/emit_width_m68k.s
+ifeq ($(GEOCHECK),1)
+EXTRA_DEFINES += -DREVS_GEO_CHECK
+PROBE_SYMS_TERRAIN += g_geoChecks g_geoMismatch g_geoMismatchAt g_geoFuzzCases g_geoFuzzMismatch g_geoFuzzV
+endif
+endif
+GEOASM_SABOTAGE ?= 0
 # ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
 # the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
 # ⚠ Diagnostic only; no framerate may be quoted from such a build.
@@ -1682,6 +1697,10 @@ obj/terrain_m68k.o : $(AMIGA_SRC)/terrain_m68k.s
 obj/scan_m68k.o : $(AMIGA_SRC)/scan_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SCANASM_SABOTAGE) -o $@ "$<"
+
+obj/emit_width_m68k.o : $(AMIGA_SRC)/emit_width_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(GEOASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

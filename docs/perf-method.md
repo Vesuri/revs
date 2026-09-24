@@ -2780,6 +2780,19 @@ case showing the oracle does see a skipped group.
 byte-identical by SCANCHECK), and phase 0 grew 201 → 220 fields. So the scan is quoted by the one row
 it lives in. (The terrain painter's pair above had `ONE BODY TICK` 1008/1000 — a clean pricing.)
 
+⭐⭐ **`emit_edge_width_offset` IN 68000 ASM IS −2.78 ms OF ph5** (18.91 → 16.13, frame 108.39 →
+104.83; `src/platform/amiga/emit_width_m68k.s`, `make GEOASM=0` the control). Single-stepped it was
+~131 instructions a call, 27 calls a frame: a frame pointer, stack spills, a six-byte struct returned
+through memory and a byte-wise replay of the 6502's V. Both walk calls pass constants and read only
+V, so the asm's contract is that alone, and V is `add.w`'s own flag. Gate: `make GEOCHECK=1` runs
+the C core and the asm on the same 64 KB every call and compares all of it plus V — 926 real calls
+and ⭐ **a 4000-case target fuzzer, which was NEEDED**: three of five sabotages (V dropped, horizon
+index not recorded, dividend + 1) survived the real calls alone. V is 1 only for a point BEHIND the
+car, which driving never produces; the horizon is rarely extended from here; and floor((N+1)/d) =
+floor(N/d) unless d divides N+1 (that sabotage was a "no change" by arithmetic and was replaced by a
+quotient-plus-one). With the fuzzer all five fail. Brands Hatch (patched `$261A`, the C arm) passes
+too.
+
 ⚠⚠ **And the oracle had the shared-input blind spot until it was sabotaged.** With the seed moved
 into the scan, the REFERENCE run painter saw the seed as a real event at its run's first cell and
 took it, so a wrong seed colour PASSED (0 mismatches) where the earlier variant — seeding after the

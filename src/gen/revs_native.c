@@ -5759,6 +5759,116 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
     }
 }
 
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_GEO_ASM)
+/* ⭐⭐ THE AMIGA RUNS THE WALK'S WIDTH EMITTER IN 68000 ASSEMBLY — src/platform/amiga/emit_width_m68k.s,
+   whose banner has the shape.  Both of road_edge_walk's calls pass firstScoringPoint 3 and entry V 0
+   and read only the exit V, so that is the asm's whole contract; the core above stays the reference
+   (the host runs it, `make GEOASM=0` is the control) and `make GEOCHECK=1` runs both on the same
+   64 KB every call.  The three wrappers are the asm's callouts for its rare arms. */
+unsigned emit_width_m68k(unsigned sectionByte);
+unsigned emit_width_far(unsigned dist, unsigned k)
+{   return edge_width_offset_for((uint16_t)dist, (uint8_t)k); }
+void emit_width_marker(unsigned flags, unsigned offset)
+{   append_corner_marker((uint8_t)flags, offset); }
+uint8_t emit_width_c(unsigned sectionByte)
+{   return emit_edge_width_offset_core((uint8_t)sectionByte, 0x03, 0u).v; }
+
+#ifdef REVS_GEO_CHECK
+volatile unsigned long  g_geoChecks     = 0;
+volatile unsigned long  g_geoMismatch   = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long  g_geoMismatchAt = 0;   /* the first differing address, $10000 = the V */
+static uint8_t s_geoBefore[65536] __attribute__((aligned(4))), s_geoAfterC[65536] __attribute__((aligned(4)));
+volatile unsigned long  g_geoFuzzCases    = 0;
+volatile unsigned long  g_geoFuzzMismatch = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long  g_geoFuzzV        = 0;   /* cases whose exit V was 1 — must be non-zero */
+static uint8_t emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
+                                  volatile unsigned long* badAt);
+/* ⭐ THE FUZZER, once, before the first real call.  Driving data never produces a V of 1 (an edge
+   angle wrapping past $8000 is a point BEHIND the car), rarely reaches the near-point float arm and
+   rarely extends the horizon from here — three sabotages survived the real calls alone — so each
+   case randomises exactly the inputs the routine reads, runs both, and requires all 64 KB and the
+   V to agree.  mem[] is restored afterwards: the game never sees a fuzzed byte. */
+static uint8_t s_geoFuzzSave[65536] __attribute__((aligned(4)));
+static void geo_fuzz(void)
+{
+    uint32_t r = 0x2F6B4A1Du;
+    unsigned n;
+/* xorshift32 and masked ranges — ⚠ no `*` and no `%`: both link a 32-bit software routine */
+#define GEO_RND() (r ^= r << 13, r ^= r >> 17, r ^= r << 5, (unsigned)r)
+    memcpy(s_geoFuzzSave, (const void*)mem, sizeof s_geoFuzzSave);
+    for (n = 0; n < 4000u; n++) {
+        const unsigned k    = GEO_RND();
+        const unsigned slot = ((k & 1u) ? 0x2Eu : 0x06u) + ((k >> 1) & 15u) + ((k >> 5) & 1u) * 2u;
+        unsigned       sb   = (k >> 8) & 0xFFu;
+        const unsigned j    = GEO_RND();
+        if (sb >= 0xF0u) sb -= 0x10u;
+        edge_cursor                       = (uint8_t)slot;
+        mem[MEM_edge_x_lo + slot]         = (uint8_t)j;
+        mem[MEM_edge_x_hi + slot]         = (uint8_t)(j >> 8);
+        point_dist_lo                     = (uint8_t)(j >> 16);
+        point_dist_hi                     = (uint8_t)((j >> 24) & ((k & 0x10000u) ? 0xFFu : 0x01u));
+        road_side_index                   = (uint8_t)((k >> 17) & 1u);
+        track_direction                   = (uint8_t)(k >> 18);
+        shared_counter_42                 = (uint8_t)(((k >> 26) & 15u) + ((k >> 30) & 3u));
+        {
+            const unsigned m = GEO_RND();
+            projected_line        = (uint8_t)m;
+            horizon_extent        = (uint8_t)(((m >> 8) & 0x3Fu) + ((m >> 14) & 0x1Fu));
+            horizon_index         = (uint8_t)(m >> 19);
+            mem[MEM_marker_count] = (uint8_t)(((m >> 27) & 3u) + ((m >> 29) & 1u));
+        }
+        (void)emit_width_compare(sb, &g_geoFuzzMismatch, &g_geoMismatchAt);
+        g_geoFuzzCases++;
+    }
+#undef GEO_RND
+    memcpy((void*)mem, s_geoFuzzSave, sizeof s_geoFuzzSave);
+}
+static uint8_t emit_width_checked(unsigned sectionByte)
+{
+    static int fuzzed;
+    if (!fuzzed) { fuzzed = 1; geo_fuzz(); }
+    g_geoChecks++;
+    return emit_width_compare(sectionByte, &g_geoMismatch, &g_geoMismatchAt);
+}
+static uint8_t emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
+                                  volatile unsigned long* badAt)
+{
+    uint8_t vC, vA;
+    unsigned i;
+    memcpy(s_geoBefore, (const void*)mem, sizeof s_geoBefore);
+    vC = emit_width_c(sectionByte);
+    memcpy(s_geoAfterC, (const void*)mem, sizeof s_geoAfterC);
+    memcpy((void*)mem, s_geoBefore, sizeof s_geoBefore);     /* the same input for the asm */
+    vA = (uint8_t)emit_width_m68k(sectionByte);
+    if (vC) g_geoFuzzV++;
+    if (vA != vC) {
+        if (!*bad) *badAt = 0x10000u;
+        (*bad)++;
+    }
+    /* ENDIAN-OK: an EQUALITY test a longword at a time — byte order cannot change whether two
+       copies of the same bytes are equal — and the byte loop narrows the first difference. */
+    {
+        const uint32_t* a = (const uint32_t*)(const void*)mem;
+        const uint32_t* c = (const uint32_t*)(const void*)s_geoAfterC;
+        for (i = 0; i < 65536u / 4u; i++)
+            if (a[i] != c[i]) {
+                unsigned j = i * 4u;
+                while (mem[j] == s_geoAfterC[j]) j++;
+                if (!*bad) *badAt = j;
+                (*bad)++;
+                break;
+            }
+    }
+    return vA;
+}
+#define EMIT_WIDTH(sb)  emit_width_checked((unsigned)(sb))
+#else
+#define EMIT_WIDTH(sb)  ((uint8_t)emit_width_m68k((unsigned)(sb)))
+#endif
+#else
+#define EMIT_WIDTH(sb)  (emit_edge_width_offset_core((uint8_t)(sb), 0x03, 0u).v)
+#endif
+
 /* $3450  abs8 — |A|  (twin #12)
    Eight bytes and 21 callers, with one trap in them: the `BPL` at $3450 tests the CALLER's
    N flag, not bit 7 of A.  Real callers have just computed A so the two agree; a randomised
@@ -6112,7 +6222,7 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
         return midSlot;                              /* $2450 LDX #$FA left the midpoint slot in X */
 
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
-    emit_edge_width_offset_core(walk_prev_section, 0x03, 0u);   /* mem-only here; exit V is dead */
+    (void)EMIT_WIDTH(walk_prev_section);                        /* mem-only here; exit V is dead */
     marker_count       = marker_count_saved;
     inc_mem(MEM_edge_cursor);                        /* $2467 */
     return (uint8_t)walk_prev_section;               /* $245A LDX $0014 */
@@ -6152,7 +6262,7 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
 
             /* $246A — EMIT: the point's second angle, and any corner marker it carries.
                Its exit V is the last thing to touch V before the $248B seam below, so keep it. */
-            uint8_t emitV = emit_edge_width_offset_core((uint8_t)section, 0x03, 0u).v;
+            uint8_t emitV = EMIT_WIDTH(section);
 
             /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
                view axis in this one step?  If so, subdivide — unless the point BEFORE it was

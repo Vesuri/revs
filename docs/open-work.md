@@ -147,6 +147,12 @@ by certainty × size:
      where the code's own argument says V is unobservable — compute it lazily in those cold
      paths (~1 ms). The coarse lever is the whole walk as one register-resident routine, as the
      span pass was (~9.2k of the 10.2k).
+     ✅ **The emitter is in 68000 asm** (`emit_width_m68k.s`, `GEOASM=0` the control): **ph5 18.91 →
+     16.13, frame 108.39 → 104.83**. V is the `add.w`'s own overflow flag (the 6502's high-byte
+     ADC with the low carry in IS the 16-bit signed overflow). ⇒ NEXT: `bearing_to_section` +
+     `point_distance_hypot` + `project_point` per point (~3.6k), then the walk loop itself — the
+     relocated `bearing_v`/`hypot_*_v` statics must be exported for it, and GEOCHECK's compare must
+     grow to cover them.
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
