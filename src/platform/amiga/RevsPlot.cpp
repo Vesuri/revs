@@ -575,12 +575,21 @@ extern "C" unsigned char* revs_plot_low_line(unsigned short addr)
 static short   s_bandFirst[5];
 static uint8_t s_bandMode[5];
 static uint8_t s_bandCount;
+/* Set when the record CHANGES, so `deltaKindRebuild` — a pure function of it — runs only then:
+   the band schedule is the same on nearly every frame, and the rebuild walked 34 rows a sweep
+   (~300 instructions, single-stepped) to find that nothing had moved.  1 at boot: the kind table
+   starts at 0 and must be built once. */
+static uint8_t s_bandsMoved = 1;
 
 extern "C" void revs_plot_bands(const short* firstLine, const unsigned char* mode, unsigned count)
 {
     unsigned n;
     if (count > 5u) count = 5u;
-    for (n = 0; n < count; n++) { s_bandFirst[n] = firstLine[n]; s_bandMode[n] = mode[n]; }
+    if (count != s_bandCount) s_bandsMoved = 1;
+    for (n = 0; n < count; n++) {
+        if (s_bandFirst[n] != firstLine[n] || s_bandMode[n] != mode[n]) s_bandsMoved = 1;
+        s_bandFirst[n] = firstLine[n]; s_bandMode[n] = mode[n];
+    }
     s_bandCount = (uint8_t)count;
 }
 
@@ -1154,6 +1163,8 @@ static int deltaKindRebuild(void)
 {
     unsigned blk, n;
     int changed = 0;
+    if (!s_bandsMoved) return 0;        /* the same record builds the same table */
+    s_bandsMoved = 0;
     for (blk = 0; blk < DELTA_BLOCKS; blk++) {
         const unsigned lo = kDeltaBlock[blk][0], hi = kDeltaBlock[blk][1];
         for (n = 0; n < s_bandCount; n++) {
@@ -1814,8 +1825,23 @@ extern "C" void revs_needle_paint(void)
    sweep's spans instead of repainting stale mem[] over them. */
 extern "C" void revs_plot_own_reset(void)
 {
+#ifndef REVS_PLOT_DELTA
+    __builtin_memset(g_plotOwn, 0, BBC_SCREEN_HEIGHT);
+#else
+    /* ⭐ The delta blocks' claim is a CONSTANT, so the reset is one longword copy of a template
+       (fastmem.c) rather than a 208-byte clear and a 34-byte claim loop — both were byte loops,
+       ~250 instructions a sweep single-stepped. */
+    static uint8_t s_ownTemplate[BBC_SCREEN_HEIGHT] __attribute__((aligned(4)));
+    static uint8_t s_ownTemplateBuilt;
     unsigned i;
-    for (i = 0; i < BBC_SCREEN_HEIGHT; i++) g_plotOwn[i] = 0;
+    if (!s_ownTemplateBuilt) {
+        unsigned blk;
+        for (blk = 0; blk < DELTA_BLOCKS; blk++)
+            for (i = kDeltaBlock[blk][0]; i < kDeltaBlock[blk][1]; i++) s_ownTemplate[i] = 1;
+        s_ownTemplateBuilt = 1;
+    }
+    __builtin_memset(g_plotOwn, 0, BBC_SCREEN_HEIGHT);
+#endif
 #ifdef REVS_PLOT_DELTA
     /* ⭐ THE CLAIM, and it is asserted HERE rather than in present() for a hard reason: basing 34
        rows is ~10 000 stores, and work in the vblank ISR is capped at one frame (CLAUDE.md).
@@ -1829,11 +1855,7 @@ extern "C" void revs_plot_own_reset(void)
            not merely the staleness test — so it must not sit behind `||`'s short circuit. */
         const int kindMoved = deltaKindRebuild();
         if (kindMoved || !s_deltaBased) plotDeltaBase();
-        {
-            unsigned blk;
-            for (blk = 0; blk < DELTA_BLOCKS; blk++)
-                for (i = kDeltaBlock[blk][0]; i < kDeltaBlock[blk][1]; i++) g_plotOwn[i] = 1;
-        }
+        __builtin_memcpy(g_plotOwn, s_ownTemplate, BBC_SCREEN_HEIGHT);
     }
 #endif
 }
