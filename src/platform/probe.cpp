@@ -94,7 +94,8 @@ enum {
     PROBE_BUILD_VIEW_CARVE     = 1u << 9,   /* VIEWCARVE=1  — ⚠ picture wrong: the ph27 ceiling */
     PROBE_BUILD_VIEW_OWN_FULL  = 1u << 10,  /* VIEWFULL=1   — phase 1 owns its LINE LOOP too   */
     PROBE_BUILD_FASTMEM        = 1u << 11,  /* FASTMEM=1    — longword memset/memcpy/memmove   */
-    PROBE_BUILD_SPAN_ASM       = 1u << 12   /* SPANASM=1    — the span walk in 68000 asm       */
+    PROBE_BUILD_SPAN_ASM       = 1u << 12,  /* SPANASM=1    — the span walk in 68000 asm       */
+    PROBE_BUILD_SETUP_ASM      = 1u << 13   /* SETUPASM=1   — the whole span pass in 68000 asm */
 };
 
 volatile unsigned long g_probeBuildFlags =
@@ -104,6 +105,11 @@ volatile unsigned long g_probeBuildFlags =
 #if defined(REVS_SPAN_ASM) && !defined(REVS_ROADSPLIT) && !defined(REVS_SHAPE) && !defined(REVS_VIEWSKIP) \
     && !defined(REVS_SRC_EVENTS) && !defined(REVS_SRC_EVENTS_CHECK) && !defined(REVS_ROAD_ARM)
     PROBE_BUILD_SPAN_ASM |      /* ⚠ the same condition as REVS_SPAN_ASM_ON in revs_native.c */
+#endif
+#if defined(REVS_SPAN_ASM) && defined(REVS_SETUP_ASM) && !defined(REVS_WALKCHECK) && !defined(REVS_ROADSPLIT) \
+    && !defined(REVS_SHAPE) && !defined(REVS_VIEWSKIP) && !defined(REVS_SRC_EVENTS)                         \
+    && !defined(REVS_SRC_EVENTS_CHECK) && !defined(REVS_ROAD_ARM)
+    PROBE_BUILD_SETUP_ASM |     /* ⚠ the same condition as REVS_SETUP_ASM_ON in revs_native.c */
 #endif
 #ifdef REVS_VIEW_OWN_SHORT
     PROBE_BUILD_VIEW_OWN_SHORT |

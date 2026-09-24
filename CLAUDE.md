@@ -200,6 +200,7 @@ python3 ../tools/pcsample_report.py .run/gdb-out.log --from-field=3000 [--fn=<na
 EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=steptrace.gdb ./diag_run.sh 400   # ⭐⭐ SINGLE-STEP whole calls (edit the target in the .gdb)
 python3 ../tools/steptrace_report.py .run/gdb-out.log   # instructions + memory operands per source line — run from the repo root
 make WALKCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 && GDBSCRIPT=walkcheck.gdb ./diag_run.sh 400   # ⭐ the span-walk ASM vs its C loop, every span + a fuzzer (SPANASM=0 = the C control)
+make SETUPCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 && GDBSCRIPT=setupcheck.gdb ./diag_run.sh 500   # ⭐ the whole span PASS in asm vs the C, all 64 KB a pass + a fuzzer (SETUPASM=0 = the C control; TRACK=n per circuit)
 ```
 ⭐⭐ **When a bracket and the source disagree by an order of magnitude, single-step a call** — the
 PC sampler costs ~1.2 s a sample through the gdb stub; a stepped trace of 24 calls is ~10k
@@ -268,7 +269,6 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | **`docs/wide-value-cleanup.md`** | The byte-lane→wide-value campaign ledger: replacing 6502 `_lo`/`_hi`/carry handling of 16/24-bit values with plain-C `uintNN_t` math. Tiers, per-base status, the two mechanisms, the SoA `value_16[N]` relocation. ⚠⚠ **MEASURED end to end and it is a NULL RESULT (+0.65%, inside noise)** — the instruction-count win is real but the byte lanes are not where the frame goes; ⭐⭐ **rank a candidate pair by OPS-PER-MARSHAL, never by ref count** (a shared *scratch* cell's huge ref count counts TENANTS, not wide arithmetic — the error that made `math_lo/hi` look like the biggest prize for three passes) |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number; where the time goes |
 | **`docs/span-render-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm — THE live rendering plan.** The replacement architecture: world points → spans → bitplanes, §10 sizing, **§10n the measured checkpoint** (the fill is 6.87 cyc/byte and direct-to-bitplane writing is exonerated; a hook-in nets zero), **§11 THE LIVE DESIGN** (row ownership: the decode is the prize, the painter is a wash, and the 208-row ledger is the plan), §10p the build ledger, §10m the SPRITE lever. (⛔ `docs/direct-bitplane-plan.md` is the OBSOLETE earlier plan — kept only because source/docs cite its §-numbers; read it as history, never as a plan) |
-| **`docs/span-setup-asm-plan.md`** ⏭ | **The NEXT step-1 item, planned**: `interp_edge`'s per-span setup in 68000 asm, fused with the walk (measured budget, the finished reader audit, a SETUPCHECK gate) and §6 the rest of step 1 in order. Delete when it lands |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
 | `docs/amiga-lessons.md` ⚑ | Copper lists, sprites, the VBI, write-only registers |
 | `docs/amiga-arch.md` ⚑ | The Amiga display/interrupt architecture decisions and why |

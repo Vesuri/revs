@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 126.68 ms bracketed** (149.18 at the plan's start) for the DEFAULT at `a37002d` — measured
-2026-09-23 in one session: `SPANASM=0` control 132.90 → asm walk 128.23 → direct entry 127.02 → setup over locals 126.68, every arm with phase 0 = 120 fields and runs deterministic to the tick. The context line that follows is the
+**Where the frame stands:** **Σ(1..39) − ph28 = 116.47 ms bracketed** (149.18 at the plan's start) for the DEFAULT — measured
+2026-09-24: `SETUPASM=0` control 126.64 → the whole span pass in 68000 asm 116.47 (ph11 26.62 → 17.10), phase 0 equal on both arms. Before it, 2026-09-23 in one session: `SPANASM=0` control 132.90 → asm walk 128.23 → direct entry 127.02 → setup over locals 126.68, every arm with phase 0 = 120 fields and runs deterministic to the tick. The context line that follows is the
 2026-09-22 measurement at `cae887a` with a PLAIN `make PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving (`frozen=240394838`, `loopFrames=339`,
 `FRAME = 169 ms` wall − phase 0; the 154.16 arm at `6b7365c` is the control the band-gate fix was
@@ -75,7 +75,7 @@ by certainty × size:
 4. `build_track_geometry` −4.8, the sign/object pair −2.1, the tail −2.1, the small rows −1.3.
 5. Port-only: the drain's ~442 µs/cycle remainder (~4 ms), `prepareFrame`'s non-copper part.
 
-**STEP 1 PROGRESS (2026-09-23): 149.18 → 126.68 ms bracketed, −22.5.**
+**STEP 1 PROGRESS (2026-09-24): 149.18 → 116.47 ms bracketed, −32.7.**
 - ✅ 1.1 input: the MOS round trip → a direct Amiga answer + a reverse key map, **−4.04**
   (ph3 5.11 → 1.96 against the BBC's 1.0).
 - ✅ the span plotters inlined into the walk, **−2.23** (the `noinline` rested on a
@@ -113,15 +113,26 @@ by certainty × size:
   ✅ **the setup over locals, −0.34** (ph11 → 26.55): no read-back of a cell it has just stored,
   every store kept. Rule 1b's floor has arrived for C on this body.
 
-  ⏭ **NEXT — THE PLAN IS `docs/span-setup-asm-plan.md`: the setup in 68000 asm, fused with the
-  walk.** A real call is ~450 instructions (setup ~246, walk 79, bridge ~59, entry and write-back
-  ~52) against the BBC's ~180. The reader audit is already done: only `colour_pattern_tbl` is read
-  outside the span pass (by `plot_object`), and `$88`/`$86` are seeded from outside. So the
-  cross-span cells can live in registers for a whole pass and be flushed at its end, with
-  frame-boundary memory byte-identical.
+  ✅ **THE WHOLE SPAN PASS IN 68000 ASM, −10.17** (ph11 **26.62 → 17.10**, against the BBC's 16.5 —
+  parity once probe overhead is off). `draw_surface_spans`' loop, `interp_edge`'s setup and the walk
+  are one routine (`span_pass_m68k.s`, `SETUPASM=0` the control). It stores every cell the C stores,
+  span by span, so memory is byte-identical and no gate needed a re-record. The gate is `make
+  SETUPCHECK=1`: all 64 KB compared a pass, 0 mismatches over 400 passes on each of five circuits
+  and a 2000-pass fuzzer, and eight sabotages caught (two only by the fuzzer).
+  docs/perf-method.md §the span setup in 68000 asm.
 
-  §6 of that plan lists the rest of step 1 in order: `view_paint_lines` (single-step it first),
-  then `prepareFrame` and the drain, then the tail and sign/object, then STEP 2.
+  ⏭ **NEXT — the rest of step 1, in this order:**
+  1. **`view_paint_lines`** (ph24 + ph33, ~34.6 ms against the BBC's 23.5 — now the biggest excess
+     by far). **Single-step it first** (`steptrace.gdb` with the break target changed), because
+     brackets have been wrong twice in this subsystem, and read docs/span-render-plan.md §11-§12 and
+     CLAUDE.md's view-sweep rules before touching it. The span pass's lesson applies: the win came
+     from taking the LOOP and the per-call plumbing into one register-resident routine, not from
+     shaving the C.
+  2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
+     since the drain self-heals as the frame shrinks.
+  3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
+  4. **Then STEP 2**: the direct span-to-bitplane renderer that deletes the `$3000` intermediate.
+     Re-price it after step 1.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
   18.83**. `bearing_to_section` and `project_point` each take `(S << 8) / L` in one `DIVU` of the
   real operands where the 6502 divided by a divisor truncated to its top byte (0..+2 above the

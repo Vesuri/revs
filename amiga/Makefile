@@ -112,6 +112,27 @@ PROBE_SYMS_WALKCHECK = g_walkCheckSpans g_walkCheckMismatch g_walkCheckFallback 
 endif
 SPANASM_SABOTAGE ?= 0
 
+# ⭐⭐ `SETUPASM=1` (the DEFAULT, and only with SPANASM=1) — a whole span PASS in 68000 assembly
+# (src/platform/amiga/span_pass_m68k.s): draw_surface_spans' loop, interp_edge's setup and the walk as
+# one routine; `make SETUPASM=0` is the C control.  ⭐⭐ `make SETUPCHECK=1` is its gate: every pass
+# runs C and asm on the same 64 KB and compares all of it, after a 2000-pass target fuzzer (read with
+# amiga/setupcheck.gdb) — ⚠ a correctness arm, its phase rows are void.  `SETUPASM_SABOTAGE=N`
+# assembles deliberate defect N for SETUPCHECK to catch.  Not built into a WALKCHECK build, which
+# gates the walk alone.  docs/perf-method.md §the span setup in 68000 asm.
+SETUPASM ?= 1
+ifeq ($(SPANASM)$(SETUPASM),11)
+EXTRA_DEFINES += -DREVS_SETUP_ASM
+SPANASM_SRCS  += $(AMIGA_SRC)/span_pass_m68k.s
+endif
+ifdef SETUPCHECK
+EXTRA_DEFINES += -DREVS_SETUPCHECK
+PROBE_SYMS_SETUPCHECK = g_setupCheckPasses g_setupCheckMismatch g_setupCheckFirstAddr g_setupCheckFirstC \
+                        g_setupCheckFirstAsm g_setupCheckFirstPass g_setupCheckVariants \
+                        g_setupSelfCases g_setupSelfMismatch g_setupSelfSpans g_setupSelfFirstAddr \
+                        g_setupSelfFirstC g_setupSelfFirstAsm g_setupSelfFirstCase g_smcUnhandled
+endif
+SETUPASM_SABOTAGE ?= 0
+
 CORE_C_SRCS := \
     $(FASTMEM_SRCS) \
     $(REPO)/src/cpu/cpu.c \
@@ -1507,7 +1528,7 @@ PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERR
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
-PROBE_SYMS += $(PROBE_SYMS_WALKCHECK)
+PROBE_SYMS += $(PROBE_SYMS_WALKCHECK) $(PROBE_SYMS_SETUPCHECK)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping
@@ -1618,6 +1639,10 @@ obj/gcc8_a_support.o : $(SUPPORT)/gcc8_a_support.s
 obj/span_walk_m68k.o : $(AMIGA_SRC)/span_walk_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SPANASM_SABOTAGE) -o $@ "$<"
+
+obj/span_pass_m68k.o : $(AMIGA_SRC)/span_pass_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SETUPASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

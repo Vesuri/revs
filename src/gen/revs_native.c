@@ -8305,6 +8305,15 @@ int span_asm_variant(const SpanArm *arm, const FastWalk *w, unsigned n)
     return arm->steep ? 8 + arm->rev * 2 + neg : arm->rev * 4 + inMode * 2 + neg;
 }
 
+#ifdef REVS_SETUPCHECK
+static int g_setupCheckRefC;            /* set while SETUPCHECK runs its C reference pass */
+/* ...and what its walks covered, by variant (span_asm_variant's numbering): [0..11] the self-test's,
+   [12..23] the game's.  A variant at 0 is one the check never compared. */
+volatile unsigned long g_setupCheckVariants[24];
+extern volatile unsigned long g_setupSelfCases;
+#define SETUP_SELF_CASES 2000u          /* the self-test's random passes (span_pass_selftest) */
+#endif
+
 /* The bridge: the register contract is at the top of span_walk_m68k.s. */
 static inline __attribute__((always_inline))
 int span_walk_asm(FastWalk *w, int variant, unsigned n)
@@ -8524,6 +8533,12 @@ void span_walk_fast_run(const SpanArm *arm, uint8_t phase, FastWalk *wp)
 #ifdef REVS_SPAN_ASM_ON
     { unsigned n = arm->rev ? (unsigned)(w.p2 >> 8) - arm->bound : arm->bound - (unsigned)(w.p2 >> 8);
       int v = span_asm_variant(arm, &w, n);
+#ifdef REVS_SETUPCHECK
+      if (g_setupCheckRefC) {           /* SETUPCHECK's reference pass is C all the way down */
+          if (v >= 0) g_setupCheckVariants[v + (g_setupSelfCases >= SETUP_SELF_CASES ? 12 : 0)]++;
+          v = -1;
+      }
+#endif
       if (v >= 0) {
 #ifdef REVS_WALKCHECK
           abandoned = span_walk_check(arm, &w, v, n);
@@ -9198,6 +9213,216 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
    into the near arm, depending on the pass.  ⚠ The CARRY is an argument to interp_edge and
    means "publish this endpoint, draw nothing": it is set on the first call of every pass and
    on the boundary arms, and clear everywhere else. */
+static inline __attribute__((always_inline)) void draw_surface_spans_loop(uint8_t styleLo);
+
+/* ⭐⭐⭐ THE AMIGA RUNS A WHOLE PASS IN 68000 ASSEMBLY — src/platform/amiga/span_pass_m68k.s: this
+   routine's loop, interp_edge_core and the span walk as ONE routine, with every walk input computed
+   in the register the walk takes it in.  Single-stepped, a real span cost ~450 instructions of which
+   the walk was 79; the rest was C that the three passes over it had taken to its floor (the direct
+   entry, the locals, the four walk shapes).  It stores every cell interp_edge_core stores, in the
+   same span, so mem[] after every span is what the C leaves; the C below stays as the host's
+   routine and the reference.  ⚠ Built only when the asm walk is (REVS_SPAN_ASM_ON: no instrument
+   hooks), and not in a WALKCHECK build, which gates the walk alone through span_walk_fast_run. */
+#if defined(REVS_SPAN_ASM_ON) && defined(REVS_SETUP_ASM) && !defined(REVS_WALKCHECK)
+#define REVS_SETUP_ASM_ON 1
+void span_pass_m68k(unsigned far, unsigned near, unsigned style0, uint8_t *dest);
+
+/* The asm's cap: span_walk_fast_run's two, after the asm has written the walk back.  `abandoned`
+   says which — the abandon path's X is S + 2 (span_abandon_chain), the descending arms' is $2F
+   (span_walk_cap, whose entry-step replay the asm has already added to y). */
+void span_asm_cap(unsigned y, unsigned abandoned)
+{
+    span_cap_line((uint8_t)y, abandoned ? (uint8_t)(cpu.S + 2u) : (uint8_t)0x2Fu);
+}
+
+/* ...and an entry offset the chain cannot mean (never, in the game): span_entry_decode's report,
+   after the pointer words span_walk_direct had set by then.  `v16` is the asm's variant * 16. */
+void span_asm_trap(unsigned v16, unsigned block)
+{
+    const SpanArm *arm = (v16 & 128u) ? ((v16 & 32u) ? &ARM_STEEP_REV : &ARM_STEEP_FWD)
+                                      : ((v16 & 64u) ? &ARM_SHALLOW_REV : &ARM_SHALLOW_FWD);
+    const unsigned page = (unsigned)((uint8_t)block >> 1) + 0x30u;
+    plot_ptr_v  = (uint16_t)((page << 8) | mem[MEM_plot_ptr_lo]);
+    plot_ptr2_v = (uint16_t)((page << 8) | mem[MEM_plot_ptr2_lo]);
+    plot_ptr3_v = (uint16_t)(((page + 1u) << 8) | mem[MEM_plot_ptr3_lo]);
+    platform_smc_unhandled((uint16_t)(arm->operand - 1u),
+                           (uint16_t)(arm->base + (int8_t)mem[arm->operand]));
+}
+
+#ifdef REVS_SETUPCHECK
+/* ⭐⭐ `make SETUPCHECK=1` — THE ASM PASS'S GATE, on the target, on the game's own passes.  Per pass:
+   snapshot ALL of mem[] (and the three pointer words and the cpu struct — the cap can run circuit
+   code, which uses both), run the C pass with the C walk, keep the result, restore, run the asm
+   pass, and compare all 64 KB plus the pointer words and the cpu struct.
+   ⚠ SCOPE: whole-pass, whole-memory — so it sees any store the asm makes or misses anywhere, and a
+   wrong value handed to the cap, which the cap then writes; it compares at the END of the pass, so
+   an intermediate difference that a later span overwrites is invisible (none exists by design: the
+   asm stores what the C stores, span by span).  It does NOT compare g_spanStepIn / g_spanStepOut /
+   g_spanMarkOn, which the asm never writes: C-private scratch every C walk path sets before reading.
+   It shares draw_surface_spans_core's destination test with the asm, so it cannot see a defect in
+   that one comparison.  Safe to restore wholesale because the VERTB ISR writes no mem[] byte. */
+volatile unsigned long g_setupCheckPasses, g_setupCheckMismatch;
+volatile unsigned long g_setupCheckFirstAddr, g_setupCheckFirstC, g_setupCheckFirstAsm, g_setupCheckFirstPass;
+volatile unsigned long g_setupSelfCases, g_setupSelfMismatch, g_setupSelfSpans;
+volatile unsigned long g_setupSelfFirstAddr, g_setupSelfFirstC, g_setupSelfFirstAsm, g_setupSelfFirstCase;
+/* ⭐ The compare runs over two COPIES held as longwords (mem[] itself is never aliased wide —
+   make endian-lint): a byte loop over 64 KB was most of the check's cost.  Equality is endian-free. */
+static uint32_t s_scRef[0x4000], s_scGot[0x4000];
+static uint8_t  s_scSnap[0x10000], s_scSelf[0x10000];
+
+typedef struct { uint16_t p1, p2, p3; typeof(cpu) c; } SetupAux;
+static void setup_aux_get(SetupAux *a) { a->p1 = plot_ptr_v; a->p2 = plot_ptr2_v; a->p3 = plot_ptr3_v; a->c = cpu; }
+static void setup_aux_put(const SetupAux *a) { plot_ptr_v = a->p1; plot_ptr2_v = a->p2; plot_ptr3_v = a->p3; cpu = a->c; }
+
+/* Run the C pass and the asm pass on the same state; 0 if they agree, else 1 with the first
+   difference in *addr / *cv / *av (an address above $FFFF names a pointer word or the cpu struct).
+   Leaves everything as the asm left it — or, on a mismatch, as the C left it, so a defect (a
+   sabotage) cannot derail the very run that is counting it. */
+static int span_pass_diff(uint8_t styleLo, unsigned dest, unsigned long *addr, unsigned long *cv,
+                          unsigned long *av, SetupAux *ref);
+static __attribute__((noinline))
+int span_pass_compare(uint8_t styleLo, unsigned dest, unsigned long *addr, unsigned long *cv,
+                      unsigned long *av)
+{
+    SetupAux ref;
+    if (!span_pass_diff(styleLo, dest, addr, cv, av, &ref)) return 0;
+    memcpy((void *)mem, s_scRef, 0x10000u);
+    setup_aux_put(&ref);
+    return 1;
+}
+static int span_pass_diff(uint8_t styleLo, unsigned dest, unsigned long *addr, unsigned long *cv,
+                          unsigned long *av, SetupAux *refOut)
+{
+    SetupAux snap, ref, got;
+    const uint8_t far = span_index_far, near = span_index_near;
+    unsigned i;
+
+    memcpy(s_scSnap, (const void *)mem, 0x10000u);
+    setup_aux_get(&snap);
+    g_setupCheckRefC = 1;
+    draw_surface_spans_loop(styleLo);
+    g_setupCheckRefC = 0;
+    memcpy(s_scRef, (const void *)mem, 0x10000u);
+    setup_aux_get(&ref);
+    memcpy((void *)mem, s_scSnap, 0x10000u);
+    setup_aux_put(&snap);
+    span_pass_m68k(far, near, styleLo, (uint8_t *)mem + dest);
+    setup_aux_get(&got);
+    *refOut = ref;
+
+    memcpy(s_scGot, (const void *)mem, 0x10000u);
+    for (i = 0; i < 0x4000u; i++)
+        if (s_scRef[i] != s_scGot[i]) {
+            const uint8_t *r = (const uint8_t *)&s_scRef[i], *g = (const uint8_t *)&s_scGot[i];
+            unsigned k = 0;
+            while (r[k] == g[k]) k++;
+            *addr = i * 4u + k; *cv = r[k]; *av = g[k]; return 1;
+        }
+    if (ref.p1 != got.p1) { *addr = 0x10001u; *cv = ref.p1; *av = got.p1; return 1; }
+    if (ref.p2 != got.p2) { *addr = 0x10002u; *cv = ref.p2; *av = got.p2; return 1; }
+    if (ref.p3 != got.p3) { *addr = 0x10003u; *cv = ref.p3; *av = got.p3; return 1; }
+    { const uint8_t *r = (const uint8_t *)&ref.c, *g = (const uint8_t *)&got.c;
+      for (i = 0; i < sizeof ref.c; i++)
+          if (r[i] != g[i]) { *addr = 0x10100u + i; *cv = r[i]; *av = g[i]; return 1; } }
+    return 0;
+}
+
+/* ⭐⭐ THE SELF-TEST, before the first real pass: Silverstone driving never makes a steep span or a
+   +1 step, and one circuit reaches few of the style arms, so SETUP_SELF_CASES random passes go
+   through the same comparison first — random edge points (on and off the view, on and off axis,
+   marked and not), style records, clip and arm history, split, pass number, pointer low bytes,
+   destination, pattern keep/and tables, dash_block_starts, cell contents and surface classes.
+   The $2F23 cap slot is held at Silverstone's own LDA so no random state is handed to circuit code.
+   All of mem[] and the aux state are saved first and restored after. */
+static void span_pass_selftest(void)
+{
+    SetupAux keep;
+    uint32_t seed = 0x6D2B79F5u;
+    unsigned c, i;
+    unsigned long a, cv, av;
+/* xorshift32: no multiply, so no __mulsi3 (muldiv-audit) */
+#define SS_RAND() (seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5, (unsigned)(seed & 0xFFFFu))
+#define SS_MOD(x, m) revs_modu16((uint32_t)(x), (uint16_t)(m))
+
+    memcpy(s_scSelf, (const void *)mem, 0x10000u);
+    setup_aux_get(&keep);
+    for (c = 0; c < SETUP_SELF_CASES; c++) {
+        const uint8_t y0 = (uint8_t)SS_MOD(SS_RAND(), 0x30u), off = (uint8_t)SS_MOD(SS_RAND(), 9u);
+        const unsigned dest = 0x0300u + SS_MOD(SS_RAND(), 0x501u);
+        const uint8_t styleLo = (uint8_t)SS_RAND();
+
+        memcpy((void *)mem, s_scSelf, 0x10000u);
+        /* the edge points, $00..$4F: scan lines mostly on the view, x near the axis */
+        for (i = 0; i < 0x50u; i++) {
+            unsigned k = SS_RAND();
+            mem[MEM_edge_y + i]    = (uint8_t)((k & 7u) == 0 ? SS_RAND() : SS_MOD(SS_RAND(), 0x50u));
+            mem[MEM_edge_x_hi + i] = (uint8_t)((k & 0x18u) == 0 ? SS_RAND() : SS_MOD(SS_RAND(), 0x30u) - 0x18u);
+            mem[MEM_edge_x_lo + i] = (uint8_t)SS_RAND();
+            mem[MEM_edge_style + i] = (uint8_t)(((k & 0xE0u) == 0 ? 0x80u : 0u) | (SS_RAND() & 0x7Fu));
+        }
+        for (i = 0; i < 0x100u; i++) mem[MEM_surface_style_tbl + i] = (uint8_t)SS_RAND();
+        /* the cells the walk merges into: mostly empty, some `$55`, the rest anything — but the
+           four entry tables keep their real offsets (a random one is the trap, one case in 64) */
+        for (i = 0x3000u; i < 0x4600u; i++) {
+            unsigned k = SS_RAND() & 7u;
+            mem[i] = (k < 4u) ? 0u : (k == 4u) ? 0x55u : (uint8_t)SS_RAND();
+        }
+        memcpy((void *)&mem[0x3E50], &s_scSelf[0x3E50], 8u);
+        memcpy((void *)&mem[0x40D0], &s_scSelf[0x40D0], 8u);
+        memcpy((void *)&mem[0x3ED0], &s_scSelf[0x3ED0], 16u);
+        if ((SS_RAND() & 63u) == 0) mem[0x3E50 + (SS_RAND() & 7u)] = (uint8_t)SS_RAND();
+        for (i = 0; i < 0x29u; i++) mem[MEM_dash_block_starts + i] = (uint8_t)SS_MOD(SS_RAND(), 0x50u);
+        for (i = 0; i < 4u; i++) {                  /* (inside the cell pages, so after them) */
+            mem[MEM_colour_pattern_keep_tbl + i] = (uint8_t)SS_RAND();
+            mem[MEM_colour_pattern_and_tbl + i]  = (uint8_t)SS_RAND();
+        }
+        for (i = 0; i < 0x50u; i++)
+            mem[MEM_view_line_surface + i] = (uint8_t)((SS_RAND() & 1u) ? 0u : SS_RAND());
+        view_yaw_offset = (uint8_t)SS_MOD(SS_RAND(), 0x50u);
+        mem[MEM_smc_span_cap_load] = 0xB9u;
+        /* the pass's zero page */
+        surface_pass_index = (uint8_t)(SS_RAND() & 3u);
+        span_index_near    = y0;
+        span_index_far     = (uint8_t)(y0 + off);
+        span_end_index     = (uint8_t)(y0 + 1u + SS_MOD(SS_RAND(), 24u));
+        road_split_index   = (uint8_t)(y0 + SS_MOD(SS_RAND(), 26u) - 2u);
+        shared_temp_8c     = (uint8_t)SS_RAND();
+        surface_style_base = (uint8_t)((SS_RAND() & 3u) == 0 ? SS_RAND() : SS_MOD(SS_RAND(), 0x20u));
+        mem[SPAN_CLIP] = (uint8_t)SS_RAND(); mem[SPAN_ARM] = (uint8_t)SS_RAND();
+        shared_temp_7e = (uint8_t)SS_RAND(); span_line_cursor = (uint8_t)SS_MOD(SS_RAND(), 0x58u);
+        plot_ptr_lo = (uint8_t)SS_RAND(); plot_ptr2_lo = (uint8_t)SS_RAND(); plot_ptr3_lo = (uint8_t)SS_RAND();
+        mem[MEM_span_dest_p1_operand] = mem[MEM_span_dest_p2_operand] = (uint8_t)dest;
+        mem[MEM_span_dest_p1_operand + 1u] = mem[MEM_span_dest_p2_operand + 1u] = (uint8_t)(dest >> 8);
+
+        if (span_pass_compare(styleLo, dest, &a, &cv, &av)) {
+            if (!g_setupSelfMismatch) { g_setupSelfFirstAddr = a; g_setupSelfFirstC = cv;
+                                        g_setupSelfFirstAsm = av; g_setupSelfFirstCase = c; }
+            g_setupSelfMismatch++;
+        }
+        g_setupSelfCases++;
+        g_setupSelfSpans += (unsigned)(uint8_t)(span_end_index - y0);
+    }
+#undef SS_RAND
+#undef SS_MOD
+    memcpy((void *)mem, s_scSelf, 0x10000u);
+    setup_aux_put(&keep);
+}
+
+static __attribute__((noinline))
+void span_pass_check(uint8_t styleLo, unsigned dest)
+{
+    unsigned long a, cv, av;
+    if (!g_setupSelfCases) span_pass_selftest();
+    if (span_pass_compare(styleLo, dest, &a, &cv, &av)) {
+        if (!g_setupCheckMismatch) { g_setupCheckFirstAddr = a; g_setupCheckFirstC = cv;
+                                     g_setupCheckFirstAsm = av; g_setupCheckFirstPass = g_setupCheckPasses; }
+        g_setupCheckMismatch++;
+    }
+    g_setupCheckPasses++;
+}
+#endif /* REVS_SETUPCHECK */
+#endif /* REVS_SETUP_ASM_ON */
+
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
 {
     surface_pass_index = pass;
@@ -9215,6 +9440,27 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
     uint8_t styleLo = mem[MEM_row_base_lo + pass];
     mem[MEM_span_dest_p1_operand] = mem[MEM_span_dest_p2_operand] = styleLo;
 
+#ifdef REVS_SETUP_ASM_ON
+    /* The patched destination decides which: in $0300..$0800 (every pass the game makes) the whole
+       pass runs in 68000 assembly; anywhere else the C below, whose walk takes the general
+       dispatcher (span_walk_direct).  Checked once a pass — nothing in a pass writes the operands. */
+    { unsigned dest = (unsigned)(mem[MEM_span_dest_p1_operand] | (mem[MEM_span_dest_p1_operand + 1u] << 8));
+      if (dest >= 0x0300u && dest <= 0x0800u) {
+#ifdef REVS_SETUPCHECK
+          span_pass_check(styleLo, dest);
+#else
+          span_pass_m68k(span_index_far, span_index_near, styleLo, (uint8_t *)mem + dest);
+#endif
+          return;
+      } }
+#endif
+    draw_surface_spans_loop(styleLo);
+}
+
+/* $19D4-$1A1A — the pass's walk, from its first endpoint (span_index_far / span_index_near). */
+static inline __attribute__((always_inline))
+void draw_surface_spans_loop(uint8_t styleLo)
+{
     /* x/y are the 6502's X/Y across the walk: the far and near endpoint indices interp_edge
        takes as arguments. */
     uint8_t x = span_index_far;

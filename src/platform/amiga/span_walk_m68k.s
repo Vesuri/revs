@@ -25,7 +25,7 @@
 |        d6    bh.b | markOn << 16                 d7.w  variant * 16 + startCol * 2 + forced
 |        a1/a2/a3  mem + plot_ptr / plot_ptr2 / plot_ptr3          a4  mem + the destination
 |   out  d1.b  y   d4.b block   a1-a3 the pointers   d7.l 1 = abandoned (y reached lineEnd), 0 = ran out
-|   clobbers d0, d5, a0; preserves a5/a6 (a5 may be GCC's frame pointer)
+|   clobbers d0, d5, a0; preserves a5/a6 (a5 may be GCC's frame pointer) and d6 (bits 17-31 unused)
 |   working: d0.b the DDA accumulator, d0 bit 8 = "this half-line has plotted" (colMark != $80),
 |            d7 scratch, a0 = mem + $3900 + block, a5 = mem + $628F, a6 = mem + $337C.
 
@@ -279,22 +279,30 @@
 	.type	span_walk_m68k, @function
 span_walk_m68k:
 	movem.l	a5-a6,-(sp)
+	lea	mem+MEM_PAT,a5
+	lea	mem+MEM_AND,a6
+	bsr.s	span_walk_enter
+	movem.l	(sp)+,a5-a6
+	rts
+
+| ⭐ The walk proper, for a caller that already holds a5 = mem + $628F and a6 = mem + $337C — the C
+| bridge above, and span_pass_m68k (span_pass_m68k.s), which falls into it straight out of the setup.
+| Registers as in the header; it returns with rts (the walk's last act is `rts` from span_asm_exit).
+	.globl	span_walk_enter
+span_walk_enter:
+	add.w	d7,d7
+	lea	span_asm_table(pc),a0
+	move.w	(a0,d7.w),d7
+	pea	(a0,d7.w)               | the entry column, returned to by the rts below
 	moveq	#0,d0
 	move.b	d4,d0
 	lea	mem+MEM_DBS,a0
 	adda.l	d0,a0                   | a0 = &dash_block_starts[block]
 	moveq	#0,d0
 	sub.b	d3,d0                   | acc = -subtrahend: the first carry lands the first pixel
-	add.w	d7,d7
-	lea	span_asm_table(pc),a5
-	move.w	(a5,d7.w),d7
-	pea	(a5,d7.w)               | the entry column, returned to by the rts below
-	lea	mem+MEM_PAT,a5
-	lea	mem+MEM_AND,a6
 	rts
 
 span_asm_exit:
-	movem.l	(sp)+,a5-a6
 	rts
 
 | variant = shallow: rev * 4 + stepIn-mode * 2 + (step < 0);  steep: 8 + rev * 2 + (step < 0)

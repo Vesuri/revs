@@ -459,3 +459,26 @@ cannot spell your way to a constant base register.
   a sabotage that deletes the instruction a short branch skips must leave a same-size no-op.
 - Push the entry address and `rts` to it (`pea (a5,d7.w)` / `rts`). It frees the register that
   held the jump table's base for the constant it really wants.
+
+**...and what the span PASS added (`span_pass_m68k.s`, 2026-09-24):**
+- ⭐ **ONE base register reaches every `mem[]` cell below `$E28E`.** `a5 = mem + $628F` (which the
+  walk wanted for the pattern table anyway) puts zero page at `d16(a5)` with a negative
+  displacement: 12 cycles a byte against 16 for `abs.l`, and no second base register.
+- ⭐ **When the bridge would run per call, take the LOOP into the asm instead.** The pass routine
+  is a plain C-callable function (arguments on the stack as longs, `movem` of d2-d7/a2-a6 once a
+  pass), so draw_surface_spans' per-span C call, its pinned-register loads and GCC's spills
+  around them are gone, not merely cheapened.
+- **Calling back into C from asm** (the cap, which can run a circuit's hook): push the arguments
+  as longs right to left, `jsr`, `addq.l #8,sp`. The callee clobbers only d0/d1/a0/a1, so state
+  in d2-d7/a2-a6 and the stack frame survives.
+- ⚠ **When the callee uses all fifteen registers, per-span state has nowhere cheaper to live than
+  its own zero-page cell.** The walk takes d0-d7/a0-a6, so a value crossing it goes to the stack.
+  That's no cheaper than a `d16(a5)` store and reload, and it's why the plan's "hold the cross-span
+  cells for a pass, flush at the end" wasn't built. The asm stores what the C stores, span by span.
+- `exg` sets no flags: `tst.b d4 / exg d1,d4 / bmi` branches on the value that has just moved out.
+  A `move` between the test and the branch does NOT work (MOVE sets N/Z), which is a bug I wrote
+  once in this routine and caught on review.
+- ⚠ **A routine with no `.subsection 1` needs a `.L` end label.** A plain symbol at the section's
+  end has the NEXT function's address, so objdump and the PC sampler name that function after it.
+- **A 256-byte decode table beats a compare chain** for a byte with ~17 legal values (the chains'
+  entry offsets): `move.b (a4,d0.w),d0 / bmi trap`, with `$FF` as "cannot mean".

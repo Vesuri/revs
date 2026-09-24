@@ -43,6 +43,9 @@ ALLOWED = {
   #    span_walk_fast_run's abandon cap is span_abandon_chain's same `cpu.S + 2u` (the walk's own
   #    abandon path, which reached the lint once it stopped being written inside a #define).
   'span_walk_fast_run': 'cpu.S is an address',
+  #    span_asm_cap is that same abandon cap for the 68000 pass (span_pass_m68k.s), which calls
+  #    back into C for it because the cap can run a circuit's hook.
+  'span_asm_cap': 'cpu.S is an address',
 
   # -- class 4: a decimal-mode clear inside a core.  `cpu.D = 0` is the 6502's own CLD.
   #    ⚠⚠ THE OLD ARGUMENT HERE WAS WRONG AND IS THE REASON THESE THREE STAY.  It read

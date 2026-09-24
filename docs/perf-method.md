@@ -2640,8 +2640,59 @@ Two lessons came out of it, both measured.
    other callers (the 6502-ABI arms, the fixtures) still take the guard.
 2. **Rewriting the setup over locals** (no read-back of a stored cell, every store kept) paid only
    **−0.34**: Rule 1b's per-cell floor. The remaining ~246 instructions are the stores plus the
-   computation. The coarse lever is the setup in asm, sharing the walk's registers and flushing
-   cross-span cells once a pass (docs/span-setup-asm-plan.md).
+   computation. The coarse lever was the setup in asm, sharing the walk's registers (next section).
+
+### ⭐⭐⭐ THE SPAN SETUP IN 68000 ASM — THE WHOLE PASS: ph11 **26.62 → 17.10 ms**, frame **126.64 → 116.47** (2026-09-24)
+
+`draw_surface_spans_core`'s loop, `interp_edge_core` and the walk are ONE hand-written routine on the
+Amiga (`src/platform/amiga/span_pass_m68k.s`; `make SETUPASM=0` is the C control, `build=` bit 13
+says which arm ran: `3c1d` against `1c1d`). One run per arm, `PROBEFIELDS=3000`, `frozen=` on both,
+phase 0 equal to 0.1 field. **ph11 −9.52, bracketed −10.17** (the other rows are trajectory, ±0.4,
+from 443 painted frames against 414). `draw_road` is now **17.1 against the real BBC's 16.5**, which
+is parity once the ~0.118 ms a call of probe overhead is taken off.
+
+**What it is.** The loop picks each span's style exactly as the C does. The setup computes every walk
+input IN the register the walk takes it in, then does `jsr span_walk_enter`: the walk's own jump
+table, entered with a5/a6 already loaded. The walk file's entry was split for this, and the C bridge
+still uses the outer entry. C is called back for two things only: the cap (`span_cap_line`, because
+it can run a circuit's hook) and an entry offset the chain cannot mean.
+- ⭐ **`a5 = mem + $628F` is one base for everything.** The walk wanted it for the pattern table, and
+  through `d16` it also reaches every zero-page cell (12 cycles a byte, no `abs.l`).
+- ⭐ **It STORES WHAT THE C STORES, span by span, and the plan's per-pass flush was not built.** The
+  walk uses all fifteen registers, so a cross-span value would cross it on the stack, which is no
+  cheaper than its zero-page cell. Per-span stores also keep `mem[]` byte-identical after every span,
+  which is what the cap's circuit hook sees. So `determinism` and `validate` (which run the C) need
+  no re-record and no `set_ignore`.
+- The C-private step and marker statics (`g_spanStepIn/Out`, `g_spanMarkOn`) are not written. Every
+  C walk path sets them before it reads them.
+
+⚠ **The estimate was 5-8 ms and it paid 9.5.** For once the error is in the good direction, and the
+reason is the same denominator as last time, read the other way: the loop moved into the asm too, so
+the **publish-only calls (a third of all calls) and the skipped points also stopped paying a C call**,
+which the per-real-call arithmetic never counted.
+
+**How it was gated — `make SETUPCHECK=1` + `amiga/setupcheck.gdb`:**
+1. Per pass: snapshot all 64 KB, the three pointer words and the cpu struct. Run the C pass with the
+   C walk (`g_setupCheckRefC`), keep the result, restore, run the asm pass, and compare everything.
+   On a mismatch the C result is put back, so a defect cannot derail the run that is counting it.
+   A byte loop over 64 KB was most of the check's cost; comparing two longword COPIES (never
+   `mem[]` aliased wide) made it affordable.
+2. **A 2000-pass fuzzer first** (24,877 spans; random edge points, style records, clip/arm history,
+   split, pass, pointer low bytes, destination, keep/and tables, cells). It covers all twelve walk
+   variants, 350-2570 each. **0 mismatches, and 0 over 400 game passes on each of the five circuits**
+   (Silverstone: 2654 walks, four variants only; Oulton and Snetterton also reach +1 steps and both
+   steep arms). ⚠ **Brands Hatch's 400 were ONE FRAME REPEATED** — its variant counts came out as
+   round hundreds (500/900/100/400) — so it was re-run for 1600 passes on a moving scene (9833
+   walks, steep ones included), 0 mismatches. **A census of round numbers is a static scene; read
+   the counts before the verdict.**
+3. **Eight sabotages, all caught:** the endpoint bias; the scan lines not swapped with the ends; the
+   `giveBack` shift; the step-in selection inverted; the start line; the clip history not shifted;
+   the arm not crossed with the swap; the `$55` substitution dropped. ⚠ **Numbers 2 and 7 were
+   caught ONLY by the fuzzer** (0 of 400 Silverstone passes take the endpoint swap), the same
+   lesson as WALKCHECK's 1 and 7.
+4. It also found that `make cpu-lint` had been RED since `17cdb6e`: the abandon cap moved into
+   `span_walk_fast_run` and the allowlist row still said `span_walk_fast`. Run the lints in the
+   commit that moves a `cpu` site, not in the next session.
 
 ## Lessons — measurement
 
