@@ -615,6 +615,8 @@ extern uint16_t sim_h_q16;       /* the step as a Q16 fraction of the engine's f
 extern uint8_t  sim_tick_step;   /* the current step carries the slow tick */
 extern uint8_t  sim_render_ticks;   /* slow ticks since the previous painted frame */
 extern uint8_t  sim_engine_caught;  /* the engine caught since the lights last walked */
+extern uint8_t  sim_note_budget_on, sim_note_steps_owed;   /* engine_sound_update's per-tick budget */
+extern uint16_t sim_jump_threshold;  /* place_player_in_section's |d across| test */
 extern uint16_t plot_ptr_v, plot_ptr2_v, plot_ptr3_v;
 void plot_ptr_marshal_in(void);   void plot_ptr_marshal_out(void);
 void plot_ptr2_marshal_in(void);  void plot_ptr2_marshal_out(void);

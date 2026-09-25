@@ -4279,6 +4279,8 @@ static void sim_clock_session_start(void)
     memset(s_aiAlongRem, 0, sizeof s_aiAlongRem);
     memset(s_aiAcrossRem, 0, sizeof s_aiAcrossRem);
     s_pitchK = sim_h_q16 ? sim_pitch_k_q16(sim_h_q16) : 0u;
+    sim_note_budget_on  = (uint8_t)(s_simStepTenths != 0u);
+    sim_note_steps_owed = 0u;
     (void)platform_sim_fields();       /* the fields the reset took are not game time */
     /* The session's first painted frame runs one step, and it is a slow tick — as the BBC's
        first frame is. */
@@ -4335,6 +4337,16 @@ uint8_t  sim_render_ticks = 1u;
    it as "running" — only when h < 1, the one case with steps between two walks (at h = 1 every
    step is a tick, and a validate fixture's random state must not see a stale latch). */
 uint8_t  sim_engine_caught;
+/* ⭐ ONCE PER PAINTED FRAME, BUT MEASURING ENGINE FRAMES (docs/open-work.md §FRAME-RATE-INDEPENDENT
+   SIMULATION, stage 4).  engine_sound_update moves the note one unit a call and is called four
+   times a painted frame, so its slew is four units per ENGINE frame: decoupled, it draws on a
+   budget of four per slow tick (a call with none owed does nothing, as a call already on target
+   does).  place_player_in_section's section-jump test is a lateral speed — |change in across|
+   >= $16 between frames 93.6 ms apart — so its threshold scales with the game time the painted
+   frame covered.  Both are the engine's own behaviour in legacy mode and outside the driver. */
+uint8_t  sim_note_budget_on;
+uint8_t  sim_note_steps_owed;
+uint16_t sim_jump_threshold = 0x16u;
 
 /* rate x h x 2^shift, in the accumulator's own least unit, with what falls below that unit
    carried in *rem — so over any number of steps the sum is exact, and a slow rate still moves
@@ -4467,6 +4479,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
                 if (sim_tick_step) {
                     g_simSlowTicks++;
                     frameTicks++;
+                    if (sim_note_steps_owed <= 4u) sim_note_steps_owed = (uint8_t)(sim_note_steps_owed + 4u);
                     PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
                     PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
                 }
@@ -4492,6 +4505,11 @@ uint8_t race_main_loop_core(RestartDepth depth)
             }
             sim_tick_step = 1u;                            /* outside the steps, a legacy step */
             sim_render_ticks = (uint8_t)(frameTicks > 255u ? 255u : frameTicks);
+            if (s_simStepTenths != 0u) {
+                const uint32_t gameTenths = (uint32_t)steps * s_simStepTenths;
+                uint16_t thr = revs_divu16(gameTenths * 0x16u, (uint16_t)SIM_BBC_FRAME_TENTHS);
+                sim_jump_threshold = steps == 0u ? 0x100u : (thr == 0u ? 1u : thr);
+            }
             rebase_heading_delta_v = s_rebaseHeadingSum;   /* the motion since the last pass */
             view_pitch_delta       = s_rebasePitchSum;
             s_rebaseHeadingSum = 0u;
@@ -12982,6 +13000,17 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
     uint8_t  x = entryX, y = entryY;
     unsigned n = (unsigned)(a >> 7), z = (a == 0u), c = entryC, v = entryV;
 
+    if (sim_note_budget_on) {
+        /* ⭐ four calls per ENGINE frame (sim_note_budget_on): none owed, nothing to do */
+        if (sim_note_steps_owed == 0u) {
+            SlotExit idle;
+            idle.a = a; idle.x = x; idle.y = y;
+            idle.n = (uint8_t)n; idle.z = (uint8_t)z; idle.v = (uint8_t)v; idle.c = (uint8_t)c;
+            return idle;
+        }
+        sim_note_steps_owed--;
+    }
+
     /* ---- the skid noise ($0E74-$0E8F) ---- */
     if (a & 0x80u) {                                   /* $0E7A BPL — no recent slip at all */
         uint8_t t2 = (uint8_t)bus_read(USRVIA_T2CL);   /* $0E7C — the free-running entropy read */
@@ -16463,7 +16492,7 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
     unsigned diff = (unsigned)placed - mem[MEM_car_section_across + x] - (placedC ? 0u : 1u);
     uint8_t d = (uint8_t)diff;
     if (diff & 0x100) d ^= 0xFF;                       /* BCC (borrow): EOR #$FF -> |diff| */
-    record_section_jump_core(d >= 0x16, x);           /* CMP #$16 */
+    record_section_jump_core(d >= sim_jump_threshold, x);   /* CMP #$16 — per 93.6 ms (sim_jump_threshold) */
 
     mem[MEM_car_section_across + x] = placed;         /* $465B pull V2 -> the across cell */
     /* Second fold: weight $88, sign from the quadrant flag.  $465F pulls V1 back — it is `mag`. */

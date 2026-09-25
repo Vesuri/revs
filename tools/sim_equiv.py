@@ -35,7 +35,7 @@ def sample(m):
     z = (m[0x6285] << 16 | m[0x6282] << 8 | m[0x62B3]) / 256.0
     heading = (m[0x0B] << 8 | m[0x0A]) * 360.0 / 65536
     clock = (bcd(m[0x6E4]) * 60 + bcd(m[0x6CC])) * 100 + bcd(m[0x6B4])
-    return dict(speed=speed, lat=lat, x=x, z=z, heading=heading, revs=m[0x3C],
+    return dict(speed=speed, lat=lat, x=x, z=z, heading=heading, revs=m[0x3C], note=m[0x0060],
                 gear=m[0x40], height=m[0x2D], clock=clock)
 
 def run(mode, steer, seconds):
@@ -108,7 +108,7 @@ def main():
           f"t = game seconds from the first moving frame; each series cut at its first crash reset")
     for m, rows in series.items():
         print(f"  {m:8s} {len(rows):5d} frames, {rows[-1][0] if rows else 0:6.2f} s before a reset")
-    keys = [('speed', '%7.2f'), ('revs', '%5.0f'), ('gear', '%3.0f')] + \
+    keys = [('speed', '%7.2f'), ('revs', '%5.0f'), ('note', '%5.0f'), ('gear', '%3.0f')] + \
            ([('heading', '%7.1f'), ('lat', '%6.2f'), ('height', '%4.0f')] if steer else [])
     print()
     hdr = '   t  ' + ''.join(f"| {m:^{8 * len(keys) + 9}s}" for m in modes)
