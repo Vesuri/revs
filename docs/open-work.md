@@ -224,6 +224,12 @@ is purely intermediate is the source-block traffic, `fill_dash_edge_columns` (6.
 fill outright is ⛔ wrong on all five circuits) and `clear_surface_buffers` (0.9) — ~13 ms gross,
 and replacing it must carry §12b's same-cell composition. ⇒ the geometry walk in asm (entry 1b)
 goes first (user decision).
+⛔ **The blitter was measured as the consumer (2026-09-25) and CLOSED at +5.25 ms** — the blits are
+nearly free, making the toggles is not, and the skipping painter left it nothing to take (§CLOSED).
+⇒ STEP 2 continues on the PRODUCERS (user decision): `draw_road`'s ~13k instructions a frame (the
+span pass asm still stores every 6502 scratch cell the C does; `fill_line_attr` and
+`mark_line_surfaces` are still C), then `build_track_geometry`'s remainder and
+`fill_dash_edge_columns`.
 
 ⇒ **The last 8 ms (48 → 40) is where the `50/N` ladder steps to 25 fps; not planned until 48.**
 
