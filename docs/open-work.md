@@ -798,6 +798,21 @@ only route and must not be proposed as one.**
 delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
 on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)
 
+### 9. ⏸ `make fatscan` — FIND THE 6502 RESIDUE AUTOMATICALLY (user: "at some point", after prepareFrame + the drivers)
+A ranked scanner for the fat the object-plotter cleanup removed by hand (`docs/perf-method.md` §the
+object plotter's C). Four static detectors, each weighted by measured HOTNESS (host call counts,
+the phase table, steptrace) — never ranked by raw count:
+1. **Dead exit ABI** — the 55 struct-returning cores (`SlotExit`, `*Exit`, `AddFlags`, `ProjPoint`);
+   a regex pass already finds 25 with a caller that discards the whole result. Per-FIELD use needs
+   the clang AST (`-ast-dump=json`, member accesses per call site).
+2. **Flag replay** — `adc_overflow`/`sbc_overflow`/… whose value only reaches a returned flag (16 left).
+3. **Zero-page scratch in a loop** — objdump: `move.b` to `<mem+0x00..0xFF>` inside a back-edge.
+4. **Marshal round trips** — `*_marshal_in/out` pairs on per-frame shims.
+⚠ The part it cannot finish: an ORACLE that reaches a native shim may BRANCH on an exit
+(scale_shape_vectors' C, draw_track_object's X). The tool shortlists them — find each shim call in
+`revs_gen.c` and test whether the next statements read `cpu.*` before writing it — and a human
+confirms. Output: one table, routine × detector × instructions/frame.
+
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
 sitting inside any of them: `paint_run_one` (−0.15% FPS), the wide-value campaign (+0.65%), the
