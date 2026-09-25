@@ -5261,6 +5261,37 @@ unsigned needle_dda_m68k(unsigned x, unsigned y, unsigned acc, unsigned po, unsi
                          unsigned cell);
 static int s_ndlRef;
 #endif
+/* ⭐⭐ THE NEEDLE IMAGE CACHE (revs_plot.h §the image cache): a mark whose entry state has been
+   seen before is not walked at all.  Off where the DDA itself is under test — NEEDLEVERIFY plots
+   into mem[] as well, NDLASMCHECK compares the two loops. */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_NEEDLE_PLANES) && !defined(REVS_NEEDLE_VERIFY) \
+    && !defined(REVS_NDL_ASM_CHECK)
+#define REVS_NDL_CACHE 1
+#ifdef REVS_NEEDLE_CHECK
+/* ⭐ THE CACHE'S ORACLE, EXIT HALF (`make NEEDLECHECK=1`): a hit runs the SHIPPING replay, keeps
+   what it wrote, restores the entry cells and walks the DDA anyway — whose exit must equal the
+   replay.  The image half is ndlSpriteCheck against the fresh list (RevsPlot.cpp). */
+extern volatile unsigned long g_needleSpriteMismatch;
+static RevsNdlExit s_ndlReplayed;
+static int         s_ndlWasHit;
+#endif
+static inline void ndl_cache_exit(void)
+{
+    RevsNdlExit ex;
+    ex.ptr = plot_ptr_v; ex.bearing = bearing_lo; ex.t76 = shared_temp_76;
+    ex.t77 = shared_temp_77; ex.count = math_hi;
+#ifdef REVS_NEEDLE_CHECK
+    if (s_ndlWasHit) {
+        const RevsNdlExit* r = &s_ndlReplayed;
+        s_ndlWasHit = 0;
+        if (r->ptr != ex.ptr || r->bearing != ex.bearing || r->t76 != ex.t76 ||
+            r->t77 != ex.t77 || r->count != ex.count) g_needleSpriteMismatch++;
+        return;
+    }
+#endif
+    revs_needle_exit(&ex);
+}
+#endif
 #if defined(REVS_NDL_ASM_ON) && defined(REVS_NDL_ASM_CHECK)
 static void plot_line_octant_body(uint8_t entryScanline);
 void plot_line_octant_core(uint8_t entryScanline);
@@ -5309,6 +5340,35 @@ void plot_line_octant_core(uint8_t entryScanline)
        planted case 2155 walks addr=$0074 twelve times). */
     uint8_t acc = (uint8_t)(0u - mem[MEM_point_delta_hi]);     /* $5214-5219 acc = -delta; C then cleared */
 
+#ifdef REVS_NDL_CACHE
+    {
+        /* Everything the loop below reads before it writes: the image is a function of these. */
+        const unsigned k0 = ((unsigned)plot_ptr_v << 16) | ((unsigned)mem[MEM_smc_major_step] << 8)
+                          | mem[MEM_smc_minor_step];
+        const unsigned k1 = ((unsigned)x << 24) | ((unsigned)mem[MEM_point_delta_hi] << 16)
+                          | ((unsigned)math_lo << 8) | math_hi;
+        const unsigned k2 = ((unsigned)y << 8) | hypot_min_hi;
+        RevsNdlExit ex;
+#ifdef REVS_NEEDLE_CHECK
+        const RevsNdlExit in = { plot_ptr_v, bearing_lo, shared_temp_76, shared_temp_77, math_hi };
+#endif
+        if (revs_needle_lookup(k0, k1, k2, &ex)) {
+            plot_ptr_v = ex.ptr;  bearing_lo = ex.bearing;
+            shared_temp_76 = ex.t76;  shared_temp_77 = ex.t77;  math_hi = ex.count;
+#ifndef REVS_NEEDLE_CHECK
+            plot_ptr_marshal_out();
+            return;
+#else
+            s_ndlReplayed.ptr = plot_ptr_v;  s_ndlReplayed.bearing = bearing_lo;
+            s_ndlReplayed.t76 = shared_temp_76;  s_ndlReplayed.t77 = shared_temp_77;
+            s_ndlReplayed.count = math_hi;
+            s_ndlWasHit = 1;
+            plot_ptr_v = in.ptr;  bearing_lo = in.bearing;
+            shared_temp_76 = in.t76;  shared_temp_77 = in.t77;  math_hi = in.count;
+#endif
+        }
+    }
+#endif
 #ifdef REVS_NDL_ASM_ON
     if (!s_ndlRef) {
         const unsigned outside = needle_dda_m68k(x, y, acc, ndlPo, ndlLine, ndlCell);
@@ -5317,6 +5377,9 @@ void plot_line_octant_core(uint8_t entryScanline)
             g_needleOutside += outside;
 #endif
             plot_ptr_marshal_out();
+#ifdef REVS_NDL_CACHE
+            ndl_cache_exit();
+#endif
             return;
         }
     }
@@ -5448,6 +5511,9 @@ void plot_line_octant_core(uint8_t entryScanline)
         if (math_hi & 0x80u) break;                        /* $529e BMI -> done */
     }
     plot_ptr_marshal_out();                                /* publish $70/$71 for the 6502-ABI mirror */
+#ifdef REVS_NDL_CACHE
+    ndl_cache_exit();
+#endif
 #undef NDL_YSTEP
 #undef NDL_XSTEP
 }

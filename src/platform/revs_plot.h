@@ -367,8 +367,9 @@ extern volatile unsigned long g_plotRectPasses;
  * the image's own control words, and keeps it (RevsPlot.cpp §the needle sprites): there are 118
  * distinct rev-needle images and 115 steering-mark images over every input the game can produce
  * (enumerated on the host, docs/perf-method.md), the widest 32 pixels and the tallest 29 lines.
- * After that a frame costs a hash of ~30 pixels and three sprite-pointer writes; no plane byte is
- * touched, nothing is erased, and neither playfield knows the needles exist.  The rev needle is
+ * After that a frame costs a key compare (the DDA's entry state — the walk itself is skipped on a
+ * hit, see the image cache below) and three sprite-pointer writes; no plane byte is touched,
+ * nothing is erased, and neither playfield knows the needles exist.  The rev needle is
  * sprite pair 2/3 and the steering mark pair 4/5; the tyres keep 0/1.
  *
  * ⚠ The list is filled by `draw_dash_needles`, `race_main_loop`'s closing draw, and consumed at
@@ -398,6 +399,7 @@ extern volatile unsigned long  g_needleMaskBad;
 extern volatile unsigned long  g_needleOverflow;
 extern volatile unsigned long  g_needlePaints;
 extern volatile unsigned long  g_needleRenders;   /* sprite images built — ~233 a session */
+extern volatile unsigned long  g_needleHits;      /* marks shown from the cache, DDA skipped */
 extern volatile unsigned long  g_needlePoolFull;
 extern volatile unsigned long  g_needleTooWide;
 extern volatile unsigned long  g_needleColourBad;
@@ -445,6 +447,19 @@ void revs_needle_origin(unsigned short addr, unsigned char scanLine,
             g_needleMarks        = (unsigned char)(rnm_ + 1u);               \
         }                                                                    \
     } while (0)
+/* ⭐⭐ THE IMAGE CACHE IS KEYED ON THE DDA'S ENTRY STATE, NOT ON ITS OUTPUT.  A mark's pixel list
+   is a pure function of what `plot_line_octant` reads before its loop — the plot pointer, the two
+   step opcodes, the column, the delta, the increment, the counter, the scan line and the mask
+   base — so those words name the image exactly.  On a HIT the DDA does not run: the mark shows
+   its cached image and the loop's five exit cells are replayed from the entry (RevsNdlExit), so
+   no reader of zero page can tell.  On a MISS the DDA fills the list as before and
+   `revs_needle_exit` records what it left, for the entry `revs_needle_paint` then builds. */
+typedef struct {
+    unsigned short ptr;                      /* plot_ptr_v */
+    unsigned char  bearing, t76, t77, count; /* bearing_lo, shared_temp_76/77, math_hi */
+} RevsNdlExit;
+int  revs_needle_lookup(unsigned k0, unsigned k1, unsigned k2, RevsNdlExit* ex);
+void revs_needle_exit(const RevsNdlExit* ex);
 void revs_needle_paint(void);
 #define REVS_NEEDLE_PAINT()  revs_needle_paint()
 /* The screen's side: the chip pool the images live in (allocated once, at start-up — never inside

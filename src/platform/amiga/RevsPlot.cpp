@@ -1521,6 +1521,7 @@ volatile unsigned long  g_needleMaskBad   = 0;
 volatile unsigned long  g_needleOverflow  = 0;
 volatile unsigned long  g_needlePaints    = 0;
 volatile unsigned long  g_needleRenders   = 0;
+volatile unsigned long  g_needleHits      = 0;
 volatile unsigned long  g_needlePoolFull  = 0;
 volatile unsigned long  g_needleTooWide   = 0;
 volatile unsigned long  g_needleColourBad = 0;
@@ -1576,11 +1577,13 @@ static void ndlBuildMasks(void)
 #define NDL_SPR_H0   0x80u
 #define NDL_SLOTS    256u                     /* per mark; a power of two — 118 and 115 are used */
 
+/* An entry is named by the DDA's entry state (revs_plot.h §the image cache): three words compared
+   exactly, so there is no collision to rule out — the key IS the input. */
 struct NdlImg {
-    uint32_t  hash;
-    uint16_t  first, last;                    /* the list's first and last `po`, beside the hash */
-    uint8_t   n, used;
-    uint16_t* ch[2];                          /* a sprite pair's two images, or 0 */
+    uint32_t    k0, k1, k2;
+    RevsNdlExit exit;                         /* what the DDA left in zero page, replayed on a hit */
+    uint8_t     used;
+    uint16_t*   ch[2];                        /* a sprite pair's two images, or 0 */
 };
 static NdlImg          s_ndlImg[2][NDL_SLOTS];
 static uint16_t*       s_ndlPool;
@@ -1603,27 +1606,6 @@ static void ndlTargetLost(void)
     for (k = 0; k < REVS_NEEDLE_CHANNELS; k++) s_ndlShow[k] = 0;
     g_needleCount = 0;
     g_needleMarks = 0;
-}
-
-/* A mark's list, reduced to a word: two Fletcher sums, one over the offsets and one over the
-   pixel masks, all in 16-bit adds — ~40 cycles a pixel against the ~94 of the rotate-and-XOR it
-   replaced (a `rol.l #7` and two shifts a pixel; single-stepped at ~500 instructions a frame).
-   The running sum makes it ORDER-sensitive, and `ndlImage` also requires the count and both
-   endpoints to match, so a collision needs two different lists with the same length, the same
-   ends and the same sums.  `make NEEDLECHECK=1` checks every shown image against its list by a
-   second route, so a collision would fail there on the frame it was shown.
-   ⚠ Never a multiply (`make muldiv-audit`). */
-static uint32_t ndlHash(unsigned i0, unsigned n)
-{
-    const uint16_t* po  = &g_needlePo[i0];
-    const uint16_t* pix = &g_needlePix[i0];
-    const uint16_t* const end = po + n;
-    uint16_t a = (uint16_t)n, b = 0, c = 0, d = 0;
-    while (po != end) {
-        a += *po++;  b += a;
-        c += *pix++; d += c;
-    }
-    return ((uint32_t)(uint16_t)(b ^ d) << 16) | (uint16_t)(a ^ (uint16_t)(c << 8));
 }
 
 /* Build the image for one mark into the pool: a sprite pair, 16 Amiga pixels a channel, pen 1
@@ -1675,19 +1657,61 @@ static void ndlRender(unsigned m, unsigned i0, unsigned n, NdlImg* e)
     }
 }
 
-static const NdlImg* ndlImage(unsigned m, unsigned i0, unsigned n)
+/* Per mark, set at every `plot_line_octant` call: the entry a hit found (0 on a miss, until the
+   paint builds one), and a miss's key and exit for that build.  Every mark writes its own slot on
+   every call, so a slot past `g_needleMarks` is never read stale. */
+static NdlImg*     s_ndlHit[2];
+static uint32_t    s_ndlPendK[2][3];
+static RevsNdlExit s_ndlPendExit[2];
+static uint8_t     s_ndlPendOk[2];            /* the miss's DDA reached an exit and recorded it */
+
+static inline unsigned ndlSlot(uint32_t k0, uint32_t k1, uint32_t k2)
 {
-    const uint32_t h = ndlHash(i0, n);
-    const uint16_t first = g_needlePo[i0], last = g_needlePo[i0 + n - 1u];
-    unsigned slot = (unsigned)(h ^ (h >> 16)) & (NDL_SLOTS - 1u), probes;
+    const uint32_t h = k0 ^ (k0 >> 16) ^ k1 ^ (k1 >> 13) ^ (k2 << 5);
+    return (unsigned)(h ^ (h >> 8)) & (NDL_SLOTS - 1u);
+}
+
+extern "C" int revs_needle_lookup(unsigned k0, unsigned k1, unsigned k2, RevsNdlExit* ex)
+{
+    const unsigned m = (unsigned)g_needleMarks - 1u;      /* REVS_NEEDLE_MARK has just opened it */
+    unsigned slot, probes;
+    if (m >= 2u) return 0;
+    s_ndlHit[m]    = 0;
+    s_ndlPendOk[m] = 0;
+    slot = ndlSlot(k0, k1, k2);
     for (probes = 0; probes < NDL_SLOTS; probes++, slot = (slot + 1u) & (NDL_SLOTS - 1u)) {
         NdlImg* const e = &s_ndlImg[m][slot];
-        if (!e->used) {
-            e->used = 1; e->hash = h; e->n = (uint8_t)n; e->first = first; e->last = last;
-            ndlRender(m, i0, n, e);
-            return e;
+        if (!e->used) break;
+        if (e->k0 == k0 && e->k1 == k1 && e->k2 == k2) {
+            s_ndlHit[m] = e;
+            *ex = e->exit;
+            NDL_STAT(g_needleHits++);
+            return 1;
         }
-        if (e->hash == h && e->n == n && e->first == first && e->last == last) return e;
+    }
+    s_ndlPendK[m][0] = k0; s_ndlPendK[m][1] = k1; s_ndlPendK[m][2] = k2;
+    return 0;
+}
+
+extern "C" void revs_needle_exit(const RevsNdlExit* ex)
+{
+    const unsigned m = (unsigned)g_needleMarks - 1u;
+    if (m >= 2u || s_ndlHit[m]) return;
+    s_ndlPendExit[m] = *ex;
+    s_ndlPendOk[m]   = 1;
+}
+
+/* A miss: build the mark's image from the list the DDA just filled, under the key it was run for. */
+static NdlImg* ndlInsert(unsigned m, unsigned i0, unsigned n)
+{
+    const uint32_t k0 = s_ndlPendK[m][0], k1 = s_ndlPendK[m][1], k2 = s_ndlPendK[m][2];
+    unsigned slot = ndlSlot(k0, k1, k2), probes;
+    for (probes = 0; probes < NDL_SLOTS; probes++, slot = (slot + 1u) & (NDL_SLOTS - 1u)) {
+        NdlImg* const e = &s_ndlImg[m][slot];
+        if (e->used) continue;
+        e->used = 1; e->k0 = k0; e->k1 = k1; e->k2 = k2; e->exit = s_ndlPendExit[m];
+        ndlRender(m, i0, n, e);
+        return e;
     }
     NDL_STAT(g_needlePoolFull++);                               /* the table itself is full */
     return 0;
@@ -1817,12 +1841,14 @@ extern "C" void revs_needle_paint(void)
         if (m < marks) {
             const unsigned i0 = g_needleMarkAt[m];
             const unsigned i1 = (m + 1u < marks) ? g_needleMarkAt[m + 1u] : n;
-            if (i1 > i0) {
-                e = ndlImage(m, i0, i1 - i0);
+            e = s_ndlHit[m];
+            /* A miss is built once and then IS the mark's hit: a crash hold paints again with no
+               sweep in between, and must not insert the same key twice. */
+            if (!e && s_ndlPendOk[m] && i1 > i0) e = s_ndlHit[m] = ndlInsert(m, i0, i1 - i0);
 #ifdef REVS_NEEDLE_CHECK
-                ndlSpriteCheck(e, i0, i1 - i0);
+            /* A hit ran the DDA too under this flag, so its image meets the fresh list here. */
+            if (e && i1 > i0) ndlSpriteCheck(e, i0, i1 - i0);
 #endif
-            }
         }
         s_ndlShow[2u * m]      = e ? e->ch[0] : 0;
         s_ndlShow[2u * m + 1u] = e ? e->ch[1] : 0;
