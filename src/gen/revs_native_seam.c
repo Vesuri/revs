@@ -264,7 +264,7 @@ void build_track_geometry(void)
        them), and the native driver passes them by value instead — so these three writes belong
        to the shim, not to the native path. */
     GeoExit ex = build_track_geometry_native();
-    cpu.A = ex.a; cpu.X = ex.x; cpu.Y = ex.y;
+    cpu.X = ex.x; cpu.Y = ex.y;          /* A is dead: $1710's place_player opens LDA $5E */
 }
 
 GeoExit build_track_geometry_native(void)
@@ -738,26 +738,44 @@ void build_sign_origin(void)
     view_origin_marshal_out();
 }
 
+/* The slot writers' exit, as the 6502 leaves it: A = the flag byte just stored in the slot,
+   Y = the slot, N/Z from A.  (The cores return nothing — no native caller reads this.) */
+static void object_slot_exit_abi(void)
+{
+    cpu.Y = shared_counter_42;
+    cpu.A = mem[MEM_car_flags_shape + cpu.Y];
+    cpu.N = (uint8_t)(cpu.A >> 7); cpu.Z = (uint8_t)(cpu.A == 0u);
+}
+
 void write_object_slot(void)
 {
-    SlotExit e = write_object_slot_core(cpu.A, cpu.X, cpu.V, cpu.C);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    write_object_slot_core(cpu.A, cpu.C);
+    object_slot_exit_abi();               /* X/V/C: dead at every caller (the audit at the width) */
 }
 
 void reject_object_slot(void)
 {
-    RejectExit r = reject_object_slot_core();
-    cpu.A = r.a; cpu.Y = r.y; cpu.N = (r.a >> 7) & 1u; cpu.Z = (r.a == 0u);
+    reject_object_slot_core();
+    object_slot_exit_abi();
 }
 
 void note_object_contact(void)
 {
     hypot_max_marshal_in();               /* the hypot it runs takes the magnitude from mem[] */
     hypot_min_marshal_in();               /* ...both of its magnitudes */
-    ContactExit e = note_object_contact_core(cpu.Y, cpu.C);
+    uint8_t threshold = cpu.Y;            /* Y exits unchanged: the caller's threshold */
+    note_object_contact_core(threshold);
     hypot_min_marshal_out();              /* the hypot inside it shifts the smaller one */
-    cpu.A = e.a; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+    /* the exit ($2AB6 LDA point_dist_hi / $2ABC CPY point_dist_lo / $2AC6 LDA the slot): */
+    if (point_dist_hi != 0u) {                           /* far: A/N/Z from the LDA, C the caller's */
+        cpu.A = point_dist_hi; cpu.N = (uint8_t)(point_dist_hi >> 7); cpu.Z = 0u;
+    } else if (threshold < point_dist_lo) {              /* past the threshold: the CPY's flags */
+        uint8_t cmp = (uint8_t)(threshold - point_dist_lo);
+        cpu.A = 0u; cpu.N = (uint8_t)(cmp >> 7); cpu.Z = (uint8_t)(cmp == 0u); cpu.C = 0u;
+    } else {                                             /* a contact: the slot, C from the CPY */
+        cpu.A = shared_counter_42;
+        cpu.N = (uint8_t)(cpu.A >> 7); cpu.Z = (uint8_t)(cpu.A == 0u); cpu.C = 1u;
+    }
 }
 
 /* The 6502-ABI shims. */

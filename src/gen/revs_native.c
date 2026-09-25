@@ -4438,7 +4438,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
            first call ($1701) and were held across the inner loop and handed to phase 1 by value
            — but their only destination was the seeder's $6362 PHP residue two calls further
            down, which is stack residue below SP and not a result. */
-        (void)scale_wing_settings_core();
+        scale_wing_settings_core();
         RESET_SPLIT(3);
 #undef RESET_SPLIT
 
@@ -7155,7 +7155,7 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
    parallel and lets everything downstream address a side by adding 40. */
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
 {
-    GeoExit ex;                      /* the routine's own exit A/X/Y — live=AXY at $24F6 */
+    GeoExit ex;                      /* the routine's own exit X/Y — $1710's place_player takes them */
     GEO_COUNT(g_geoFrames);
     horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
     /* the nearest point of each side, and last frame's clamp */
@@ -7251,14 +7251,13 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
         hr.n = (uint8_t)(horizonClamped ? 0u : 1u);
         hr.c = (uint8_t)(horizonClamped ? 1u : 0u);
         if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
-        else { platform_smc_unhandled(MEM_smc_geometry_store, target); ex.a = (uint8_t)horizonLine; return ex; }
+        else { platform_smc_unhandled(MEM_smc_geometry_store, target); return ex; }
     } else {
         platform_smc_unhandled(MEM_smc_geometry_store, mem[MEM_smc_geometry_store]);
-        ex.a = (uint8_t)horizonLine;   /* the trap paths bail with the stored line still in A */
         return ex;
     }
 
-    ex.a = horizon_half_width_at_core(horizonPoint, ex.x);
+    (void)horizon_half_width_at_core(horizonPoint, ex.x);   /* its result is horizon_half_width */
     GEO_PHASE(5);   /* reopen the enclosing phase: its remainder is the driver + the return */
     return ex;
 }
@@ -14157,33 +14156,17 @@ void build_sign_origin_core(uint8_t offset, uint8_t shift)
 
    object_dist_hi is written unconditionally, before either test, and $29FB is its only reader. */
 
-ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
+/* Every native caller drops the 6502 exit (A/Y/N/Z/C); the note_object_contact shim rebuilds it
+   from point_dist, the threshold and the slot, which is all it ever depended on. */
+void note_object_contact_core(uint8_t threshold)
 {
-    ContactExit e;
     point_distance_hypot_apply();                        /* $2AB3 */
-
-    uint8_t distHi = point_dist_hi;                      /* $2AB6-$2AB8 — LDA sets A/N/Z */
-    object_dist_hi = distHi;
-    e.y = threshold;                                     /* Y is the caller's, not reloaded */
-    if (distHi != 0u) {                                  /* further away than $FF */
-        e.a = distHi; e.n = (distHi >> 7) & 1u; e.z = 0u; e.c = entryC;
-        return e;
-    }
-
-    uint8_t distLo = point_dist_lo;                      /* CPY $2ABC — Y(threshold) - point_dist_lo */
-    uint8_t cmp    = (uint8_t)(threshold - distLo);
-    if (threshold < distLo) {                            /* ...or further than the threshold */
-        e.a = distHi;                                    /* A is still 0 from the LDA above */
-        e.n = (cmp >> 7) & 1u; e.z = (cmp == 0u); e.c = 0u;
-        return e;
-    }
-
-    contact_pending  = (uint8_t)(contact_pending - 1u);  /* DEC $2AC0 (N/Z here are dead) */
-    contact_distance = distLo;                            /* $2AC2-$2AC4 */
-    uint8_t slot     = shared_counter_42;                 /* $2AC6-$2AC8 — LDA sets A/N/Z */
-    contact_slot     = slot;
-    e.a = slot; e.n = (slot >> 7) & 1u; e.z = (slot == 0u); e.c = 1u;   /* passed the C test */
-    return e;
+    object_dist_hi = point_dist_hi;                      /* $2AB6-$2AB8 */
+    if (point_dist_hi != 0u || threshold < point_dist_lo)   /* further than $FF, or the threshold */
+        return;
+    contact_pending  = (uint8_t)(contact_pending - 1u);  /* DEC $2AC0 */
+    contact_distance = point_dist_lo;                     /* $2AC2-$2AC4 */
+    contact_slot     = shared_counter_42;                 /* $2AC6-$2AC8 */
 }
 
 /* $2A76  write_object_slot — THE PROJECTION'S RESULT INTO AN OBJECT SLOT  (twin #89)
@@ -14216,37 +14199,29 @@ ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
     mem[MEM_car_flags_shape + y] = a;                        /* $2AAD — STA touches no flag/register */
 }
 
-RejectExit reject_object_slot_core(void)
+/* ⭐ The slot writers' 6502 exit — A = the slot's flag byte as stored, Y = the slot, N/Z from A,
+   and X/V/C passed through except on the line-reject arm (the SBC's) — is rebuilt by the shims
+   from mem[] after the call.  No native caller reads it, so the cores return nothing. */
+void reject_object_slot_core(void)
 {
     uint8_t y = shared_counter_42;                       /* $2AA6 */
-    uint8_t a = (uint8_t)(mem[MEM_car_flags_shape + y] | 0x80u);   /* ORA #$80 — the slot-empty mark */
-    store_object_flags_core(y, a);
-    RejectExit r = { a, y };                             /* exit: A=a, Y=y, N=1, Z=0 (bit7 set) */
-    return r;
+    store_object_flags_core(y, (uint8_t)(mem[MEM_car_flags_shape + y] | 0x80u));  /* ORA #$80 — the slot-empty mark */
 }
 
-SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
-                                       uint8_t entryV, uint8_t entryC)
+void write_object_slot_core(uint8_t projectedLine, uint8_t entryC)
 {
     unsigned width;
     uint8_t  slot = shared_counter_42;                   /* $2A76 */
-    SlotExit e;
-    e.x = entryX; e.v = entryV; e.c = entryC; e.y = slot;
 
     if (entryC) {                                        /* $2A78 BCS — behind the near clip */
-        RejectExit r = reject_object_slot_core();
-        e.a = r.a; e.y = r.y; e.n = (r.a >> 7) & 1u; e.z = (r.a == 0u);
-        return e;                                        /* X/V/C pass through unchanged */
+        reject_object_slot_core();
+        return;
     }
 
     uint8_t line = (uint8_t)(projectedLine - 0x01u);     /* $2A7A-$2A7B  SEC/SBC #1 */
-    uint8_t sbcV = sbc_overflow(projectedLine, 0x01u, 1);/* SBC's V/C — exit flags on the */
-    uint8_t sbcC = (projectedLine >= 0x01u) ? 1u : 0u;   /* reject-line arm (ORA writes neither) */
     if (line & 0x80u) {                                  /* $2A7D BMI — a projected line of 0 */
-        RejectExit r = reject_object_slot_core();
-        e.a = r.a; e.y = r.y; e.n = (r.a >> 7) & 1u; e.z = (r.a == 0u);
-        e.v = sbcV; e.c = sbcC;                          /* the SBC's V/C survive to this exit */
-        return e;                                        /* X passes through unchanged */
+        reject_object_slot_core();
+        return;
     }
     mem[MEM_object_line + slot] = line;                      /* $2A7F */
 
@@ -14257,19 +14232,14 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
        are the only parts of this exit that depended on the exponent.  X — every caller reloads
        it at once ($4D20 RTS → $1728 `LDX #$17`; $29F9/$2A3D/$2A48/$2A4D `LDX`).  C and V — the
        phase-15 note in race_main_loop_core carries the audit for build_road_sign's path, and
-       project_object_slot's shims declare them dead for the car path.  So SlotExit hands the
-       ENTRY X/V/C back, and the fixture compares A/Y/N/Z — the slot, the shape nibble, the ORA's
-       flags — which is what the callers can see. */
+       project_object_slot's shims declare them dead for the car path.  So the shim passes the
+       ENTRY X/V/C through, and the fixture compares A/Y/N/Z — the slot, the shape nibble, the
+       ORA's flags — which is what the callers can see. */
     width = object_width_for((uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo));
     mem[MEM_object_width + slot] = (uint8_t)width;           /* $2A99 */
 
-    /* $2A9C-$2AA3 — keep the surviving flag bits, drop this shape in the low nibble, store.
-       The ORA's N/Z are the routine's exit flags. */
-    uint8_t flagsA = (uint8_t)((mem[MEM_car_flags_shape + slot] & 0x70u) | plot_shape);
-    store_object_flags_core(slot, flagsA);               /* $2AA3 JMP */
-    e.a = flagsA; e.y = slot;                            /* X/V/C: the entry's — see above */
-    e.n = (flagsA >> 7) & 1u; e.z = (flagsA == 0u);
-    return e;
+    /* $2A9C-$2AA3 — keep the surviving flag bits, drop this shape in the low nibble, store. */
+    store_object_flags_core(slot, (uint8_t)((mem[MEM_car_flags_shape + slot] & 0x70u) | plot_shape));   /* $2AA3 JMP */
 }
 
 /* $4CA4  build_road_sign — ONE SIGN INTO OBJECT SLOT $17  (twin #87)
@@ -14341,7 +14311,7 @@ static void build_road_sign_core(void)
     uint8_t offHeadingC = absOff >= 0x6Eu ? 1u : 0u;
     threshold = offHeadingC ? 0x50u : 0x25u;
     shared_counter_42 = SIGN_SLOT;
-    note_object_contact_core(threshold, offHeadingC);    /* exit dead here (build_road_sign is mem-only) */
+    note_object_contact_core(threshold);                 /* exit dead here (build_road_sign is mem-only) */
     /* $4D1B-$4D1E.  ⚠ The 6502 hands write_object_slot project_point's exit V here, and
        ProjPoint does not carry it — an argued 0, not an oversight: write_object_slot's own V
        reaches a reader only as draw_track_object's entry V one call later (the body's 15th),
@@ -14349,7 +14319,7 @@ static void build_road_sign_core(void)
        the empty-slot arm, which returns it without touching mem[], and overwritten at phase 18
        before the next reader.  The exit is dropped for the same reason. */
     { ProjPoint p = project_point_core(scratchX, VIEW_ORIGIN_STRIDE);
-      write_object_slot_core(p.line, scratchX, 0u, p.clip); }
+      write_object_slot_core(p.line, p.clip); }
 }
 
 /* The 6502-ABI shims. */
@@ -16238,7 +16208,7 @@ BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    folds both wings: ((3*rear + front) / 2) + $3C — accumulated as the 6502 does it,
    where the ASL feeds its own carry (bit 7 of rear) into the first ADD, a faithful
    8-bit quirk with no 16-bit equivalent. */
-WingScaleExit scale_wing_settings_core(void)
+void scale_wing_settings_core(void)
 {
     /* X walks 1 then 0: front wing (index 1) then rear wing (index 0). */
     for (int i = 1; i >= 0; i--) {
@@ -16254,18 +16224,9 @@ WingScaleExit scale_wing_settings_core(void)
     acc = ((acc & 0xFF) + front + (acc >> 8)) & 0xFF;               /* ADC front (carry dropped) */
     c   = acc & 1;                                                   /* LSR A: carry = bit 0 */
     unsigned half = (acc >> 1) + c;                                  /* the LSR's result, + its own carry-in */
-    unsigned sum  = half + 0x3Cu;                                    /* ADC #$3C */
-    wing_drag_coeff = (uint8_t)sum;
-
-    /* ⭐ That `ADC #$3C` is the last flag writer before the frame body's first call: $0B9F's
-       RTS sets none, so its C and V ARE the ambient carry/overflow at $1701.  Reported instead
-       of being left in `cpu` — tick_race_timers forwards them to the one thing that reads them
-       (seed_car_track_position's PHP residue). */
-    WingScaleExit e;
-    e.drag = (uint8_t)sum;
-    e.c    = (uint8_t)(sum > 0xFFu);
-    e.v    = adc_overflow((uint8_t)half, 0x3Cu, 0);
-    return e;
+    wing_drag_coeff = (uint8_t)(half + 0x3Cu);                       /* ADC #$3C */
+    /* That ADC's C and V were the ambient flags at $1701, and their only destination was the
+       seeder's PHP residue — not a result (race_main_loop_core's reset has the audit). */
 }
 
 /* The 6502-ABI shim.  A, N and Z are dead at the only caller — $16FE's RTS lands on $1701's
@@ -19336,7 +19297,7 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
     uint8_t slot = shared_counter_42;
     object_bearing_word_set(slot, bearing_v);
 
-    note_object_contact_core(0x25u, 0u);                 /* $2A70 — exit dead, see above */
+    note_object_contact_core(0x25u);                     /* $2A70 — exit dead, see above */
 
     ProjPoint p = project_point_core(coordIndex, 0x00u); /* $2A73 */
 
@@ -19347,7 +19308,7 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
        not through a fixture gap (docs/validation-harness.md §FIFTEENTH).  The sibling case
        confirms it: perturbing the coordIndex that write_object_slot INDEXES WITH — the
        third queue projector's $FA — is caught at once. */
-    write_object_slot_core(p.line, coordIndex, /*V dead*/ 0u, p.clip);   /* falls into $2A76 */
+    write_object_slot_core(p.line, p.clip);                  /* falls into $2A76 */
 }
 
 /* ---------------------------------------------------------------- wing mirrors */

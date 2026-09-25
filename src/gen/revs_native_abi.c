@@ -204,8 +204,7 @@ void steer_assist_dispatch(void)        { model_state_marshal_in(); car_angle_ma
 
 void scale_wing_settings(void)
 {
-    WingScaleExit e = scale_wing_settings_core();
-    cpu.C = e.c;  cpu.V = e.v;
+    scale_wing_settings_core();          /* result-only: its closing ADC's C/V reach no result */
 }
 
 void section_angle_curve(void) { cpu.A = section_angle_curve_core(cpu.A); }

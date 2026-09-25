@@ -129,7 +129,7 @@
    cpu-free; the thin shim (or a caller whose own exit ABI is this) replays it onto cpu. */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
 /* build_track_geometry's exit ABI: live=AXY, flags a byproduct. */
-typedef struct { uint8_t a, x, y; } GeoExit;
+typedef struct { uint8_t x, y; } GeoExit;      /* build_track_geometry's live exit (A is dead at $4626) */
 typedef struct { uint8_t c, v; } BlockCV;        /* a routine whose only live exit is C and V */
 typedef struct { uint8_t y, v; } MarkExit;       /* mark_line_surfaces / draw_road: Y and V (C is always set) */
 typedef struct { uint8_t val, carry; } Adc;
@@ -212,8 +212,6 @@ typedef struct { uint8_t a, v, c, n, z; } EdgeOffFlags;
 typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
 typedef struct { uint8_t a, n, z, c, v; } Mul8AccumExit;
 typedef struct { uint8_t hi; int declined; } SlipRef;
-typedef struct { uint8_t a, y, n, z, c; } ContactExit;    /* X and V pass through the caller's */
-typedef struct { uint8_t a, y; } RejectExit;                   /* N/Z derive from a (bit7 set) */
 typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effect; row=X, line=A/Y */
 typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
 typedef struct { uint8_t mag; uint8_t dir; uint8_t reading; } AdcRead;   /* distance from centre, its sign, and the raw MOS reading that leaks out in Y */
@@ -772,7 +770,7 @@ Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
 void model_integrate_element_core(uint8_t slot);
 Mul8AccumExit mul8_accum_core(void);
 Wide16Exit    mul16_by_1_5_core(uint16_t x);
-ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC);
+void note_object_contact_core(uint8_t threshold);
 #define SOUND_SLOT_IMPACT 0x04u  /* the bang: the scrape arm, the crash arm and begin_jump */
 
 /* check_crash_core's three arms — which tail the routine took, and so which exit ABI. */
@@ -797,7 +795,7 @@ uint8_t race_main_loop_core(RestartDepth depth);
    around it and exists for the oracle. */
 uint8_t race_main_loop_session(void);
 void rebase_edge_point_core(uint8_t slot);
-RejectExit reject_object_slot_core(void);
+void reject_object_slot_core(void);
 RoadSide road_edge_side_apply(uint8_t sideSelect);
 void road_edge_start_core(uint8_t nearSlotCount, uint8_t halfStride, uint8_t scratchSection, uint8_t pointLimit, uint8_t staleHorizonCap);
 uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
@@ -884,8 +882,7 @@ void prompt_wing_settings_core(void);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
 /* $0B77 scale_wing_settings — the drag coefficient plus the closing `ADC #$3C`'s C and V, which
    are the frame body's ambient carry/overflow at its very first call ($1701). */
-typedef struct { uint8_t drag, c, v; } WingScaleExit;
-WingScaleExit scale_wing_settings_core(void);
+void scale_wing_settings_core(void);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 /* The number/name printers ($3250/$37D0/$37D6/$7B9C).  TextChar is what the shared $5092
    dispatch returns; TextExit adds the carry the BCD printer's field-width shift produces. */
@@ -974,7 +971,7 @@ uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);
 void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entryCell);
-SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX, uint8_t entryV, uint8_t entryC);
+void write_object_slot_core(uint8_t projectedLine, uint8_t entryC);
 
 /* per-circuit hook twins (see revs_native.c's PER-CIRCUIT HOOK TWINS section) */
 extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterated bodies */

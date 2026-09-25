@@ -5938,9 +5938,11 @@ static int test_view_producers(void)
             /* build_track_geometry's exit N/V/Z/C are byproducts, not results: the last thing it
                does is horizon_half_width_at, whose subtract/LSR leave them, and the caller at
                $1710 opens LDA/SEC/SBC reading none.  The real outputs are all in mem[] (the edge
-               arrays, horizon_extent/index, horizon_half_width) plus A/X/Y — those stay compared. */
+               arrays, horizon_extent/index, horizon_half_width) plus X/Y — those stay compared.
+               A is dead too: $170D's next routine, place_player_in_section, opens $4626 LDA $5E
+               (and A's value, the half width, is horizon_half_width in mem[], compared anyway). */
             fail += diff_run("build_track_geometry", pre, c, build_track_geometry,
-                             build_track_geometry__t6502, liveMask & ~LIVE_FLAGS, t, &printed);
+                             build_track_geometry__t6502, LIVE_X | LIVE_Y | LIVE_S, t, &printed);
             if (shape == GEO_SILVERSTONE && geometry_tail_ran((const uint8_t*)mem)) tailRan++;
         }
         if (tailRan == 0) {
@@ -5948,7 +5950,7 @@ static int test_view_producers(void)
                    "reached the horizon_half_width tail — the SMC arm exited first\n", legal);
             fail++;
         }
-            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY (flags=byproduct)  "
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=XY (A, flags dead)  "
                "(%d/%d reached the tail)\n", "build_track_geometry",
                legal + hooked + garbage, fail, tailRan, legal);
     }
@@ -11052,6 +11054,13 @@ static int test_road_sign(void)
                     pre[0x0078] = (uint8_t)xs(); pre[0x0079] = 0;   /* hypot_min */
                     pre[0x007A] = (uint8_t)(xs() & 0x1F); pre[0x007B] = 0;  /* hypot_max */
                     contact++;
+                }
+                /* ...and the BOUNDARY, threshold == distance (the CPY's equal case is a contact):
+                   a random Y almost never lands on the hypot's low byte, so a sabotaged `<=` there
+                   survived all 3000 cases.  Zero magnitudes give distance 0; take threshold 0. */
+                if (t % 10 == 0) {
+                    pre[0x0078] = 0; pre[0x0079] = 0; pre[0x007A] = 0; pre[0x007B] = 0;
+                    c.Y = 0;
                 }
             }
             /* build_road_sign: half the cases get a sign $30 away — see force_near_sign. */
