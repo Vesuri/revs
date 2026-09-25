@@ -4506,8 +4506,9 @@ uint8_t race_main_loop_core(RestartDepth depth)
             sim_tick_step = 1u;                            /* outside the steps, a legacy step */
             sim_render_ticks = (uint8_t)(frameTicks > 255u ? 255u : frameTicks);
             if (s_simStepTenths != 0u) {
-                const uint32_t gameTenths = (uint32_t)steps * s_simStepTenths;
-                uint16_t thr = revs_divu16(gameTenths * 0x16u, (uint16_t)SIM_BBC_FRAME_TENTHS);
+                /* mulu.w both ways: steps <= 15 and a step < 936, so the game time fits 16 bits */
+                const uint16_t gameTenths = (uint16_t)revs_mulu16((uint16_t)steps, (uint16_t)s_simStepTenths);
+                uint16_t thr = revs_divu16(revs_mulu16(gameTenths, 0x16u), (uint16_t)SIM_BBC_FRAME_TENTHS);
                 sim_jump_threshold = steps == 0u ? 0x100u : (thr == 0u ? 1u : thr);
             }
             rebase_heading_delta_v = s_rebaseHeadingSum;   /* the motion since the last pass */

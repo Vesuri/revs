@@ -255,17 +255,21 @@ uint32_t PlatformAmiga::hwMicros()
 #endif
 }
 
-// ⭐⭐ THE SIMULATION CLOCK's inputs.  The step length is a build constant for now
-// (SIM_STEP_TENTHS, amiga/Makefile): 936 = one BBC frame, i.e. the decoupled scheduler with the
-// physics unchanged (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION, stage 2).  The field
-// count is the VERTB ISR's own, so under warp it is EMULATED time and a FIXED_RNG run stays
-// deterministic.
+// ⭐⭐ THE SIMULATION CLOCK's inputs (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).
+// The step is chosen by the CPU (user decision): a 68000 steps at 25 Hz — the best a stock
+// A500 can display is 25 fps, and a step there costs ~3.6 ms of driving model — and a 68020 or
+// better at 50 Hz, one step per field.  `make SIM_STEP_TENTHS=n` overrides it (936 = the engine's
+// own 93.6 ms frame, h = 1) and `make SIMLEGACY=1` restores the engine's loop outright.
+// The field count is the VERTB ISR's own, so under warp it is EMULATED time and a FIXED_RNG run
+// stays deterministic.
 unsigned PlatformAmiga::simStepTenths()
 {
-#ifdef REVS_SIM_LEGACY
+#if defined(REVS_SIM_LEGACY)
     return 0u;
-#else
+#elif defined(SIM_STEP_TENTHS)
     return SIM_STEP_TENTHS;
+#else
+    return (SysBase->AttnFlags & AFF_68020) ? 200u : 400u;
 #endif
 }
 

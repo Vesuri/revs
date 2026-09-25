@@ -497,12 +497,14 @@ EXTRA_DEFINES += -DREVS_HOLD_STEER_RIGHT -DREVS_HOLD_THROTTLE
 endif
 
 # ⭐⭐ THE SIMULATION CLOCK (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  The game's
-# simulation steps are owed against real VERTB fields, SIM_STEP_TENTHS tenths of a millisecond
-# each: 936 = one BBC frame (stage 2 — the decoupled scheduler, physics unchanged).
+# simulation steps are owed against real VERTB fields; by default the step is chosen at run time
+# by the CPU — 400 tenths of a ms (25 Hz) on a 68000, 200 (50 Hz) on a 68020 or better.
+# `make SIM_STEP_TENTHS=n` pins it (936 = the engine's own 93.6 ms frame, h = 1).
 # `make SIMLEGACY=1` restores the engine's own loop — one step per painted frame, game speed =
 # framerate — which is the arm to compare a decoupled build against.  ⚠ `make clean` on a switch.
-SIM_STEP_TENTHS ?= 936
+ifdef SIM_STEP_TENTHS
 EXTRA_DEFINES += -DSIM_STEP_TENTHS=$(SIM_STEP_TENTHS)u
+endif
 ifdef SIMLEGACY
 EXTRA_DEFINES += -DREVS_SIM_LEGACY
 endif
