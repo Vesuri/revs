@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 93.30 ms bracketed** (after `fill_dash_edge_columns` in asm, ph18 5.88 → 5.13, and the needle DDA in asm, ph32 4.87 → 3.49) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.98× the real BBC's 97.0 (1.05× its comparable 91.0), and 0.98× real-time game speed**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 92.46 ms bracketed** (after the object plotter's C was cleaned, ph15 3.11 → 2.47, and `build_sign_origin`'s, ph14 1.56 → 1.39) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.95× the real BBC's 97.0 (1.02× its comparable 91.0), and ~1.01× real-time game speed**.
 ⚠⚠ 2026-09-25: the crash/session RESET now has its own phase (63) and is excluded like phase 0 — it had been billed to
 the drain (ph26) since the hold ends inside a drained tick; the same binary read 99.10 before the split and 95.46 after
 (ph26 6.86 → 3.21, ph63 3.66 amortised = 90 fields over two resets). Every earlier frame figure includes it (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
@@ -169,7 +169,12 @@ by certainty × size:
      (~170 µs; 236-434 on the rare cycles that run the game's IRQ chain), so the shipping drain is
      ~1.2 ms a frame; ph26 still reads 3.21 in a PROBES build because each tick crosses two brackets.
   3. ✅ **The tail** is at parity (3.49 vs 3.4) — the needle DDA was 2.7k instructions of it, now asm.
-     **Sign/object** (4.6 vs 2.9): single-step it next.
+     **Sign/object** 3.86 vs 2.9 after its C was cleaned (4.66 before: the tree replayed the 6502's
+     exit registers on every return and re-read its fill drivers per cell). ⛔ Not worth asm now:
+     re-stepped at 1254 instructions an object, and what is left is `plot_view_src_line`'s per-call
+     zero-page state (~0.13 ms if moved to locals) and the surface-colour lookup per empty cell
+     (real work) — and STEP 2 retargets this plotter's output anyway. A race draws ~2.3 objects a
+     frame, so a race gains ~2.3× what the practice baseline showed.
   4. **Then STEP 2**: the direct span-to-bitplane renderer that deletes the `$3000` intermediate.
      Re-price it after step 1.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →

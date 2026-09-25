@@ -2835,6 +2835,23 @@ game can never reach, and the compare then read past the arrays — a check bug 
 mismatches. ⇒ **Fuzz inside the INVARIANTS the producer maintains, and bound the compare by them.**
 ⚠ Circuit-independent code (the same dials on every track), so it was not re-run per circuit.
 
+
+⭐⭐ **THE OBJECT PLOTTER'S C, CLEANED BEFORE ANY ASM, IS −0.64 ms OF ph15 AND −0.17 OF ph14** (road
+sign + corner markers; frame 93.29 → 92.46). User rule: clean the C first. Single-stepped at 1566
+instructions per drawn object, 53% memory operands, and none of the fat was algorithm: (1) **the
+whole tree rebuilt the 6502's A/X/Y/N/Z/V/C on every return** — a seven-byte `SlotExit` returned
+through memory, an `adc_overflow` per vertex — although every native caller drops the exit and the
+rest are oracles; (2) its fills re-read the pointer, stop line, column and masks per cell under a
+"not hoisted" note copied from `column_gap_walk`, whose run really can cover its drivers — this
+one's stores stay in rows $00..$4F of the `$3000` blocks and cannot. After: 1254 instructions.
+⭐⭐ **THE EXIT AUDIT IS PER TREE, NOT PER ROUTINE.** Walk the native callers to the top; an exit
+dead there is dead in every callee that only threads it. Then check the ORACLES that reach a
+native shim: they may BRANCH on an exit (plot_object__t6502's `BCS` after scale_shape_vectors, the
+car-field oracle's ring walk on X) — rebuild exactly those in the shim, and let the fixture mask
+say so. ⚠ And an oracle that calls a native callee through its shim cannot see a defect IN that
+callee: sabotaging `build_sign_origin` failed its own fixture (1081/3000) and passed
+`build_road_sign`'s, which is structure, not a gap.
+
 ⭐ **`fill_dash_edge_columns` IN 68000 ASM IS ONLY −0.75 ms OF ph18** (5.88 → 5.13, frame 95.45 →
 94.85; `src/platform/amiga/edge_m68k.s`, `make EDGEASM=0` the control, 2026-09-25). Gate: `make
 EDGECHECK=1` + `amiga/edge_check.gdb`, all 64 KB, both plot pointers and the exit registers every
