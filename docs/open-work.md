@@ -739,11 +739,6 @@ driving reads `gap frames=1 of 1226`.
 what is left is not a decode.
 
 **What is still owed here:**
-- ⬜ **The gap test's own shape**, worth ~0.3-0.5 ms: GCC re-fetches the 32-bit `0x01010101`
-  immediate every iteration (`cmpi.l #imm,(a0)` is ~26 cycles against 14 for a register compare),
-  and the answer only changes when a SWEEP rebuilds ownership — not per frame. Either hold the
-  constant in a register or compute the answer once per sweep and accept a one-frame-stale
-  (conservative) reading.
 - ⬜ **Delete the dirty machinery nothing reaches any more**: `s_shadow`, `s_shadowMode`, the
   mode-change bitmask arm of `convertRace`, `DECODESKIP`, `DIRTYCHECK`. The cold path calls
   `convertRace(dst, 0, 0)`, the NULL-shadow arm, so the other arm is now reachable only from

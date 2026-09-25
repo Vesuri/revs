@@ -1017,10 +1017,16 @@ static int own_has_gap(unsigned lo, unsigned hi)
     const unsigned char* p = g_plotOwn + lo;
     unsigned n = hi - lo;
     while (n && (((unsigned)(p - g_plotOwn)) & 3u)) { if (!*p) return 1; p++; n--; }
+    /* ⭐ ONE `and.l` PER FOUR LINES AND ONE COMPARE PER RANGE, no early exit: a gap frame is rare
+       (one of ~1200 on Silverstone), so the exit only ever paid a `cmpi.l #imm` per group.  Exact
+       because every writer stores 0 or 1 (the reset, the delta template, `= 1` in RevsPlot.cpp
+       and terrain_m68k.s's `move.b #1`), so the AND is 0x01010101 iff every byte is 1. */
+    uint32_t all = 0x01010101u;
     while (n >= 4u) {
-        if (*(const uint32_t*)(const void*)p != 0x01010101u) return 1;
+        all &= *(const uint32_t*)(const void*)p;
         p += 4u; n -= 4u;
     }
+    if (all != 0x01010101u) return 1;
     while (n) { if (!*p) return 1; p++; n--; }
     return 0;
 #else
@@ -1033,8 +1039,33 @@ static int own_has_gap(unsigned lo, unsigned hi)
    that is neither owned nor flat, so `mem[]` is the only thing that can supply it. */
 static unsigned char s_frameHasGap = 1u;
 
+/* ⭐⭐ THE TABLE IS MEMOISED ON THE BAND SNAPSHOT.  `m_lineMode`, `m_plan` and the painters' band
+   record are a pure function of `m_bandSnap`, which is the same on nearly every frame; rebuilding
+   them anyway single-stepped at 1385 instructions a call (~2 ms/frame — the 208-byte fill and the
+   gap test were two thirds of it).  What is NOT a function of the snapshot is ownership, which
+   every sweep resets and re-claims, so the gap test still runs every frame — over the non-flat
+   ranges the last build recorded.
+   ⚠ `s_modesBuilt` must be cleared by anything else that writes `m_lineMode`: the gap frame's
+   owned-line mute, the DECODEFULL carve and VIEWCARVE (see revs_line_modes_stale). */
+static unsigned char s_bandsChanged = 1u;   /* set by snapshotBands when the record moved */
+static unsigned char s_modesBuilt;          /* m_lineMode/m_plan describe m_bandSnap */
+static unsigned char s_gapRanges;
+static unsigned char s_gapLo[5], s_gapHi[5];
+static inline void revs_line_modes_stale(void) { s_modesBuilt = 0u; }
+
 void RevsScreen::buildLineModes()
 {
+    if (s_modesBuilt && !s_bandsChanged) {
+        unsigned char gap = 0u;
+        for (unsigned r = 0; r < s_gapRanges; r++)
+            if (own_has_gap(s_gapLo[r], s_gapHi[r])) { gap = 1u; break; }
+        s_frameHasGap = gap;
+        if (gap) { g_decodeGapFrames++; g_decodeGapLastAt = g_decodeFrames; }
+        g_decodeFrames++;
+        return;
+    }
+    s_modesBuilt = 0u;
+
     /* The record must be the game's five bands, identified by the state it wrote them
        under ($4F43): 0,1,2,3 and $FF for the last.  Anything else and the previous
        frame's plan stands — see g_bandRejects. */
@@ -1056,7 +1087,7 @@ void RevsScreen::buildLineModes()
        band n+1's, because the 6522 reloads T1 from the latch only at the NEXT timeout.
        So the interval that starts at band n is the one recorded against band n-1. */
     int startUs = (int)BBC_BAND0_ANCHOR_US;
-    unsigned char gap = 0u;
+    unsigned char gap = 0u, ranges = 0u;
     uint16_t flatLines = 0, flatBands = 0;
     unsigned char bandMode[5];
 
@@ -1105,7 +1136,12 @@ void RevsScreen::buildLineModes()
         revs_fill_modes(m_lineMode, a, b, (unsigned char)mode);
         /* ⭐ THE GAP TEST, per band and only where it can matter: a flat band is unobservable and
            an empty range has nothing in it. */
-        if (mode != 0u && b > a && own_has_gap((unsigned)a, (unsigned)b)) gap = 1u;
+        if (mode != 0u && b > a) {
+            s_gapLo[ranges] = (unsigned char)a;
+            s_gapHi[ranges] = (unsigned char)b;
+            ranges++;
+            if (own_has_gap((unsigned)a, (unsigned)b)) gap = 1u;
+        }
 
         m_plan.line[n] = (short)lineStart;
         m_plan.rec[n]  = (unsigned char)rec;
@@ -1117,6 +1153,8 @@ void RevsScreen::buildLineModes()
     g_decodeFlatLines = flatLines;
     g_decodeFlatBands = flatBands;
     s_frameHasGap     = gap;
+    s_gapRanges       = ranges;
+    s_modesBuilt      = 1u;
     if (gap) { g_decodeGapFrames++; g_decodeGapLastAt = g_decodeFrames; }
     g_decodeFrames++;
 }
@@ -1301,12 +1339,21 @@ void RevsScreen::present()
  * which is one frame stale in a value that changes slowly. */
 void RevsScreen::snapshotBands()
 {
+    /* ⚠ A rejected record leaves the snapshot as it was, and so leaves s_bandsChanged clear:
+       the previous plan stands, exactly as a rebuild from the unchanged snapshot would leave it. */
+    s_bandsChanged = 0u;
     if (g_bandCount != 5) { g_bandRejects++; return; }
+    unsigned diff = m_bandSnap.count ^ 5u;
     m_bandSnap.count = 5;
     for (unsigned i = 0; i < 5; i++) {
-        m_bandSnap.state[i]    = g_bandState[i];
-        m_bandSnap.duration[i] = g_bandDuration[i];
-        m_bandSnap.control[i]  = g_bandControl[i];
+        const unsigned char  st = g_bandState[i];
+        const unsigned short du = g_bandDuration[i];
+        const unsigned char  co = g_bandControl[i];
+        diff |= (unsigned)(m_bandSnap.state[i] ^ st) | (unsigned)(m_bandSnap.duration[i] ^ du) |
+                (unsigned)(m_bandSnap.control[i] ^ co);
+        m_bandSnap.state[i]    = st;
+        m_bandSnap.duration[i] = du;
+        m_bandSnap.control[i]  = co;
     }
     /* ⭐ THE PALETTE A LONGWORD AT A TIME: 20 volatile `move.l`s instead of 80 volatile byte
        copies (~400 instructions a frame, single-stepped).  A byte-for-byte COPY, so byte order
@@ -1314,7 +1361,13 @@ void RevsScreen::snapshotBands()
     {
         const volatile uint32_t* src = (const volatile uint32_t*)(const volatile void*)g_bandPalette;
         uint32_t* dst = (uint32_t*)(void*)m_bandSnap.palette;
-        for (unsigned w = 0; w < 5u * 16u / 4u; w++) dst[w] = src[w];
+        uint32_t pdiff = 0;
+        for (unsigned w = 0; w < 5u * 16u / 4u; w++) {
+            const uint32_t v = src[w];
+            pdiff |= dst[w] ^ v;
+            dst[w] = v;
+        }
+        s_bandsChanged = (unsigned char)((diff | pdiff) != 0u);
     }
 }
 
@@ -2057,6 +2110,7 @@ void RevsScreen::prepareFrame()
         }
         g_decodeOwnLines = owned;
         g_decodeNothingToDo = (anyMode == 0u);
+        revs_line_modes_stale();          /* the carve wrote m_lineMode */
     }
 #endif
 
@@ -2076,6 +2130,7 @@ void RevsScreen::prepareFrame()
      * RANGES a line, not the line, so the cells between the runs — the dash, the needles —
      * would still have to be converted. */
     for (unsigned y = REVS_VIEW_CARVE_LO; y <= REVS_VIEW_CARVE_HI; y++) m_lineMode[y] = 0;
+    revs_line_modes_stale();
 #endif
 
 #ifdef REVS_FILLWATCH
@@ -2233,6 +2288,7 @@ void RevsScreen::prepareFrame()
         {
             unsigned y;
             for (y = 0; y < kH; y++) if (g_plotOwn[y]) m_lineMode[y] = 0;
+            revs_line_modes_stale();      /* next frame restores the painters' modes */
         }
 #endif
         g_decodeCells       = (uint16_t)convertRace(dst, 0, 0);
