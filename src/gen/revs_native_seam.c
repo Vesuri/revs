@@ -338,9 +338,10 @@ void apply_driving_model(void)
 void draw_track_object(void)
 {
     car_heading_marshal_in();
-    SlotExit e = draw_track_object_core(cpu.X, cpu.Y, cpu.V, cpu.C);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    draw_track_object_core(cpu.X);
+    /* $2B0A LDX saved_slot_index — the one exit an oracle reads (draw_car_field__t6502's ring
+       walk); the rest of the tree's exits are dead (scale_shape_vectors_core's header). */
+    cpu.X = saved_slot_index; cpu.N = (uint8_t)(cpu.X >> 7); cpu.Z = (uint8_t)(cpu.X == 0u);
 }
 
 /* The 6502-ABI shim.  No inputs at all — every value is an immediate in the original — and
@@ -716,15 +717,12 @@ void note_object_contact(void)
 /* The 6502-ABI shims. */
 void plot_view_src_line(void)
 {
-    SlotExit e = plot_view_src_line_core(cpu.Y, cpu.A);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z;   /* V/C unread */
+    plot_view_src_line_core(cpu.Y, cpu.A);   /* exits dead: scale_shape_vectors_core's header */
 }
 
 void fill_object_gap(void)
 {
-    SlotExit e = fill_object_gap_core(cpu.X);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z;
-    /* V and C are dropped from this routine's fixture mask (unread by every caller) */
+    fill_object_gap_core(cpu.X);             /* exits dead: scale_shape_vectors_core's header */
 }
 
 /* A leaf: on the carry path it returns steer_angle_hi with that value's N/Z, and C and V
@@ -1361,7 +1359,7 @@ void draw_corner_markers(void)
             plot_shape = 0x06;                              /* $1B6F — always the marker shape */
             /* $1B71 — the slot index and a zero Y are plot_object's whole entry ABI, and its
                exit registers/flags are dead here (the loop reloads everything). */
-            plot_object_core(idx, 0x00u, 0u);
+            plot_object_core(idx);
         }
         mem[0x38FEu] = 0xF0;                                /* $1B74-$1B76 — restore the marker colour */
     }
@@ -1462,9 +1460,8 @@ void move_and_draw_cars(void)
 void draw_car_field(void)
 {
     car_heading_marshal_in();
-    SlotExit e = draw_car_field_core(cpu.Y, cpu.V, cpu.C);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    draw_car_field_core();
+    cpu.X = saved_slot_index; cpu.N = (uint8_t)(cpu.X >> 7); cpu.Z = (uint8_t)(cpu.X == 0u);
 }
 
 /* $2692 check_car_pair — twin #163.  No meaningful entry registers (it loads its start position

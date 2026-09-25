@@ -190,13 +190,11 @@ void begin_spin_from_a(void)
 }
 
 /* The 6502-ABI shims. */
-void plot_object(void)          { SlotExit e = plot_object_core(cpu.X, cpu.Y, cpu.V);
-                                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-                                  cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
+/* The object plotter's exits are dead (scale_shape_vectors_core's header); only
+   scale_shape_vectors' carry is rebuilt, because plot_object__t6502 branches on it. */
+void plot_object(void)          { plot_object_core(cpu.X); }
 
-void scale_shape_vectors(void)  { SlotExit e = scale_shape_vectors_core(cpu.V);
-                                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-                                  cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
+void scale_shape_vectors(void)  { cpu.C = (uint8_t)scale_shape_vectors_core(); }
 
 void apply_steer_demand(void)           { car_angle_marshal_in(); apply_steer_demand_core(cpu.A);
                                           car_angle_marshal_out(); }
@@ -283,9 +281,7 @@ void mul8_accum(void)
     cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c; cpu.V = e.v;
 }
 
-void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
-                                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-                                  cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
+void plot_shape_edges(void)     { plot_shape_edges_core(); }
 
 void track_pos_advance(void)                     /* exit ABI: C only */
 {

@@ -579,7 +579,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
 void    stage_nearby_car_at_core(uint8_t orderIndex);
 void    move_and_draw_cars_core(void);
-SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC);
+void draw_car_field_core(void);
 void check_car_pair_core(void);
 void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
 void clamp_near_edge_cursor_core(uint8_t candidate);
@@ -592,7 +592,7 @@ SlipRef derive_slip_reference_core(uint8_t axle);
 uint8_t draw_gear_indicator_core(void);
 SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
-SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC);
+void draw_track_object_core(uint8_t slot);
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX);
 uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte);
 uint8_t emit_edge_bearing_core(uint8_t slot);
@@ -601,7 +601,7 @@ SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t fa
 SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc);
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine, uint8_t entryV);
 SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC, int entryV);
-SlotExit fill_object_gap_core(uint8_t width);
+void fill_object_gap_core(uint8_t width);
 /* ⭐ hypot_max ($7A/$7B) is a mechanism-(B) relocated wide value (see revs_native.c).  A shim
    whose core CONSUMES it marshals the cells in; one whose core PRODUCES it marshals them out —
    the 6502-ABI boundary is the one place a transliterated parent still hands it over in mem[]. */
@@ -777,7 +777,7 @@ void    step_delta_halve_core(void);
 uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor);
 void    project_object_slot_core(uint8_t coordIndex, uint8_t shape);
 uint8_t paint_fence_backdrop_core(uint8_t horizon);
-SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
+void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 uint8_t point_distance_hypot_apply(void);
 void poll_steering_assist_core(void);
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
@@ -800,7 +800,7 @@ int road_span_advance_core(uint8_t y);
 AddFlags rotate_velocity_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
 void section_coord_add_delta_core(uint8_t dst, uint8_t src, const uint8_t dlo[3], const uint8_t dhi[3]);
-SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);
+void plot_object_core(uint8_t slot);
 void build_section_step_delta_core(uint8_t y);
 void copy_section_height_to_side1_core(uint8_t x);
 void load_section_from_segment_core(uint8_t x, uint8_t y);
@@ -1027,7 +1027,7 @@ extern const SpanArm ARM_SHALLOW_REV;
    measured (docs/perf-method.md §twins #25-#39).  These two are out-of-line wrappers that exist
    only so the oracle shims can reach them across the TU boundary; the native path never calls
    them and keeps inlining as before. */
-SlotExit plot_shape_edges_core(void);
+void plot_shape_edges_core(void);
 uint8_t track_pos_advance_core(uint8_t x);
 uint8_t track_pos_retreat_core(uint8_t x);
 extern const SpanArm ARM_STEEP_FWD;
@@ -1059,7 +1059,7 @@ uint8_t car_index_inc_core(uint8_t x);
 uint8_t find_player_neighbours_core(void);
 void lap_complete_core(uint8_t x);
 int record_section_jump_core(int carry_in, uint8_t x);
-SlotExit scale_shape_vectors_core(uint8_t entryV);
+int scale_shape_vectors_core(void);
 uint8_t section_angle_curve_core(uint8_t a);
 void steer_assist_dispatch_core(uint8_t demand);
 

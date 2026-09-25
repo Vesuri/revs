@@ -967,6 +967,14 @@ Rules that must survive without opening `docs/perf-method.md`:
   taught goes in the doc that was wrong. ⛔ Its CLOSED section is one line per measured dead
   end — read it before proposing a lever, so a negative result is not re-derived.
 
+- ⭐⭐ **CLEAN THE C BEFORE WRITING ASM** (user rule): before an asm twin, the C must already be
+  sensible — no byte-wide `mem[]` traffic in a loop, no zero-page scratch cells as working state,
+  no dead exit-register/flag replay, no SMC-opcode dispatch. Single-step, fix the C, re-measure,
+  and only then price asm for what is left.
+- ⭐ **GATE A CHANGE BY WHAT IT CAN AFFECT, NOT WITH THE WHOLE BATTERY** (user rule): an asm check
+  on Silverstone (plus ONE circuit only on a hook-patched path), 2-3 sabotages, host gates only
+  when host-compiled code changed, one pricing pair — the six-circuit sweep and `viewdiff` belong
+  to a checkpoint every few commits, not to every commit.
 - **Commit directly to `main`** (no feature branches). Commit each fix as soon as it is confirmed
   to work — one logical change per commit.
 - **Misnamed or unnamed things:** whenever a function, table or `mem[]` cell contradicts its name —

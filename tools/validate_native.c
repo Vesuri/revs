@@ -3149,9 +3149,11 @@ static int test_draw_car_field(void)
             sawSkip = 1;
         }
 
+        /* X/N/Z only: the closing LDX saved_slot_index.  The object plotter tree's other exits
+           are dead in the port (scale_shape_vectors_core's header in revs_native.c). */
         fail += diff_run("draw_car_field", pre, c, draw_car_field,
                          draw_car_field__t6502,
-                         LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+                         LIVE_X | LIVE_N | LIVE_Z, t, &printed);
     }
     if (!sawDraw || !sawSkip || !sawNegCursor || !sawSmcTrap) {
         printf("  draw_car_field: VACUOUS (draw=%d skip=%d negCursor=%d smcTrap=%d)\n",
@@ -6136,8 +6138,11 @@ static int test_body_drivers(void)
             c.D = 0;
             static uint8_t preCopy[65536];
             memcpy(preCopy, pre, sizeof preCopy);
+            /* X/N/Z/S only — the closing LDX saved_slot_index; the tree's other exits are dead
+               (scale_shape_vectors_core's header in revs_native.c). */
             subFail += diff_run("draw_track_object", pre, c, draw_track_object,
-                                draw_track_object__t6502, liveMask, t, &printed);
+                                draw_track_object__t6502, LIVE_X | LIVE_N | LIVE_Z | LIVE_S,
+                                t, &printed);
             if (path == OBJ_DRAWN && object_block_ran(preCopy, (const uint8_t*)mem, slot))
                 blockRan++;
         }
@@ -6156,7 +6161,7 @@ static int test_body_drivers(void)
                    paths[OBJ_DRAWN] - blockRan, paths[OBJ_DRAWN]);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=X+NZ  "
                "(%d empty / %d offscreen / %d drawn, %d block-checked)\n",
                "draw_track_object", object, subFail,
                paths[OBJ_EMPTY], paths[OBJ_OFFSCREEN], paths[OBJ_DRAWN], blockRan);
@@ -11287,8 +11292,10 @@ static int test_object_shape(void)
                now fold their ADC chains to native adds.  Pin D=0; determinism-drive is the
                backstop that the object path never runs in decimal. */
             c.D = 0;
+            /* mem[] plus scale_shape_vectors' abandon carry, which plot_object branches on; every
+               other exit of the tree is dead (scale_shape_vectors_core's header). */
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                i == 0 ? (LIVE_C | LIVE_S) : LIVE_S, t, &printed);
         }
         fail += subFail;
         if (!patched || !closing || !wide) {
@@ -11305,9 +11312,10 @@ static int test_object_shape(void)
             printf("[VACUOUS] %s: no extra proj_width_shift case\n", list[i].name);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=%s  "
                "(%d decimal, %d SMC-random, %d wide%s)\n",
-               list[i].name, cases, subFail, decimal, patched, wide,
+               list[i].name, cases, subFail, i == 0 ? "C (mem[])" : "mem[] only",
+               decimal, patched, wide,
                i == 2 ? ", two-part shapes forced" : ", extra shift forced");
     }
 
@@ -11425,7 +11433,7 @@ static int test_object_lines(void)
                flag, so their exit V/C are byproducts.  N/Z (read locally, and set by the same
                conversions) stay compared, as do A/X/Y and all of mem[]. */
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask & ~(LIVE_V | LIVE_C), t, &printed);
+                                LIVE_S, t, &printed);
         }
         fail += subFail;
         if (!deferred || !offView || !noHeight ||
@@ -11435,7 +11443,7 @@ static int test_object_lines(void)
                    modes[0], modes[1], modes[2], modes[3]);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZ (V/C byproduct, D=0)  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=mem[] only (D=0)  "
                "(%d deferred, %d off view, %d no height, modes %d/%d/%d/%d)\n",
                list[i].name, cases, subFail, deferred, offView, noHeight,
                modes[0], modes[1], modes[2], modes[3]);
