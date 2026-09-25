@@ -6077,7 +6077,7 @@ static int test_body_drivers(void)
             fill_random(pre);
             plant_plotter_chains(pre);
             plant_body_driver_smc(pre);
-            /* ⭐ STEERED, and the reason is the twin's only branch: drive_state decides
+            /* ⭐ STEERED, and the reason is the twin's only branch: car_height decides
                whether model_state elements 5..7 are zeroed, and it is compared against 2.
                A uniform byte takes the >= 2 arm 254 times in 256, so the ONE case that
                matters — a car under power — would be luck.  The three values the engine
@@ -6100,7 +6100,7 @@ static int test_body_drivers(void)
             fail++;
         }
         if (offPower == 0 || onPower == 0) {
-            printf("[VACUOUS] apply_driving_model: the drive_state branch went only one way "
+            printf("[VACUOUS] apply_driving_model: the car_height branch went only one way "
                    "(%d off power, %d on)\n", offPower, onPower);
             fail++;
         }
@@ -9100,7 +9100,7 @@ static int test_model_arithmetic(void)
    TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
    --------------------------------------------------------------------------
    $4729 stage_lateral_speed_delta, $47A5 rotate_velocity_by_steer, $47C5 rotate_pair_a_by_steer,
-   $47F9 damp_and_derive_loads, $48C7 rotate_state_pair, $48B9 rotate_state_0_into_8,
+   $47F9 derive_axle_loads, $48C7 rotate_state_pair, $48B9 rotate_state_0_into_8,
    $48C1 rotate_state_6_into_3, $48EF integrate_car_position, $4937 integrate_state_rates.
 
    ⚠⚠ WHAT THIS FIXTURE IS REALLY FOR IS THE EXIT REGISTERS.  Four of these routines end by
@@ -9110,7 +9110,7 @@ static int test_model_arithmetic(void)
    the sabotage list below includes one deleted register write for exactly this reason.
 
    ⚠ TWO OF THEM READ THE CALLER'S N through scale16_by_y: stage_lateral_speed_delta hands it the
-   `LDA $62E2` that loaded the value's high byte, and damp_and_derive_loads hands it a
+   `LDA $62E2` that loaded the value's high byte, and derive_axle_loads hands it a
    subtract's and an add's.  Those are computed INSIDE the routine, so unlike twins #50-#57
    the incoming N does not matter here — but it is randomised anyway, because a twin that
    forwarded the caller's N instead of its own would otherwise pass.
@@ -9124,7 +9124,7 @@ static int test_model_arithmetic(void)
 void stage_lateral_speed_delta(void);       void stage_lateral_speed_delta__t6502(void);
 void rotate_velocity_by_steer(void);   void rotate_velocity_by_steer__t6502(void);
 void rotate_pair_a_by_steer(void);  void rotate_pair_a_by_steer__t6502(void);
-void damp_and_derive_loads(void);   void damp_and_derive_loads__t6502(void);
+void derive_axle_loads(void);   void derive_axle_loads__t6502(void);
 void rotate_state_pair(void);       void rotate_state_pair__t6502(void);
 void rotate_state_0_into_8(void);   void rotate_state_0_into_8__t6502(void);
 void rotate_state_6_into_3(void);   void rotate_state_6_into_3__t6502(void);
@@ -9145,7 +9145,7 @@ static int test_model_rotations(void)
         { "stage_lateral_speed_delta",      stage_lateral_speed_delta,      stage_lateral_speed_delta__t6502,      2000 },
         { "rotate_velocity_by_steer",  rotate_velocity_by_steer,  rotate_velocity_by_steer__t6502,  2000 },
         { "rotate_pair_a_by_steer", rotate_pair_a_by_steer, rotate_pair_a_by_steer__t6502, 2000 },
-        { "damp_and_derive_loads",  damp_and_derive_loads,  damp_and_derive_loads__t6502,  3000 },
+        { "derive_axle_loads",  derive_axle_loads,  derive_axle_loads__t6502,  3000 },
         { "rotate_state_pair",      rotate_state_pair,      rotate_state_pair__t6502,      3000 },
         { "rotate_state_0_into_8",  rotate_state_0_into_8,  rotate_state_0_into_8__t6502,  1000 },
         { "rotate_state_6_into_3",  rotate_state_6_into_3,  rotate_state_6_into_3__t6502,  1000 },
@@ -9154,7 +9154,7 @@ static int test_model_rotations(void)
       };
     for (i = 0; i < 9; i++) register_fixture(list[i].name);
 
-    /* ⭐ stage_lateral_speed_delta (i == 0) and damp_and_derive_loads (i == 3) are verified RESULT-ONLY:
+    /* ⭐ stage_lateral_speed_delta (i == 0) and derive_axle_loads (i == 3) are verified RESULT-ONLY:
        their native twins are plain 16-bit binary C that leaves nothing in the cpu, so the fixture
        pins D = 0 (the driving model's real precondition — docs/static-map.md §Decimal mode),
        drops the register/flag comparison, and ignores the oracle's arithmetic scratch ($74-$78)
@@ -9368,7 +9368,7 @@ static int test_engine_sound_update(void)
                          off grip_limit into unrelated cells identically in both models, which
                          proves nothing.
      Y            slip_magnitude's element, 0..14 into the state vector.
-     drive_state  ($2D) update_slip_sound's first fork is `>= 2`, so half the cases are forced
+     car_height  ($2D) update_slip_sound's first fork is `>= 2`, so half the cases are forced
                          under it and half over.
 
    ⭐ THREE OF THESE REACH THE MOS (OSWORD 7 for SOUND, OSBYTE 21 to flush a buffer), and what
@@ -9550,8 +9550,8 @@ static int test_slip_and_sound(void)
    TWINS #79-#86 — THE EIGHT SUB-MODELS
    --------------------------------------------------------------------------
    $0D01 compute_car_angles, $4610 scale_by_track_gradient, $49CE update_engine_revs,
-   $4BCF update_grip_limits, $4C65 apply_drag_terms, $4DC9 begin_spin,
-   $4DCB begin_spin_from_a, $44EA update_camera_and_drive_state.
+   $4BCF update_grip_limits, $4C65 apply_drag_terms, $4DC9 begin_jump,
+   $4DCB begin_jump_from_a, $44EA update_camera_and_height.
 
    ⚠⚠ SEVEN STEERED INPUTS, and without them most of this group is unreachable:
 
@@ -9560,11 +9560,11 @@ static int test_slip_and_sound(void)
                          their seven entries, identically in both models, and prove nothing.
                          Drawn from 0..7 so the neutral, pits and in-gear arms all run.
      pedal_mode   ($3E)  1 is the throttle, 0 the brake, $80 coasting.  update_grip_limits'
-                         whole load term and update_camera_and_drive_state's pitch bias fork
+                         whole load term and update_camera_and_height's pitch bias fork
                          on it, and update_engine_revs' coast arm does too.
      engine_running ($61) 0 sends update_engine_revs to the STARTER POLL and $FF to the rev
                          model; a random byte takes the model 255 times in 256.
-     drive_state  ($2D)  0 is "under power"; both big twins fork on it first.
+     car_height  ($2D)  0 is "under power"; both big twins fork on it first.
      $FE68        THE USER VIA TIMER, pinned per case through platform_test_via_t2.  The
                          headless backend answered a constant 0 — deterministic, but it pins
                          `VIA & starter_random_mask` to 0 (the starter ALWAYS catches) and
@@ -9573,13 +9573,13 @@ static int test_slip_and_sound(void)
      surface_change_0/_1 FORCED to $FF in a sixth of the cases each, and to $FF in BOTH in a
                          twelfth.  They are $00 on the real disc (see disasm/symbols.csv), so
                          update_grip_limits' whole changed-surface arm — the User VIA read, the
-                         unprompted begin_spin and grip_limit_base_alt_tbl — is code no
+                         unprompted begin_jump and grip_limit_base_alt_tbl — is code no
                          randomised fixture would ever enter: $FF in a random byte is 1 in 256
                          for the first test and 1 in 65536 for the second.
      player_car / car_section_cursor  ($6F, $22) both index page-1 and page-9 arrays.
                          Steered to 0..19 and 0..$77, the ranges the engine keeps them in.
 
-   ⚠ THE SMC SITE $45CB.  update_camera_and_drive_state's first `ASL A / ROL shared_temp_77`
+   ⚠ THE SMC SITE $45CB.  update_camera_and_height's first `ASL A / ROL shared_temp_77`
    pair is where every expansion circuit plants a `JSR` into its own hook.  Nine cases in ten
    force the unpatched Silverstone bytes, because a random pair traps instead of running the
    routine's tail — and the tenth is left random on purpose, since diff_run compares the SMC
@@ -9590,9 +9590,9 @@ void scale_by_track_gradient(void);       void scale_by_track_gradient__t6502(vo
 void update_engine_revs(void);            void update_engine_revs__t6502(void);
 void update_grip_limits(void);            void update_grip_limits__t6502(void);
 void apply_drag_terms(void);              void apply_drag_terms__t6502(void);
-void begin_spin(void);                    void begin_spin__t6502(void);
-void begin_spin_from_a(void);             void begin_spin_from_a__t6502(void);
-void update_camera_and_drive_state(void); void update_camera_and_drive_state__t6502(void);
+void begin_jump(void);                    void begin_jump__t6502(void);
+void begin_jump_from_a(void);             void begin_jump_from_a__t6502(void);
+void update_camera_and_height(void); void update_camera_and_height__t6502(void);
 
 void platform_test_via_t2(unsigned char v);
 void platform_test_key_down(int on);
@@ -9620,13 +9620,13 @@ static int test_sub_models(void)
         { "compute_car_angles",     compute_car_angles,     compute_car_angles__t6502,     3000 },
         { "scale_by_track_gradient", scale_by_track_gradient,
           scale_by_track_gradient__t6502, 2000 },
-        { "begin_spin",             begin_spin,             begin_spin__t6502,             1000 },
-        { "begin_spin_from_a",      begin_spin_from_a,      begin_spin_from_a__t6502,      1000 },
+        { "begin_jump",             begin_jump,             begin_jump__t6502,             1000 },
+        { "begin_jump_from_a",      begin_jump_from_a,      begin_jump_from_a__t6502,      1000 },
         { "apply_drag_terms",       apply_drag_terms,       apply_drag_terms__t6502,       3000 },
         { "update_grip_limits",     update_grip_limits,     update_grip_limits__t6502,     3000 },
         { "update_engine_revs",     update_engine_revs,     update_engine_revs__t6502,     4000 },
-        { "update_camera_and_drive_state", update_camera_and_drive_state,
-          update_camera_and_drive_state__t6502, 4000 },
+        { "update_camera_and_height", update_camera_and_height,
+          update_camera_and_height__t6502, 4000 },
       };
     static const uint8_t PEDALS[3] = { 1, 0, 0x80 };
     unsigned long smcTraps;
@@ -9659,7 +9659,7 @@ static int test_sub_models(void)
        doubling's sign is now a C bool, so the twin never writes the pushed status byte the
        oracle leaves at $01FF (net-neutral to the stack, dead scratch — nothing reads it). */
     static const uint16_t engineIgnore[] = { 0x01FF };
-    /* update_camera_and_drive_state (i==7): the five PHP/PLP pairs — three in the yaw fold
+    /* update_camera_and_height (i==7): the five PHP/PLP pairs — three in the yaw fold
        ($453C/$4540/$4546) and two in the camera add ($45E5/$45E9) — that carry octant signs and
        add carries are now C bools/ints, so the twin never writes the pushed status bytes the
        oracle leaves on the stack at $01FD/$01FE/$01FF (net-neutral pulls, dead scratch). */
@@ -9676,7 +9676,7 @@ static int test_sub_models(void)
         int cases = list[i].cases * scale;
         int resultOnly = (i == 0 || i == 4 || i == 5);
         /* i==1 scale_by_track_gradient, i==6 update_engine_revs and i==7
-           update_camera_and_drive_state keep their live exit A/flags, but their interior
+           update_camera_and_height keep their live exit A/flags, but their interior
            multiplies are now binary C, so D is pinned 0 — the driving/camera path never runs
            decimal (docs/static-map.md §Decimal mode). */
         int pinD0 = resultOnly || (i == 1) || (i == 6) || (i == 7);
@@ -9775,9 +9775,9 @@ static int test_sub_models(void)
     platform_test_key_down(0);
     smcTraps = g_smcUnhandled;
     unsetenv("REVS_SMC_CONTINUE");
-    if (want("update_camera_and_drive_state")) {
+    if (want("update_camera_and_height")) {
         if (smcTraps == 0) {
-            printf("[VACUOUS] update_camera_and_drive_state: no SMC trap over the whole run — "
+            printf("[VACUOUS] update_camera_and_height: no SMC trap over the whole run — "
                    "the $45CB dispatch was never exercised on an unknown shape\n");
             fail++;
         }

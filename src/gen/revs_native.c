@@ -4536,7 +4536,7 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
    routines divide by point_dist themselves — see edge_width_offset_for.) */
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
-/* The driving model's two pure-binary scale helpers (defined with damp_and_derive_loads),
+/* The driving model's two pure-binary scale helpers (defined with derive_axle_loads),
    used by stage_lateral_speed_delta above them in the file. */
 static uint16_t model_scale16(uint16_t value, uint8_t scale);
 static uint16_t model_mul_1_5(uint16_t value);
@@ -4562,11 +4562,11 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 /* promoted for revs_native_abi.c */ void update_slip_sound_core(uint8_t axle, uint8_t ambientY);
 AddFlags rotate_velocity_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
-static void damp_and_derive_loads_core(void);
+static void derive_axle_loads_core(void);
 static void apply_drag_terms_core(void);
 AddFlags integrate_state_rates_core(void);
 AddFlags integrate_car_position_core(void);
-CameraExit update_camera_and_drive_state_core(void);
+CameraExit update_camera_and_height_core(void);
 
 /* $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
    Handed a candidate slot, which it steps up by one first.  Two independent clamps:
@@ -7284,19 +7284,21 @@ void view_origin_marshal_out(void)
         moving" — is road_speed, or the fraction's top nibble when the integer part came out
         zero, so that a crawling car still turns its front wheels.
 
-     2. THE HAND-INTEGRATED ACCUMULATOR.  car_lateral_speed_lo/hi is element 8 of the same vector,
-        and the only element this routine integrates itself.  The sequence looks wrong until read
-        twice: the entry value is saved, stage_lateral_speed_delta subtracts a scaled velocity from
-        the accumulator, the next four sub-models therefore run against the OFFSET value, and only
-        then is the entry value restored and the frame's real increment (lateral_speed_delta_lo/hi,
-        1.5x what stage_lateral_speed_delta removed) added.
+     2. THE TWO LEVER ARMS.  car_lateral_speed_lo/hi is element 8, the lateral velocity that
+        rotate_state_0_into_8 has just rebuilt from 0/1 — nothing accumulates in it across frames.
+        The sequence looks wrong until read twice: the entry value is saved,
+        stage_lateral_speed_delta subtracts the yaw rate's lever arm s, the next four sub-models
+        run against x - s (the REAR axle), and then the entry value is restored and 1.5s added
+        (lateral_speed_delta_lo/hi) for the FRONT axle.  Geometry, not a timestep (⚠ formerly
+        described here as a hand-integrated accumulator; docs/open-work.md
+        §FRAME-RATE-INDEPENDENT SIMULATION depends on the difference).
 
-     3. THE OFF-POWER GATE.  Once drive_state reaches 2 — crashed or spinning, the value
-        check_crash writes — elements 5..7 of the state vector are forced to zero instead of
-        being integrated.
+     3. THE OFF-POWER GATE.  Once car_height reaches 2 — the car is in the air, or $7F from
+        check_crash — elements 5..7 of the state vector are forced to zero instead of being
+        integrated.
 
    Read in order the sub-model chain is: the car's angles, a rotation of the world-frame pair 0/1
-   into the car-frame pair 8/9, the accumulator offset, the grip limits, the engine, the two axles'
+   into the car-frame pair 8/9, the rear lever arm, the grip limits, the engine, the two axles'
    slip sound with two steering rotations between them, the load terms, then — past the off-power
    gate — drag, a second rotation, the rate integrator, the heading integrator and the camera.
    ⚠ Every sub-model name is [INFERRED] from what the routine COMPUTES.
@@ -7384,11 +7386,11 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
                             (uint8_t)(SURFACE_BYTE_0 & SURFACE_BYTE_1));
         /* Only the exit Y escapes: it is the ambient Y update_slip_sound's OSBYTE 21
            (sound_stop_channel, $0E6B) passes to the MOS.  A/X and the flags are dead — the
-           tail below overwrites every one of them from update_camera_and_drive_state. */
+           tail below overwrites every one of them from update_camera_and_height. */
         update_slip_sound_core(0x01, ee.y);
     }
 
-    /* $46DF-$46F5 — restore the entry accumulator, then apply the frame's real increment as one
+    /* $46DF-$46F5 — restore the entry value, then add the front axle's lever arm (+1.5s) as one
        16-bit add (D=0 on the driving path — static-map.md §Decimal mode).  The add's exit flags
        are dead: rotate_velocity_by_steer_core opens with LDA. */
     {
@@ -7406,11 +7408,11 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
        the real 6502 passes it, so it is reconstructed here now the core no longer leaves it in cpu. */
     update_slip_sound_core(0x00, 8u);
     rotate_pair_a_by_steer_core();
-    damp_and_derive_loads_core();
+    derive_axle_loads_core();
 
     /* $4706-$4717 — off power: elements 5..7 are zeroed rather than integrated.  The loop's
        exit registers (X = $FF, A = 0, N set) are dead — apply_drag_terms opens with `LDA`. */
-    if (drive_state >= 0x02u) {                         /* $4706 CMP #2 (unsigned; flags dead) */
+    if (car_height >= 0x02u) {                         /* $4706 CMP #2 (unsigned; flags dead) */
         int element;
         for (element = 7; element >= 5; element--) {
             model_state_16[element] = 0u;
@@ -7424,9 +7426,9 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
                                                 ...and the body-axes acceleration back out */
     integrate_state_rates_core();
     integrate_car_position_core();
-    /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_drive_state's (its last
+    /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_height's (its last
        call), so they are handed straight back for the shim to publish. */
-    return update_camera_and_drive_state_core();
+    return update_camera_and_height_core();
 }
 
 /* $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN  (twin #7)
@@ -12003,10 +12005,10 @@ int kbd_test_key_core(uint8_t keyCode)
    apply_driving_model's third group, and the one that says what the model DOES: the layer above
    the 16-bit arithmetic, where the state vector is treated as vectors and rates, not numbers.
 
-     $4729 stage_lateral_speed_delta      the midpoint offset — accumulator -= v, delta = 1.5v
+     $4729 stage_lateral_speed_delta      the two lever arms — rear at x - s now, front at x + 1.5s later
      $47A5 rotate_velocity_by_steer  the (8, 9) pair turned by the steering angle
      $47C5 rotate_pair_a_by_steer ...and the (10, 12) pair, with the opposite pair of modes
-     $47F9 damp_and_derive_loads  elements 10..13 decayed by 4, then loads 6 and 7 rebuilt
+     $47F9 derive_axle_loads      elements 10..13 scaled by 1/4, then loads 6 and 7 rebuilt
      $48C7 rotate_state_pair      THE 2x2 ROTATION — four apply_angle_term_at calls
      $48B9 rotate_state_0_into_8  ...entered for (source 0, dest 8, mode $C0)
      $48C1 rotate_state_6_into_3  ...and for (source 6, dest 3, mode $40)
@@ -12029,11 +12031,16 @@ int kbd_test_key_core(uint8_t keyCode)
 #define MODEL_ROT_MODE   (MEM_point_delta_sign + 2u)  /* point_delta_sign[2] — here the rotation's sign/mode byte */
 #define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
 
-/* $4729  stage_lateral_speed_delta — THE MIDPOINT OFFSET  (twin #58)
-   Scales element 2 (the heading step) by $58/$100, SUBTRACTS that from the accumulator, and
-   parks 1.5x it in car_lateral_speed_delta.  The four sub-models that run next therefore see the
-   accumulator at x - v while apply_driving_model restores x and adds +1.5v afterwards — the
-   shape of a midpoint integration, and the reason this routine looks like it corrupts state.
+/* $4729  stage_lateral_speed_delta — THE TWO LEVER ARMS  (twin #58)
+   Scales element 2 (the yaw rate) by $58/$100, SUBTRACTS that from element 8 (the lateral
+   velocity), and parks 1.5x it in car_lateral_speed_delta.  The next sub-models therefore see
+   element 8 at x - s — the REAR axle's lateral velocity, which update_slip_sound(axle 1) turns
+   into rear slip — and apply_driving_model then restores x and adds 1.5s, the FRONT axle's,
+   before the steer rotation and update_slip_sound(axle 0).  Velocity at a wheel = body velocity
+   + yaw rate x lever arm.
+   ⚠ It is NOT a midpoint integration (the former reading of this comment): element 8 is
+   rebuilt from 0/1 every frame by rotate_state_0_into_8, so nothing here accumulates across
+   frames — which is why the frame-rate-independent simulation leaves it alone.
 
    ⭐ WRITTEN AS PLAIN 16-BIT SIGNED C.  The 6502 scaled through scale16_by_y (a PHP/PLP sign
    dance) and took 1.5x through mul16_by_1_5 (a PHA/PLA one); with D = 0 — the driving model's
@@ -12058,12 +12065,15 @@ static void stage_lateral_speed_delta_core(void)
     lateral_speed_delta_hi = (uint8_t)(delta >> 8);
 }
 
-/* $47A5 / $47C5  the two INCREMENTAL ROTATIONS BY THE STEERING ANGLE  (twins #59, #60)
+/* $47A5 / $47C5  the two SMALL-ANGLE ROTATIONS BY THE STEERING ANGLE  (twins #59, #60)
    Both are the same three steps over a different pair of elements: element 14 takes one
    component times the steering angle, the OTHER component accumulates the second product, and
-   model_integrate_element then advances the first component by element 14.  That is a rotation
-   applied one frame at a time — the small-angle form, where sin(theta) ~ theta and the cosine
-   term is left as 1.
+   model_integrate_element then advances the first component by element 14 — a rotation in the
+   small-angle form, where sin(theta) ~ theta and the cosine term is left as 1.
+   ⚠ Not a rotation that builds up frame by frame (the former reading): both pairs are written
+   fresh every frame (8/9 by rotate_state_0_into_8, 10/12 by check_wheel_slip), so this resolves
+   the velocity into the front wheels' frame and the front forces back out — geometry, with no
+   timestep in it.
 
    The mode bytes are the whole difference: $80/$40 for the (8, 9) pair and $00/$C0 for the
    (10, 12) one, i.e. the two products swap signs between the two rotations, which is what
@@ -12094,15 +12104,18 @@ AddFlags rotate_pair_a_by_steer_core(void)
     return model_integrate_element_core(10);
 }
 
-/* $47F9  damp_and_derive_loads — THE SUSPENSION DECAY AND THE TWO LOADS  (twin #61)
+/* $47F9  derive_axle_loads — THE YAW TORQUE AND THE TWO LOADS  (twin #61)
    Three things, in order:
 
      1. element 5 = (front slip - rear slip) * $4E/$100 — the DIFFERENCE of the two axles'
         damped slip, which is the only place a difference of them is taken, and it is the rate of
         element 2, the heading step.  The car turns here because its two axles slide by different
         amounts.
-     2. elements 10..13 halved TWICE, arithmetically (>> 1 with the sign preserved).  A
-        per-frame decay of four: these are the model's transient terms and this is their damping.
+     2. elements 10..13 halved TWICE, arithmetically (>> 1 with the sign preserved) — a SCALE of
+        1/4 on the per-axle forces, NOT damping: check_wheel_slip rewrites all four every frame
+        on the ground.  It only acts as a decay while airborne (car_height >= 2 skips
+        check_wheel_slip, and the loads it feeds are zeroed that frame) and on check_wheel_slip's
+        saturation path, which leaves element 12 + axle stale.
      3. elements 6 and 7 rebuilt from the damped pairs, each as
         ((1.5 * odd) + even) * $CD/$100, doubled.  Load 7 comes from the (12, 13) pair and
         load 6 from the (10, 11) one — front and rear of each, so both loads mix the two axles.
@@ -12118,7 +12131,7 @@ AddFlags rotate_pair_a_by_steer_core(void)
 
    ⭐ AND IT LEAVES NOTHING IN THE CPU.  The 6502's exit A/X/C, its zero-page arithmetic scratch
    ($74-$78) and its stack residue ($01FF) are all dead here: apply_driving_model's next act is
-   `LDA drive_state` and both of its arms reload the registers, and apply_drag_terms opens with
+   `LDA car_height` and both of its arms reload the registers, and apply_drag_terms opens with
    `LDA`.  The only outputs are the state-vector elements and wheel_load — which is what the
    fixture verifies, ignoring the register spill (as road_span_advance does). */
 
@@ -12142,7 +12155,7 @@ static uint16_t model_mul_1_5(uint16_t value)
 static uint16_t model_state_get(uint8_t i)          { return model_state_16[i]; }
 static void     model_state_put(uint8_t i, uint16_t v) { model_state_16[i] = v; }
 
-static void damp_and_derive_loads_core(void)
+static void derive_axle_loads_core(void)
 {
     uint8_t slot;
 
@@ -12316,10 +12329,10 @@ void stage_lateral_speed_delta(void)
     stage_lateral_speed_delta_core();
     model_state_marshal_out();
 }
-void damp_and_derive_loads(void)
+void derive_axle_loads(void)
 {
     model_state_marshal_in();
-    damp_and_derive_loads_core();
+    derive_axle_loads_core();
     model_state_marshal_out();
 }
 void rotate_state_0_into_8(void)
@@ -12635,7 +12648,7 @@ MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
     return mos_osword(oswordNum, blockLow, 0x0Bu);
 }
 
-/* Returns the OSWORD's exit Y — begin_spin threads it out as the spin's yScale residue. */
+/* Returns the OSWORD's exit Y — begin_jump threads it out as the spin's yScale residue. */
 uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
 {
     sound_saved_x = savedX;                                     /* $0B4A STX */
@@ -12696,7 +12709,7 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
 /* $4779  update_slip_sound — THE TYRE SQUEAL  (twin #78)
    Called twice per frame, X = 1 then X = 0 — once per axle.  Three outcomes:
 
-     drive_state >= 2 (not under power)   silence channel 3 and do nothing else
+     car_height >= 2 (not under power)   silence channel 3 and do nothing else
      slip in either of the last 2 frames  clamp_slip_to_grip, and START the squeal if
                                           channel 3 is not already playing
      no slip                              silence channel 3, but only on the frames where
@@ -12707,7 +12720,7 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
    sound_chan_state[3]: the MOS is asked once, not once per frame. */
 /* promoted for revs_native_abi.c */ void update_slip_sound_core(uint8_t axle, uint8_t ambientY)
 {
-    if (drive_state < 0x02u) {                       /* $4779-$477D CMP #2 / BCS → the silence arm */
+    if (car_height < 0x02u) {                       /* $4779-$477D CMP #2 / BCS → the silence arm */
         check_wheel_slip_core(axle);                 /* $477F */
         if (mem[MEM_slip_flags + axle] & 0xC0u) {    /* $4782-$4787 — slip in the last TWO frames */
             clamp_slip_to_grip_core(axle);
@@ -12856,9 +12869,9 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
                                   and the stall
      $4BCF update_grip_limits     the two per-axle grip thresholds
      $4C65 apply_drag_terms       two speed-dependent terms into state elements 6 and 7
-     $4DC9 begin_spin
-     $4DCB begin_spin_from_a      the car loses control
-     $44EA update_camera_and_drive_state  the biggest routine in the tree, four jobs in one
+     $4DC9 begin_jump
+     $4DCB begin_jump_from_a      the car loses control
+     $44EA update_camera_and_height  the biggest routine in the tree, four jobs in one
 
    What the group computes:
 
@@ -12884,7 +12897,7 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
       grip model asks what colour the road is under the car's left and right; $FF means the
       probe is over a solid area.  MEASURED over 600 Silverstone reference frames, wheel held
       over: $FF in at least one on 27 frames (`grip_disturbance` non-zero on exactly those), in
-      BOTH on 24, so `grip_limit_base_alt_tbl` is reached; `begin_spin` needs a further gate,
+      BOTH on 24, so `grip_limit_base_alt_tbl` is reached; `begin_jump` needs a further gate,
       `section_jump_history` bit 7.  The FIXTURE forces the arm (randomised memory reaches $FF
       in both bytes once in 65536); the PORT reaches it unaided — `make determinism-drive` hits
       both cells on 22 of its 300 frames — so no new gate is owed.
@@ -12991,7 +13004,7 @@ void car_angle_marshal_out(void)
 
 /* $4610  scale_by_track_gradient — A x THE TRACK'S GRADIENT  (twin #80)
    A x |track_dir_1[Y]| / 256, re-signed by track_dir_1[Y] EOR track_direction.  Both of
-   update_camera_and_drive_state's camera terms go through it: the yaw-derived one and the
+   update_camera_and_height's camera terms go through it: the yaw-derived one and the
    player's own car_section_along, i.e. distance along the section times the local slope — the
    CLIMB the camera has made since the section's origin.  (This was read as camber while it was
    still open which of the pair was along and which across; $0164 is the ALONG one, measured
@@ -13033,24 +13046,24 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
     return (uint8_t)(p >> 8);
 }
 
-/* $4DC9 / $4DCB  begin_spin — THE CAR LOSES CONTROL  (twins #81, #82)
+/* $4DC9 / $4DCB  begin_jump — THE CAR LOSES CONTROL  (twins #81, #82)
    Seeds the two decaying counters from a severity (road_speed at the $4DC9 entry), nudges the
-   frame's heading increment by $80 and halves it, marks drive_state as not-under-power and
+   frame's heading increment by $80 and halves it, marks car_height as not-under-power and
    queues sound slot 4 — the same slot check_crash's crash arm queues.  It is the milder
    sibling of that arm: nothing here stops the engine or clears the model. */
-/* promoted for revs_native_abi.c */ SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
+/* promoted for revs_native_abi.c */ JumpExit begin_jump_from_a_core(uint8_t severity, uint8_t savedX)
 {
-    spin_countdown = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
-    spin_shake     = (uint8_t)(severity >> 2);  /* $4DCE-$4DCF — ...and / 4 */
-    drive_state    = (uint8_t)(drive_state + 1u);  /* $4DD1 — mark not-under-power */
+    car_vertical_speed = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
+    jump_pitch_shake     = (uint8_t)(severity >> 2);  /* $4DCE-$4DCF — ...and / 4 */
+    car_height    = (uint8_t)(car_height + 1u);  /* $4DD1 — mark not-under-power */
     /* $4DD4 SEC / ROR heading_step_lo — nudge the heading increment by $80 and halve it (C in = 1
        sets bit 7; the ROR's own carry-out is dead, overwritten by the sound tail below). */
     ms_set_lo(MS_HEADING_STEP, (uint8_t)((ms_lo(MS_HEADING_STEP) >> 1) | 0x80u));
     /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last thing
-       begin_spin does, so its exit ABI IS sound_queue_default's; the caller's X (untouched here) is
+       begin_jump does, so its exit ABI IS sound_queue_default's; the caller's X (untouched here) is
        what sound_queue parks in sound_saved_x.  Return the residue the update_camera caller reads:
-       the OSWORD's exit Y and the block ADD's C/V; the begin_spin shims replay the full exit ABI. */
-    SpinExit e;
+       the OSWORD's exit Y and the block ADD's C/V; the begin_jump shims replay the full exit ABI. */
+    JumpExit e;
     e.y = sound_queue_core(0x04u, sound_volume, savedX);
     { BlockCV cv = sound_queue_block_cv(0x04u); e.c = cv.c; e.v = cv.v; }
     return e;
@@ -13109,7 +13122,7 @@ static void apply_drag_terms_core(void)
 }
 
 /* $4BCF  update_grip_limits — THE TWO PER-AXLE THRESHOLDS  (twin #84)
-   Rebuilt every frame from three things: the load term damp_and_derive_loads left in
+   Rebuilt every frame from three things: the load term derive_axle_loads left in
    wheel_load (only while the BRAKE is down — on the throttle or coasting the term is 0), the
    road speed through wing_grip_coeff, and the two surface bytes.
 
@@ -13127,13 +13140,13 @@ static void apply_drag_terms_core(void)
    rather than in hypot_min_lo/hi, and the surface-AND in one rather than shared_temp_77 — all
    of which are dead scratch here (update_engine_revs, the next call, opens with `LDA
    engine_running`).  The outputs are grip_disturbance, grip_limit[0..1] and grip_limit_alt[0..1]
-   plus whatever begin_spin writes; the fixture verifies those. */
+   plus whatever begin_jump writes; the fixture verifies those. */
 void update_grip_limits_core(void)
 {
     int axle;
 
     /* $4BD1 — LDY pedal_mode.  Dead: the only thing that could read it before the axle loop's own
-       LDY ($4C46) is begin_spin's sound call, but that reaches OSWORD 7 which loads its own Y (the
+       LDY ($4C46) is begin_jump's sound call, but that reaches OSWORD 7 which loads its own Y (the
        control-block pointer) before any read — so nothing observes this Y. */
 
     /* $4BCF-$4BE8 — the load term (only while braking), and its negative for the other axle.
@@ -13147,7 +13160,7 @@ void update_grip_limits_core(void)
 
     /* $4BEE-$4C24 — has the surface changed?  $FF in EITHER surface byte opens the (dead-on-
        this-release) disturbance arm; $FF in BOTH also swaps in the alternate grip base below.
-       The begin_spin test reads grip_disturbance as it was BEFORE this frame's write. */
+       The begin_jump test reads grip_disturbance as it was BEFORE this frame's write. */
 #ifdef REVS_SURFACE_PROBE_CHECK
     /* ⭐⭐ THE PUBLISH'S ORACLE (`make SURFPROBE=1`, host).  The renderer's published probe must
        equal the frame-buffer byte the model would have read — the whole claim of the change, and
@@ -13176,10 +13189,10 @@ void update_grip_limits_core(void)
     if (SURFACE_BYTE_0 == 0xFFu || SURFACE_BYTE_1 == 0xFFu) {
         newDisturb = (uint8_t)((((unsigned)bus_read(USRVIA_T2CL) * road_speed) >> 8) & 0x07u);
         if (newDisturb == 0u) newDisturb = 1u;            /* $4C0F — never 0 once the arm runs */
-        if (oldDisturb == 0u && drive_state == 0u && (section_jump_history & 0x80u)) {
-            /* begin_spin ($4DC9) is reached with X still holding the disturbance value, which its
-               sound_queue parks in sound_saved_x ($0B46) — passed explicitly as begin_spin's savedX. */
-            begin_spin_from_a_core(road_speed, newDisturb);    /* $4C21 */
+        if (oldDisturb == 0u && car_height == 0u && (section_jump_history & 0x80u)) {
+            /* begin_jump ($4DC9) is reached with X still holding the disturbance value, which its
+               sound_queue parks in sound_saved_x ($0B46) — passed explicitly as begin_jump's savedX. */
+            begin_jump_from_a_core(road_speed, newDisturb);    /* $4C21 */
         }
     }
     grip_disturbance = newDisturb;                         /* $4C24 */
@@ -13355,7 +13368,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
         e.x = r.x; e.y = r.y;
         return e;
     }
-    if (drive_state != 0) {                                         /* $49D2-$49D4 → $499F */
+    if (car_height != 0) {                                         /* $49D2-$49D4 → $499F */
         e.x = engine_coast_arm(carryIn);
         e.y = entryY;                                    /* coast arm never touches Y */
         e.tail = engine_note_only(0x00u);
@@ -13467,18 +13480,18 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
     return e;
 }
 
-/* $44EA  update_camera_and_drive_state — THE LAST SUB-MODEL  (twin #86)
+/* $44EA  update_camera_and_height — THE LAST SUB-MODEL  (twin #86)
    294 bytes and four jobs, in this order:
 
-     (a) with drive_state non-zero it does nothing but DEC spin_shake twice and jump to (c);
+     (a) with car_height non-zero it does nothing but DEC jump_pitch_shake twice and jump to (c);
      (b) camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power, -1 braking, and
          settling toward 0 in neutral or coasting;
      (c) THE SECTION YAW.  A cheap atan2 over the section's own direction vector — the
          smaller-magnitude component scaled by 0.375 and folded through three saved flags —
          minus car_heading_hi, giving section_yaw and its folded magnitude view_yaw_offset;
          then the frame's view_pitch_offset as a first-order low pass over the yaw term,
-         grip_disturbance, camera_pitch_bias and spin_shake, and view_pitch_delta from it;
-     (d) DRIVE_STATE ITSELF, from spin_countdown stepped -4 a frame with a saturating jump to
+         grip_disturbance, camera_pitch_bias and jump_pitch_shake, and view_pitch_delta from it;
+     (d) DRIVE_STATE ITSELF, from car_vertical_speed stepped -4 a frame with a saturating jump to
          $C8; and finally the camera, which is the section's own coordinate 1 plus a
          gradient-scaled car_section_along plus $AC (nominal eye height), and car_speed_scaled.
 
@@ -13488,18 +13501,18 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
    ⚠ SMC $45CB: every expansion circuit replaces the first `ASL A / ROL shared_temp_77` pair
    with a JSR into its own hook, so on those circuits the camera's high byte is built by the
    circuit's code instead. */
-CameraExit update_camera_and_drive_state_core(void)
+CameraExit update_camera_and_height_core(void)
 {
     CameraExit e = {{0,0,0,0,0},0,0};
     uint8_t dirIndex;
     uint8_t yScale;         /* Y carried $452F→$45D8; a spin's MOS sound may overwrite it (see below) */
 
-    if (drive_state != 0) {                             /* $44EA-$44EC */
-        spin_shake = (uint8_t)(spin_shake - 1u);        /* $44EE — DEC, flags dead (yaw reloads) */
-        spin_shake = (uint8_t)(spin_shake - 1u);        /* $44F0 */
+    if (car_height != 0) {                             /* $44EA-$44EC */
+        jump_pitch_shake = (uint8_t)(jump_pitch_shake - 1u);        /* $44EE — DEC, flags dead (yaw reloads) */
+        jump_pitch_shake = (uint8_t)(jump_pitch_shake - 1u);        /* $44F0 */
     } else {
-        spin_shake     = 0x00u;                         /* $44F5 — both zeroed (drive_state==0) */
-        spin_countdown = 0x00u;
+        jump_pitch_shake     = 0x00u;                         /* $44F5 — both zeroed (car_height==0) */
+        car_vertical_speed = 0x00u;
 
         /* $44F9-$452A — camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power,
            -1 braking, and settling toward 0 in neutral or coasting.  Every register here is
@@ -13581,7 +13594,7 @@ CameraExit update_camera_and_drive_state_core(void)
         a = scale_by_track_gradient_core(a, dirIndex); /* $457F — Y is still dirIndex */
         a = (uint8_t)(a + grip_disturbance);           /* $4582-$4583 */
         a = (uint8_t)(a + camera_pitch_bias);          /* $4585-$4586 */
-        a = (uint8_t)(a + spin_shake);                 /* $4589-$458A */
+        a = (uint8_t)(a + jump_pitch_shake);                 /* $4589-$458A */
         a = (uint8_t)(a + view_pitch_offset);          /* $458C-$458D */
         neg = (a & 0x80u) != 0;                         /* $458F-$4592 — C = sign(A) */
         a = (uint8_t)((a >> 1) | (neg ? 0x80u : 0u));  /* $4593 ROR — signed halving */
@@ -13589,40 +13602,40 @@ CameraExit update_camera_and_drive_state_core(void)
         view_pitch_delta  = (uint8_t)(a - shared_temp_76);  /* $4596-$4599 */
     }
 
-    /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8, and the
-       ADD's own result is kept: through a spin drive_state is the RUNNING SUM of that decaying
+    /* $459B-$45C9 — car_height.  car_vertical_speed steps -4 a frame and SATURATES to $C8, and the
+       ADD's own result is kept: through a spin car_height is the RUNNING SUM of that decaying
        countdown, not a three-value enum.  ⭐ [MEASURED 2026-09-09, reference loop, --hold-steer=right]
-       one spin ran drive_state $10 $1B $22 $25 $24 $1F $16 $09 against spin_countdown $0F $0B $07
+       one spin ran car_height $10 $1B $22 $25 $24 $1F $16 $09 against car_vertical_speed $0F $0B $07
        $03 $FF $FB $F7 $F3 — every step exactly countdown + previous — and landed on 1 when
-       |countdown| >= 5 sent it back through begin_spin_from_a.  So 1 is the frame a spin (re)starts,
+       |countdown| >= 5 sent it back through begin_jump_from_a.  So 1 is the frame a spin (re)starts,
        and it is the one spin value below apply_driving_model's >= 2 off-power gate.
        ⚠⚠ The $45CB SMC dispatch just past this block RETURNS on an unrecognised opcode, and on
        that exit (a real, compared path — 1 fixture case in 10 randomises the SMC bytes) the
        routine's live A/X/Y/N/Z/C/V are exactly what this block leaves.  So the block builds a
        provisional exit `preSmc`: A = driveNew, X = car_section_cursor (untouched to $45D3),
        Y = yScale (dirIndex, or the spin's MOS Y), N/Z from driveNew, and C/V per arm.  The
-       countdown arm's spin queues a MOS sound (begin_spin_from_a) that leaves the MOS's own Y —
+       countdown arm's spin queues a MOS sound (begin_jump_from_a) that leaves the MOS's own Y —
        captured in yScale — and its own C/V, read back as a documented MOS boundary. */
     shared_temp_77 = 0x00u;                             /* $459B-$459D */
     uint8_t driveNew, cArm, vArm;
     {
-        uint8_t sub  = (uint8_t)(spin_countdown - 0x04u);   /* $459F-$45A3 SBC (D=0) */
-        uint8_t vSub = (uint8_t)((((spin_countdown ^ 0x04u) &
-                                   (spin_countdown ^ sub)) >> 7) & 1u);
+        uint8_t sub  = (uint8_t)(car_vertical_speed - 0x04u);   /* $459F-$45A3 SBC (D=0) */
+        uint8_t vSub = (uint8_t)((((car_vertical_speed ^ 0x04u) &
+                                   (car_vertical_speed ^ sub)) >> 7) & 1u);
         uint8_t a    = vSub ? 0xC8u : sub;              /* $45A4 — the step overflowed: saturate */
         unsigned s;
         uint8_t r, cAdd, vAdd, nAdd, zAdd;
-        spin_countdown = a;                             /* $45A8 */
-        s    = (unsigned)a + drive_state;               /* $45AA-$45AB ADC (D=0) */
+        car_vertical_speed = a;                             /* $45A8 */
+        s    = (unsigned)a + car_height;               /* $45AA-$45AB ADC (D=0) */
         r    = (uint8_t)s;
         cAdd = (uint8_t)(s > 0xFFu);
-        vAdd = (uint8_t)((((~(a ^ drive_state)) & (a ^ r)) >> 7) & 1u);
+        vAdd = (uint8_t)((((~(a ^ car_height)) & (a ^ r)) >> 7) & 1u);
         nAdd = (uint8_t)((r >> 7) & 1u);
         zAdd = (uint8_t)(r == 0);
         /* ⚠ $45B1's `BPL` keeps the sum; a NEGATIVE sum falls THROUGH to the countdown arm,
            so it is reached two ways, not one. */
         if (zAdd || (!vAdd && nAdd)) {                  /* $45AD BEQ, or $45B1 BPL not taken */
-            uint8_t absSpin;                            /* $45B3-$45B5 LDA/abs8 |spin_countdown| */
+            uint8_t absSpin;                            /* $45B3-$45B5 LDA/abs8 |car_vertical_speed| */
             uint8_t absV;                               /* abs8's V (its ADC #1 when it negates); C is dead (CMP overwrites) */
             if (a & 0x80u) {                            /* abs8 ran: EOR #$FF / CLC / ADC #1 */
                 uint8_t  inv = (uint8_t)(a ^ 0xFFu);
@@ -13634,9 +13647,9 @@ CameraExit update_camera_and_drive_state_core(void)
                 absV = vAdd;
             }
             if (absSpin >= 0x05u) {                     /* $45B7 CMP #5 → C=1 */
-                SpinExit se = begin_spin_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
+                JumpExit se = begin_jump_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
                 yScale = se.y;                          /* the spin's sound OSWORD left this in the MOS's Y */
-                cArm = se.c; vArm = se.v;               /* begin_spin's exit C/V (the block ADD's, LDA #1 leaves them) */
+                cArm = se.c; vArm = se.v;               /* begin_jump's exit C/V (the block ADD's, LDA #1 leaves them) */
                 driveNew = 0x01u;                        /* $45BD */
             } else {                                     /* $45B7 CMP #5 → C=0 */
                 driveNew = 0x00u;                        /* $45C3 */
@@ -13651,7 +13664,7 @@ CameraExit update_camera_and_drive_state_core(void)
             cArm = cAdd; vArm = vAdd;
         }
     }
-    drive_state = driveNew;                             /* $45C9 */
+    car_height = driveNew;                             /* $45C9 */
     CameraExit preSmc;                                  /* the exit the $45CB SMC trap returns */
     preSmc.acc.hi       = driveNew;
     preSmc.acc.carry    = cArm;
@@ -13703,7 +13716,7 @@ CameraExit update_camera_and_drive_state_core(void)
        car_section_along, and $AC of nominal eye height, as one 16-bit add with two carries saved
        past the term in between. */
     uint8_t playerCar = player_car;                    /* $45D3 — exit X */
-    /* ⚠⚠ yScale IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_spin_from_a,
+    /* ⚠⚠ yScale IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_jump_from_a,
        which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
@@ -13772,7 +13785,7 @@ void scale_by_track_gradient_regs(HookRegs *r)
     }
 }
 
-/* begin_spin's exit ABI is sound_queue_default's: A/Y are left in cpu by the OSWORD (via mos_call
+/* begin_jump's exit ABI is sound_queue_default's: A/Y are left in cpu by the OSWORD (via mos_call
    inside the core), and sound_queue_exit_abi replays X/N/Z (from sound_saved_x) and the block C/V. */
 /* 6502-ABI entry: car_lateral_speed_entry ($38/$39) is a relocated input to the core (its producer,
    apply_driving_model, sets the wide var directly and calls the core core-to-core).  Callers that
@@ -18920,10 +18933,10 @@ uint8_t check_crash_core(uint8_t savedX)
     mem[MEM_model_state_lo + 0x0Fu] = 0x00u;   /* $62DF, the gap byte the byte-wise loop also clears */
 
     engine_running      = 0x00u;   /* $1152 — the engine has stalled */
-    spin_countdown      = 0x00u;   /* $1154 — and this is not a spin */
+    car_vertical_speed      = 0x00u;   /* $1154 — and this is not a spin */
     engine_note         = 0x00u;   /* $1156 */
     engine_note_target  = 0x00u;   /* $1158 */
-    drive_state         = 0x7Fu;   /* $115A-$115C — not under power, and not spinning either */
+    car_height         = 0x7Fu;   /* $115A-$115C — not under power, and not spinning either */
     starter_random_mask = 0x1Fu;   /* $115E-$1160 — restarting takes ~4x longer after a crash */
     return CRASH_ARM_FULL;
 }
@@ -21015,12 +21028,12 @@ void hook_steer_response_doning(HookRegs *r)
 /* $59E9 (Brands) / $59C9 (Donington) / $59E7 (Oulton) / $59C7 (Snetterton) — THE CAMERA SCALE
    TAKES THE ROAD SPEED WHEN THE CAR IS SETTLED.  One body, four circuits, byte for byte (only
    the address differs, which is just where each file's hook region happens to sit).  It is
-   installed over update_camera_and_drive_state's FIRST doubling at $45CB — `ASL A / ROL
+   installed over update_camera_and_height's FIRST doubling at $45CB — `ASL A / ROL
    shared_temp_77`, three bytes replaced by one `JSR` (`disasm/track_hooks.txt`: $45CB-$45CD
    $0A->$20, $26->the entry low byte, $77->$59), so the hook owes the caller that doubling and
    $45CE's second ASL/ROL then runs on what it leaves.
 
-   What it adds: when the byte $45C9 just stored in drive_state is ZERO — the settled arm, as
+   What it adds: when the byte $45C9 just stored in car_height is ZERO — the settled arm, as
    against the $01 and $7F the other two paths store — the term being doubled is replaced by
    the road speed scaled by the track's gradient at Y, and a negative product borrows a unit
    from shared_temp_77.  So on these four circuits a settled car's camera scale follows how fast
@@ -21033,7 +21046,7 @@ void hook_steer_response_doning(HookRegs *r)
    exactly as the gradient callee left it.
 
    SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
-   S100 the road-speed arm runs whatever drive_state was        10516
+   S100 the road-speed arm runs whatever car_height was        10516
    S101 the negative product does not borrow                     2696
    S102 the borrow happens on a POSITIVE product                 5484
    S103 A is doubled without the pair's carry into shared_temp_77 2696

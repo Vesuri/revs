@@ -266,10 +266,10 @@ Each of these passed a reading of the listing and failed the differential.
 
 ### ⚠⚠ A CALL THROUGH THE MOS CLOBBERS REGISTERS THE LISTING GIVES NO HINT ABOUT
 
-Measured on twin #86.  `update_camera_and_drive_state` sets `Y` once, at `$452F`, and reads a
+Measured on twin #86.  `update_camera_and_height` sets `Y` once, at `$452F`, and reads a
 track table through it at `$457F` and again at `$45D8`.  Nothing between those points contains an
 `LDY`, so "Y is still the section's direction index" reads as obviously true — and it is false on
-one path: the arm at `$45B3` reaches `begin_spin_from_a`, which queues a MOS SOUND, and
+one path: the arm at `$45B3` reaches `begin_jump_from_a`, which queues a MOS SOUND, and
 `sound_osword` leaves the MOS's own `Y` behind.  A twin that cached the index in a local differed
 in one case in six.
 
@@ -600,7 +600,7 @@ EOF
 | **SED/CLD at a sanctioned BCD site** — `adc_value` reads `cpu.D` | `add_tally_to_lap_total_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tally_bcd_column_core` | Decimal mode is inventoried in `docs/static-map.md` §Decimal mode; these are five of the eight `SED` sites and the flag is the mode, not a value |
 | **An OS-call register contract the harness compares** | `shift_key_commands_core`, `kbd_test_key_core` | A/X/Y reach the MOS inside `sound_stop_all`, and the harness compares registers at every OS-call boundary. ⚠ `shift_key_commands_core`'s `cpu.X` at `$0F57` is genuinely ambient — the pause spin's own `kbd_test_key` leaves `$FF` in it on any frame that paused |
 | **The frame driver's live ambient register file** | `race_main_loop_core` | MEASURED, see below |
-| **A flag that genuinely escapes, or `cpu.S`** | `clamp_and_store_steer_angle_core`, `tick_race_timers_core`, `enter_session_core`, `draw_road_core`, `mul16_by_1_5_core`, `update_camera_and_drive_state_core`, `engine_init_core` | each argued at its own site — `update_camera_and_drive_state_core`'s ASL/ROL pair must stay bytes because a per-circuit hook runs *between* the two shifts, and `engine_init_core`'s `cpu.S` is the one cell that really is the 6502 stack pointer |
+| **A flag that genuinely escapes, or `cpu.S`** | `clamp_and_store_steer_angle_core`, `tick_race_timers_core`, `enter_session_core`, `draw_road_core`, `mul16_by_1_5_core`, `update_camera_and_height_core`, `engine_init_core` | each argued at its own site — `update_camera_and_height_core`'s ASL/ROL pair must stay bytes because a per-circuit hook runs *between* the two shifts, and `engine_init_core`'s `cpu.S` is the one cell that really is the 6502 stack pointer |
 
 #### ⚠⚠ `race_main_loop_core`'s ambient X/Y is PRODUCTION state, not oracle plumbing
 

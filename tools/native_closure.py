@@ -14,8 +14,8 @@ reading C missed shims, and each miss is a silent wrong answer that only the poi
 catches:
 
   - MODEL_STATE: four shims that never mention the vector needed marshals because a `_core` two or
-    three levels down nudged it (update_grip_limits, update_camera_and_drive_state, begin_spin,
-    begin_scrape — all via begin_spin_from_a_core).
+    three levels down nudged it (update_grip_limits, update_camera_and_height, begin_jump,
+    begin_scrape — all via begin_jump_from_a_core).
   - VIEW_ORIGIN: a regex call-graph over the source matched function names inside COMMENTS, which
     invented edges, and its hand-checked shim list then omitted three real ones
     (build_track_geometry, road_edge_start, road_edge_walk).

@@ -18,7 +18,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 |---|---|
 | what gates what, and which phase we are in | `docs/phases.md` |
 | what the BINARY is (unpacks, sweep, SMC surface, hardware) | `docs/static-map.md` |
-| a name that contradicts behaviour, or does not exist | `docs/rename.md` (a queue) |
+| a name that contradicts behaviour, or does not exist | `docs/rename.md` (a queue; currently empty) |
 | how to price any change honestly, and every past measurement | `docs/perf-method.md` |
 | the standing RULES | `CLAUDE.md` |
 
@@ -924,7 +924,7 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
 
 **Stages** (each gated before the next):
 1. Byte-exact split into `sim_step` / `legacy_tick` / `render_frame`, scheduler at 1:1:1.
-   `move_and_draw_cars`, `update_camera_and_drive_state`, the controls read, starter luck, the slip
+   `move_and_draw_cars`, `update_camera_and_height`, the controls read, starter luck, the slip
    roll and the disturbance draw are divided; every reordering is proved by a reader/writer audit.
    Gate: determinism ×5 + `transtrap`.
 2. The scheduler with the physics unchanged (h = 1, one step per 93.6 ms): the since-last-geometry

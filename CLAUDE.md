@@ -116,6 +116,8 @@ make determinism-crash     #   ...and the RESET LADDER (car off the track, full_
                            #   runs 7x) — the gate on reset_driving_variables' practice arm
 make determinism-steer     #   ...and the same 300 frames with the WHEEL TURNED — a third
                            #   trajectory, the gate on the steering/response path
+make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
+                           #   the only gate that sees the light column; -race cannot
 make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80), the ONLY target
                            #   that reaches any `& $80` arm — every other determinism run is a
                            #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of

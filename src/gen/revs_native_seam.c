@@ -319,14 +319,14 @@ void apply_driving_model_frame_native(void)
     lateral_speed_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
     model_state_marshal_out();    /* ...and publish it back to mem[] */
     view_origin_marshal_out();
-    /* A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
+    /* A, X, Y and the flags come back from update_camera_and_height untouched. */
     cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
     cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
     cpu.X = ce.x; cpu.Y = ce.y;
 }
 
 /* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
-   6502 in A and X — and A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
+   6502 in A and X — and A, X, Y and the flags come back from update_camera_and_height untouched. */
 void apply_driving_model(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
@@ -670,12 +670,12 @@ void update_engine_revs(void)
     cpu.X = e.x; cpu.Y = e.y;
 }
 
-void update_camera_and_drive_state(void)
+void update_camera_and_height(void)
 {
     view_origin_marshal_in();
     model_state_marshal_in();             /* its spin arm nudges element 2, the heading step */
     car_heading_marshal_in();
-    CameraExit e = update_camera_and_drive_state_core();
+    CameraExit e = update_camera_and_height_core();
     cpu.A = e.acc.hi; cpu.C = e.acc.carry; cpu.V = e.acc.overflow;
     cpu.N = e.acc.neg; cpu.Z = e.acc.zero;
     cpu.X = e.x; cpu.Y = e.y;

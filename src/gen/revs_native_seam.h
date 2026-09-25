@@ -164,7 +164,7 @@ typedef struct { uint8_t hi, carry, overflow, neg, zero; } AddFlags;
    core stays cpu-free; the shim replays them.  EngineRegs is the starter poll's escaping X/Y. */
 typedef struct { AddFlags tail; uint8_t x, y; } EngineExit;
 typedef struct { uint8_t x, y; } EngineRegs;
-/* update_camera_and_drive_state's escaping registers: the final car_speed_scaled add's exit
+/* update_camera_and_height's escaping registers: the final car_speed_scaled add's exit
    A/flags, plus X (= player_car) and Y (= car_section_cursor).  Returned by value; shim replays. */
 typedef struct { AddFlags acc; uint8_t x, y; } CameraExit;
 typedef struct {
@@ -226,7 +226,7 @@ typedef struct { int reject; uint8_t y; } StageNearbyCar;
 typedef struct { int draw; uint8_t mathLo, mathHi, temp76, plotX, plotLine, projWidth; } CornerMarker;
 /* MosRegs (an MOS call's A/X/Y + carry) is declared in platform_c.h, the header
    that also declares platform_mos_call_typed the wrappers below funnel through. */
-typedef struct { uint8_t y, c, v; } SpinExit;    /* begin_spin's residue: OSWORD Y + block ADC C/V */
+typedef struct { uint8_t y, c, v; } JumpExit;    /* begin_jump's residue: OSWORD Y + block ADC C/V */
 /* mirrors_update_setup_core's pre-loop result.  half is math_lo's ($74) 6502 exit value, written
    ONLY when drawable (the routine's skip path leaves math_lo untouched); bottom -> shared_temp_84,
    top -> span_line_cursor are meaningful only when drawable; heading -> shared_temp_76 is set on
@@ -630,7 +630,7 @@ void car_angle_marshal_out(void);
    16-bit elements: 0/1 the car's VELOCITY IN WORLD AXES and 2 the frame's heading step (0..2
    carry a further 8-bit fraction in mem[MODEL_STATE_FRAC], which stays in mem[]), 3/4/5 their
    rates, 6/7 the same acceleration in the CAR'S OWN axes (lateral, longitudinal), 8 the
-   hand-integrated lateral accumulator, 9 the car's signed speed, $0A..$0D two PER-AXLE pairs
+   lateral velocity (rebuilt every frame), 9 the car's signed speed, $0A..$0D two PER-AXLE pairs
    (front = +0, rear = +1) and 14 the per-frame increment.  Marshalled WHOLE at the boundary shims: no
    writer owns a known subset, and a shim entered once a frame can afford 30 bytes.
    ⚠ Two shims import WITHOUT publishing (dial_needle_angle, draw_dash_needles): they read the
@@ -654,7 +654,7 @@ void model_state_marshal_out(void);
 #define MS_RATE_BASE     3u    /* 3/4/5 are the rates of 0/1/2 (integrate_state_rates) */
 #define MS_LOAD_LATERAL  6u    /* the acceleration/load pair in the CAR'S axes: across the car... */
 #define MS_LOAD_LONG     7u    /* ...and along it; wheel_load is this element's high byte */
-#define MS_LATERAL_SPEED 8u    /* car_lateral_speed — the hand-integrated accumulator */
+#define MS_LATERAL_SPEED 8u    /* car_lateral_speed — rebuilt from 0/1 every frame, then offset by the lever arms */
 #define MS_SPEED         9u    /* car_speed — the car's SIGNED 16-bit speed */
 #define MS_SLIP         10u    /* slip_magnitude, and the base of the per-axle slip cluster:
                                   check_wheel_slip(axle) writes MS_SLIP + axle and MS_SLIP_REF +
@@ -763,7 +763,7 @@ AddFlags model_integrate_element_core(uint8_t slot);
 Mul8AccumExit mul8_accum_core(void);
 Wide16Exit    mul16_by_1_5_core(uint16_t x);
 ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC);
-#define SOUND_SLOT_IMPACT 0x04u  /* the bang: the scrape arm, the crash arm and begin_spin */
+#define SOUND_SLOT_IMPACT 0x04u  /* the bang: the scrape arm, the crash arm and begin_jump */
 
 /* check_crash_core's three arms — which tail the routine took, and so which exit ABI. */
 #define CRASH_ARM_NONE   0u    /* still on the track: it did nothing */
@@ -846,7 +846,7 @@ void store_slip_exit_abi(uint8_t sign);
 void store_slip_signed_core(uint8_t valueHi);
 /* $1EAB's body -- cpu-free; `surface_colour_at` in revs_native_seam.c replays the exit ABI. */
 SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entryV);
-CameraExit update_camera_and_drive_state_core(void);
+CameraExit update_camera_and_height_core(void);
 EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
@@ -1054,7 +1054,7 @@ void check_wheel_slip_core(uint8_t axle);
 void clamp_slip_to_grip_core(uint8_t axle);
 void update_slip_sound_core(uint8_t axle, uint8_t ambientY);
 void compute_car_angles_core(uint16_t heading);
-SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX);
+JumpExit begin_jump_from_a_core(uint8_t severity, uint8_t savedX);
 uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y);
 void apply_steer_demand_core(uint8_t signByte);
 uint8_t car_index_dec_core(uint8_t x);

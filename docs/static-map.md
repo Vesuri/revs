@@ -415,7 +415,7 @@ and reading the two side by side, which is what `docs/rename.md` had been asking
 
 Each segment record's **field 5** is the index into the four direction/normal pages
 (`segment_dir_index`, `$0002`), and `$13D0` stamps it into `section_dir_index` (`$0700`) for the
-live section — which is how `update_camera_and_drive_state` gets from a section cursor to a
+live section — which is how `update_camera_and_height` gets from a section cursor to a
 direction vector in two instructions.
 
 ⚠⚠ **AND THE PAGES ARE GENERATED AT RUNTIME ON THE EXPANSION CIRCUITS.**  Silverstone, being
@@ -426,7 +426,7 @@ from `$76`/`$77`, using `$57BB` (`EOR track_direction / JSR abs8`) for the signs
 bytes are the installer's patch list, then the generator's code, then the geometry — which is why
 the old names `patch_target_lo`/`patch_byte_0` were not wrong, just one tenant of several.
 
-⚠ Correction from the same pass: `update_camera_and_drive_state`'s symbols row used to claim two
+⚠ Correction from the same pass: `update_camera_and_height`'s symbols row used to claim two
 SMC sites, `$44D5` and `$45CB`.  `$44D5` is inside **`compute_segment_scale`** (`$44C6`-`$44E9`).
 
 ### Code hooks vs data rebinding — do not conflate them
@@ -756,8 +756,8 @@ and 18 got the second one when they became twins.  What came out:
   `$0000` for the whole start straight and swings ±`$1F00` under `--hold-steer`), and the one element
   `apply_driving_model` integrates by hand; **9** is `car_speed_lo/hi`, its forward partner, signed, whose magnitude the
   routine splits into `road_speed` (integer) and `road_speed_frac`; **$0A..$0D** are what
-  `damp_and_derive_loads` (`$47F9`) halves twice a frame and `check_wheel_slip` (`$4A91`) writes.
-  Elements 5..7 are forced to zero once `drive_state` reaches 2.  ⚠ What the REMAINING elements are
+  `derive_axle_loads` (`$47F9`) halves twice a frame and `check_wheel_slip` (`$4A91`) writes.
+  Elements 5..7 are forced to zero once `car_height` reaches 2.  ⚠ What the REMAINING elements are
   physically (0/1 in world axes, 6/7, `$0A..$0D` per axle, 14) is still open — `docs/rename.md`.
   ⚠ `$62DF` (`loop_counter_hi`) and `$62EF` sit inside those address ranges and are **not** members
   — the vector stops at element 14, which is why it is 15 long and not 16.

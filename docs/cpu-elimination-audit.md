@@ -43,9 +43,9 @@ compares Y). By construction the wrappers still leave `cpu` mutated on exit, so 
 
 The two explicit residue-reader **cores** were made cpu-free by threading typed structs:
 `engine_starter_poll` reads `kbd_test_key_regs(...)` (a `MosRegs`); `sound_osword_core` returns
-`MosRegs`, `sound_queue_core` returns the OSWORD's exit Y, and `begin_spin_from_a_core` returns
-`SpinExit {y,c,v}` (block C/V via the shared `sound_queue_block_cv`, both 0 on slot 4), which
-`update_camera_and_drive_state_core` reads instead of `cpu`. The `begin_spin` shims replay X/N/Z +
+`MosRegs`, `sound_queue_core` returns the OSWORD's exit Y, and `begin_jump_from_a_core` returns
+`JumpExit {y,c,v}` (block C/V via the shared `sound_queue_block_cv`, both 0 on slot 4), which
+`update_camera_and_height_core` reads instead of `cpu`. The `begin_jump` shims replay X/N/Z +
 block C/V via `sound_queue_exit_abi` and take exit A/Y from the OSWORD side-effect.
 
 **No computational core in `revs_native.c` holds a `cpu` ref any more** — the only remaining `cpu`
@@ -81,12 +81,12 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 2 | Pedals / gears / driving-controls driver (`read_pedals_and_gears`, `read_driving_controls`) | 2 | ✅ |
 | 3 | Text / screen-address (`mode5_addr`, `mode5_addr_for_cell`, `vdu_char_emit`/`_wide`/`_def`, `draw_gear_indicator`, `adc_read`) | 7 | ✅ |
 | 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`) | 11 | ✅ |
-| 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_lateral_speed_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
+| 5 | Sub-models / physics (`begin_jump_from_a`, `update_camera_and_height`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_lateral_speed_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
 | 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | 9 | ✅ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ✅ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ✅ |
 | 9 | **Seam relocation** — 72 thin shims → `revs_native_seam.c`; shared header; both Makefiles; validate | 72 | ✅ |
-| 10 | **MOS wrapper** — typed `MosRegs` + `mos_call*`/`mos_osbyte`/`mos_osword`/`mos_oswrch` in seam.h; 7 sites converted; `sound_osword`/`sound_queue`/`begin_spin_from_a` return typed residue; `engine_starter_poll`/`update_camera` read structs, not `cpu` (4 sub-commits) | 7 | ✅ |
+| 10 | **MOS wrapper** — typed `MosRegs` + `mos_call*`/`mos_osbyte`/`mos_osword`/`mos_oswrch` in seam.h; 7 sites converted; `sound_osword`/`sound_queue`/`begin_jump_from_a` return typed residue; `engine_starter_poll`/`update_camera` read structs, not `cpu` (4 sub-commits) | 7 | ✅ |
 
 ⚠ These groupings track the `validate_native.c` fixture groups; sub-commits split a group when it is
 too large for one logical change. The counts are the survey's; they will drift as work lands.
@@ -143,9 +143,9 @@ Three catches, each found by reading the generated `__t6502` oracle and reasonin
 
 - **Refactoring a leaf's ABI silently breaks the NATIVE callers that reach it directly.** Moving
   `LDX sound_saved_x` (and the block-index ADC's C/V) out of `sound_osword_core`/`sound_queue_core`
-  into the shims was correct for the shim path, but `begin_spin_from_a_core` (cluster 5, not yet
+  into the shims was correct for the shim path, but `begin_jump_from_a_core` (cluster 5, not yet
   converted) calls `sound_queue_core` DIRECTLY, so its native X stuck at the blockLow ($30) and its
-  exit C/V went stale — 1000 mismatch on `begin_spin_from_a`, 2 on `update_grip_limits` above it.
+  exit C/V went stale — 1000 mismatch on `begin_jump_from_a`, 2 on `update_grip_limits` above it.
   Fix: the unconverted native caller replays the shim's exit itself (`sound_queue_exit_abi(0x04u)`
   right after the direct `sound_queue_core` call). ⚠ **When a cluster's refactor narrows a leaf's
   ABI, grep for every OTHER (unconverted) caller of that leaf before believing validate is clean.**
@@ -187,15 +187,15 @@ $01B8..$01FF — a diff at or below $01B7 is a real regression in live car-table
 ## Cluster-5 lessons — an SMC-TRAP is a compared path, exit registers by value, dead scratch survivors
 
 The physics sub-models. All 16 cores are cpu-free; the only residual `cpu.` in the cluster is
-`update_camera_and_drive_state_core`'s two documented seams (the `$45CB` per-circuit hook and
-`begin_spin_from_a`'s MOS OSWORD), which stay by design.
+`update_camera_and_height_core`'s two documented seams (the `$45CB` per-circuit hook and
+`begin_jump_from_a`'s MOS OSWORD), which stay by design.
 
 - **A self-modifying-dispatch TRAP is a REAL compared channel, not an abort.** In
-  `update_camera_and_drive_state` the `$45CB` site is an `ASL`/`ROL` pair that expansion circuits
+  `update_camera_and_height` the `$45CB` site is an `ASL`/`ROL` pair that expansion circuits
   overwrite; when the fixture randomises those opcode bytes (1 case in 10) the port calls
   `platform_smc_unhandled` and **RETURNS with registers still live** — the harness compares A/X/Y/flags
   on that path too. My first core returned a zeroed exit struct on the trap → 378 mismatch. Fix: build
-  a provisional `CameraExit preSmc` from the drive_state block's live registers (A = driveNew, X =
+  a provisional `CameraExit preSmc` from the car_height block's live registers (A = driveNew, X =
   car_section_cursor, Y = yScale, N/Z derived from driveNew, C/V per arm) and `return preSmc` on both
   trap paths. **Before treating any early-return as "abort," check whether the harness still compares
   it.**
@@ -209,7 +209,7 @@ The physics sub-models. All 16 cores are cpu-free; the only residual `cpu.` in t
 - **N/Z of a result are derivable; C/V of an ADC are not — reconstruct them per arm.** The provisional
   exit's N (`(driveNew>>7)&1`) and Z (`driveNew==0`) come straight from the byte the block produces, in
   every arm, cpu-free. C and V do not — they belong to whichever operation set them: the spin arm reads
-  `begin_spin_from_a`'s exit C/V (its MOS boundary), the countdown arm carries `abs8`'s V (its CMP #5
+  `begin_jump_from_a`'s exit C/V (its MOS boundary), the countdown arm carries `abs8`'s V (its CMP #5
   kills C on both arms, so C is a constant 0 there), the others carry the drive add's own C/V. Each arm
   sets `cArm`/`vArm` explicitly.
 

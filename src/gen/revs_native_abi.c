@@ -173,18 +173,18 @@ void compute_car_angles(void)            { car_angle_marshal_in();
                                            compute_car_angles_core((uint16_t)((cpu.A << 8) | cpu.X));
                                            car_angle_marshal_out(); }
 
-void begin_spin(void)
+void begin_jump(void)
 {
     model_state_marshal_in();                /* it nudges element 2, the heading step */
-    begin_spin_from_a_core(road_speed, cpu.X);
+    begin_jump_from_a_core(road_speed, cpu.X);
     model_state_marshal_out();
     sound_queue_exit_abi(0x04u);
 }
 
-void begin_spin_from_a(void)
+void begin_jump_from_a(void)
 {
     model_state_marshal_in();                /* it nudges element 2, the heading step */
-    begin_spin_from_a_core(cpu.A, cpu.X);
+    begin_jump_from_a_core(cpu.A, cpu.X);
     model_state_marshal_out();
     sound_queue_exit_abi(0x04u);
 }

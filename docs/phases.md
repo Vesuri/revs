@@ -30,7 +30,7 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 ✅ **THE DRIVING MODEL IS DONE.**  Twins #79-#86 took the last eight — the SUB-MODELS, i.e. the
 parts of the tree that talk to the rest of the engine rather than to the arithmetic layer:
 `compute_car_angles`, `scale_by_track_gradient`, `update_engine_revs`, `update_grip_limits`,
-`apply_drag_terms`, `begin_spin`, `begin_spin_from_a` and `update_camera_and_drive_state` (294
+`apply_drag_terms`, `begin_jump`, `begin_jump_from_a` and `update_camera_and_height` (294
 bytes, the biggest single routine in the tree).  41 deliberate sabotages, 38 detected; the three
 survivors are provable non-defects, each argued below.  `make validate` clean, `make determinism`
 and `make determinism-drive` both 64 KB byte-identical, `make tracks` 6/6 and `make track-run`
@@ -55,13 +55,13 @@ every circuit's hooks running.
 4. ⚠⚠ **THE CHANGED-SURFACE ARM IS DEAD ON THIS RELEASE.**  `surface_change_0`/`_1` (`$713D`,
    `$7205`) read `$00` in `disasm/revs_runtime.bin` and mid-race on both Silverstone and Brands,
    nothing in the image writes them, and no circuit patches the operands — so `grip_disturbance`
-   is always 0, `grip_limit_base_alt_tbl` is never read and the unprompted `begin_spin` never
+   is always 0, `grip_limit_base_alt_tbl` is never read and the unprompted `begin_jump` never
    fires.  Both addresses sit inside the dashboard bitmap the second unpack drops at
    `$70DB-$7813`.  The twin keeps all of it and the fixture FORCES the arm.  ⚠ Worth one
    reference-loop check before calling it dead for good.
-5. ⚠⚠ **Y IS NOT WHAT THE READING SAYS ON ONE PATH.**  `update_camera_and_drive_state`'s second
+5. ⚠⚠ **Y IS NOT WHAT THE READING SAYS ON ONE PATH.**  `update_camera_and_height`'s second
    `scale_by_track_gradient` call indexes by whatever `Y` holds — and the spin arm above it
-   reaches `begin_spin_from_a`, which queues a MOS SOUND, and `sound_osword` leaves the MOS's own
+   reaches `begin_jump_from_a`, which queues a MOS SOUND, and `sound_osword` leaves the MOS's own
    `Y` behind.  A twin that "knew" the index was still the section's differed in one case in six.
    **A call through the MOS clobbers registers the 6502 listing gives no hint about.**
 

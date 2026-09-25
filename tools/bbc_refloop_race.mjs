@@ -1349,8 +1349,8 @@ if (drive) {
     dashRow("throttle, steering released");
     // ⭐ --hold-steer=left|right : keep the wheel HARD OVER for the rest of the run, which is the
     // only way this loop has ever provoked a SPIN.  A straight-line drive crashes eventually but
-    // never spins, so the spin arms of update_camera_and_drive_state ($45BF) and begin_spin_from_a
-    // ($4DCB) are unreachable without it — and they are what drive_state's 1 and spin_countdown's
+    // never spins, so the spin arms of update_camera_and_height ($45BF) and begin_jump_from_a
+    // ($4DCB) are unreachable without it — and they are what car_height's 1 and car_vertical_speed's
     // seeding mean.  Pair it with --watch=002D.
     if (holdSteer) {
         const code = holdSteer === "left" ? 0xa9 : 0xa8;

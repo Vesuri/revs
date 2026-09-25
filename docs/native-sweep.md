@@ -114,7 +114,7 @@ exactly four groups, and each group is mandated somewhere other than this file:
 
 | Group | Members | Why it stays |
 |---|---|---|
-| **Circuit hook / SMC seam** | `horizon_half_width_at_core`, `update_camera_and_drive_state_core`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core` | CLAUDE.md: *a hook/SMC seam must hand over every register the 6502 has live there*, derived from the surrounding instructions, not from what Silverstone's callee reads. Each writes `cpu` immediately before `revs_track_hook(target)` and reads back what the circuit's own code left. |
+| **Circuit hook / SMC seam** | `horizon_half_width_at_core`, `update_camera_and_height_core`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core` | CLAUDE.md: *a hook/SMC seam must hand over every register the 6502 has live there*, derived from the surrounding instructions, not from what Silverstone's callee reads. Each writes `cpu` immediately before `revs_track_hook(target)` and reads back what the circuit's own code left. |
 | **`cpu.D` for a BCD routine** | `add_tally_to_lap_total_core`, `tally_bcd_column_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tick_race_timers_core` | ✅ **CLOSED 2026-09-10** — see **The BCD routines** below. The arithmetic stays decimal but goes through `src/cpu/bcd.h`; every `cpu.D = 1` is gone, and the three surviving `cpu.D = 0` writes are the routines' architectural CLDs, not the idiom. |
 | **MOS / OS-call ABI** | `shift_key_commands_core`, `kbd_test_key_core`, `engine_init_core` (`cpu.S`), `mul16_by_1_5_core` (`PHA` residue at `$0100+S`) | The harness compares registers at every OS-call boundary, and a `PHA`/`PLA` pair leaves a real byte in the stack page. |
 | **A documented exit publish** | `emit_edge_width_offset_core`, `build_track_geometry_core`, `draw_road_core`, `clamp_and_store_steer_angle_core`, `scale_angle_in_section_core`, `enter_session_core` | The fixture declares the mask; the argument is written at the code. |
@@ -335,7 +335,7 @@ the fixture pins `D = 0` citing that table.  Removed rather than left to mislead
 The rest of this window — `fill_column_gaps` / `fill_edge_column_run`, the 16-bit model
 arithmetic (`mul16_signed`, `scale16_by_y`, `mul16_by_1_5`, `model_integrate_element`,
 `add_signed_into_element`, `apply_angle_term{,_at}`), the rotations and integrations
-(`stage_lateral_speed_delta`, the two steer rotations, `damp_and_derive_loads`,
+(`stage_lateral_speed_delta`, the two steer rotations, `derive_axle_loads`,
 `rotate_state_pair`, `integrate_car_position`, `integrate_state_rates`), the slip/sound
 cluster (twins #67-#78) and the sub-models down to `update_grip_limits` — is already
 idiomatic C: wide values are `uint16_t`/`uint32_t` words, not byte lanes; the comments say
@@ -351,7 +351,7 @@ dropped their scratch say so explicitly and their fixtures ignore those cells by
 
 # Batch 5 — lines 8000..10125 (the engine rev model, the camera, the object plotter, the text path)
 
-The window: `update_engine_revs`, `update_camera_and_drive_state`, `apply_drag_terms`, the road
+The window: `update_engine_revs`, `update_camera_and_height`, `apply_drag_terms`, the road
 sign + object-slot writer (twins #87-#92), the object plotter's shape and line sides (#93-#97),
 the driving-controls cluster's text/screen-address leaves (#110-#114) and the text-script
 interpreter (#148/#165/#166).
@@ -374,14 +374,14 @@ The rest of the window reads clean, and two things are worth stating so they are
 "cleaned up" later:
 
 - **Every surviving `cpu.` reference in it is one of the five argued classes.**  `cpu.A` at
-  `update_camera_and_drive_state_core`'s `$45CB` is the SMC/hook boundary (the circuit's own code
+  `update_camera_and_height_core`'s `$45CB` is the SMC/hook boundary (the circuit's own code
   runs on it); the rest are 6502-ABI shims (`compute_car_angles`, `scale_by_track_gradient`,
-  `begin_spin{,_from_a}`, `store_object_flags`, `plot_object`, `scale_shape_vectors`,
+  `begin_jump{,_from_a}`, `store_object_flags`, `plot_object`, `scale_shape_vectors`,
   `plot_shape_edges`).  No `goto`, no unnamed `mem[0x…]`, and the two remaining `bus_read`s are
   the User VIA timer in the starter poll and the coast arm — real hardware.
 
-- **`yScale` in `update_camera_and_drive_state_core` is NOT the section index on every path.**
-  The spin arm reaches `begin_spin_from_a`, which queues a MOS sound, and `sound_osword` leaves
+- **`yScale` in `update_camera_and_height_core` is NOT the section index on every path.**
+  The spin arm reaches `begin_jump_from_a`, which queues a MOS sound, and `sound_osword` leaves
   the MOS's own Y — so the second `scale_by_track_gradient_core` call scales by whatever entry Y
   now points at.  A twin that "knew" the index differed in one case in six.  The variable name
   and the ⚠ at the call site both exist for that; leave them.

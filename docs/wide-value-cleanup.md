@@ -1984,9 +1984,9 @@ callee writes the vector, and the poisoned differential found every one:
 
 | Shim | who writes the vector under it |
 |---|---|
-| `update_grip_limits` | `begin_spin_from_a_core`'s heading-step nudge ($4DD4 `SEC`/`ROR`) |
-| `update_camera_and_drive_state` | the same core, via its spin arm ($45B9) |
-| `begin_spin` / `begin_spin_from_a` | that nudge directly |
+| `update_grip_limits` | `begin_jump_from_a_core`'s heading-step nudge ($4DD4 `SEC`/`ROR`) |
+| `update_camera_and_height` | the same core, via its spin arm ($45B9) |
+| `begin_jump` / `begin_jump_from_a` | that nudge directly |
 | `begin_scrape` | the crash tail's yaw kick ($1C0B) |
 
 ⭐ Note the shape: **every one of them was a shim that never mentions the vector**, reached through
@@ -2021,7 +2021,7 @@ Six sabotages, six distinct first-diff signatures, every one detected:
 | S3 | `model_integrate_element_core` reads element 13 as the increment | `model_integrate_element` |
 | S4 | `integrate_state_rates_core` drops the 24-bit fraction byte | `integrate_state_rates` |
 | S5 | `slip_magnitude_core` byteswaps the element | `slip_magnitude` |
-| S6 | `ms_set_lo` clobbers the high lane | `begin_spin` |
+| S6 | `ms_set_lo` clobbers the high lane | `begin_jump` |
 
 ## ⭐⭐ THE METRIC THAT DECIDES A (B) RELOCATION IS **REFS PER ELEMENT**, not ref count
 
@@ -2091,7 +2091,7 @@ fraction there, so a camera component is the top 16 bits of `(element << 8) | fr
 |---|---|---|
 | `view_delta` | two byte loads + a shift + an OR per call, 98 calls a driving frame | one word load |
 | `integrate_car_position_core` | three-lane 24-bit add spelled as lane/carry steps | `uint32_t` add, one word store + the fraction byte |
-| `update_camera_and_drive_state_core` | a four-term add with **three PHP-saved carries** folded into the high byte | one truncating 16-bit `+` of four values |
+| `update_camera_and_height_core` | a four-term add with **three PHP-saved carries** folded into the high byte | one truncating 16-bit `+` of four values |
 | `build_sign_origin_core` | camera component read as two lanes, difference stored as two | one word read, one word store |
 | `build_player_car_core` | component-wise lane copy of the whole world coordinate | word store per axis (the source is still `SECTION_COORD`, which is not relocated) |
 
@@ -2126,7 +2126,7 @@ Two campaigns in a row a hand- or regex-derived closure was wrong, and a missing
 wrong answer that only a poisoned differential catches:
 
 - **MODEL_STATE**: four shims that never mention the vector needed marshals because a `_core` two or
-  three levels down nudged it (all via `begin_spin_from_a_core`).
+  three levels down nudged it (all via `begin_jump_from_a_core`).
 - **VIEW_ORIGIN**: a source regex matched function names inside **comments** and invented edges; the
   hand-checked list it produced then omitted three real shims (`build_track_geometry`,
   `road_edge_start`, `road_edge_walk`) and `make validate` failed with
@@ -2251,7 +2251,7 @@ was wrong for every other caller and right only by accident for its one.
 Gated by `make validate` on all ten owning twins (`load_section_triple`, `road_edge_walk`,
 `section_coord_add_delta`, `copy_section_height_to_side1`, `build_road_section`,
 `load_section_from_segment`, `place_car_world_coords`, `build_player_car`,
-`update_camera_and_drive_state`, `build_track_geometry`) plus `determinism` and
+`update_camera_and_height`, `build_track_geometry`) plus `determinism` and
 `determinism-drive`.
 
 #### The site table as it stood before the conversion
@@ -2269,7 +2269,7 @@ sat:
 | `copy_section_height_to_side1` | 4 |
 | `load_section_from_segment` | 4 |
 | `section_word` (the accessor itself) | 2 |
-| `load_section_triple_core`, `view_delta`, `update_camera_and_drive_state_core`, `build_player_car_core` | 2 each |
+| `load_section_triple_core`, `view_delta`, `update_camera_and_height_core`, `build_player_car_core` | 2 each |
 
 
 ### `EDGE_X` $5E40/$5E90, `EDGE_OPP_X` $5E50/$5EA0, `MARKER_OFF` $62B7/$62BA — ✅ DONE (mechanism A)

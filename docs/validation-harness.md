@@ -781,8 +781,8 @@ publish only the elements the core owns.
 
 ⭐ And the marshal set is a **transitive closure, not a text search.** Four shims that never mention
 the vector needed marshals because a `_core` two or three levels down nudges it
-(`update_grip_limits`, `update_camera_and_drive_state`, `begin_spin`, `begin_scrape` — all via
-`begin_spin_from_a_core`'s $4DD4 `SEC`/`ROR`). Derive the set from the call graph, then let the
+(`update_grip_limits`, `update_camera_and_height`, `begin_jump`, `begin_scrape` — all via
+`begin_jump_from_a_core`'s $4DD4 `SEC`/`ROR`). Derive the set from the call graph, then let the
 poison prove it.
 
 ### SEVENTEENTH — a relocation's marshal closure comes from `objdump`, and it stops at the next shim

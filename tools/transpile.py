@@ -733,7 +733,7 @@ VALIDATE_FUNCS = {
     # (docs/faithfulness-seam.md §8), and that is stated up front so the framerate is not
     # quoted as the reason.  What they buy is the last of the body's per-frame data
     # structures getting names: the driving model's 16-bit state vector (model_state_lo/hi and
-    # the hand-integrated car_lateral_speed), the object plotter's four-cell argument block
+    # the car_lateral_speed pair), the object plotter's four-cell argument block
     # (plot_x / plot_line / proj_width / plot_shape) and the 24 per-slot object arrays.
     0x46A1,
     0x2AD1,
@@ -907,10 +907,10 @@ VALIDATE_FUNCS = {
     # ⭐⭐ TWINS #58-#66 — THE ROTATIONS AND THE INTEGRATIONS, apply_driving_model's third
     # group.  Every leaf underneath these was already a twin (#50-#57), so this is the ordering
     # rule's happy case: nine drivers over an arithmetic layer that is already real C.
-    #   $4729 stage_lateral_speed_delta      ( 42 B) the midpoint offset: accumulator -= v, delta = 1.5v
+    #   $4729 stage_lateral_speed_delta      ( 42 B) the two lever arms: rear at x - s, front at x + 1.5s
     #   $47A5 rotate_velocity_by_steer  ( 32 B) the (8, 9) pair rotated by the steering angle
     #   $47C5 rotate_pair_a_by_steer ( 32 B) ...and the same for the (10, 12) pair
-    #   $47F9 damp_and_derive_loads  (116 B) elements 10..13 decayed by 4, then loads 6 and 7
+    #   $47F9 derive_axle_loads      (116 B) elements 10..13 scaled by 1/4, then loads 6 and 7
     #   $48C7 rotate_state_pair      ( 40 B) THE 2x2 ROTATION — four apply_angle_term_at calls
     #   $48B9 rotate_state_0_into_8  (  6 B) ...entered for (source 0, dest 8, mode $C0)
     #   $48C1 rotate_state_6_into_3  (  6 B) ...and for (source 6, dest 3, mode $40)
@@ -964,7 +964,7 @@ VALIDATE_FUNCS = {
     #
     #   $0D01 compute_car_angles   (178 B) heading -> the sin/cos pair every rotation resolves
     #                                      through, as two polynomials with a pi/2 reflection
-    #   $44EA update_camera_and_drive_state (294 B) the biggest single routine in the tree:
+    #   $44EA update_camera_and_height (294 B) the biggest single routine in the tree:
     #                                      the drive-state machine, the section yaw, and the camera
     #   $4610 scale_by_track_gradient ( 22 B) ...and the per-position gradient both its camera
     #                                      terms go through
@@ -972,7 +972,7 @@ VALIDATE_FUNCS = {
     #                                      four-segment power curve and the stall
     #   $4BCF update_grip_limits   (146 B) the two per-axle grip thresholds
     #   $4C65 apply_drag_terms     ( 63 B) two speed-dependent terms into elements 6 and 7
-    #   $4DC9 begin_spin / $4DCB begin_spin_from_a (20 B) the car loses control
+    #   $4DC9 begin_jump / $4DCB begin_jump_from_a (20 B) the car loses control
     #
     # ⚠⚠ THREE THINGS IN THIS GROUP THAT NO OTHER GROUP HAD:
     #   1. HARDWARE READS.  $49CE and $4BCF both read $FE68 (the User VIA T1 counter) — the
