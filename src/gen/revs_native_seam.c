@@ -78,6 +78,7 @@ void shift_near_edge_points(void)
 void rebase_edge_point(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
+    rebase_heading_delta_v = model_state_16[MS_HEADING_STEP];   /* one step's worth, as the oracle reads it */
     rebase_edge_point_core(cpu.Y);
 }
 
@@ -151,6 +152,7 @@ void road_edge_start(void)
 {
     view_origin_marshal_in();   /* read-only: view_delta reads the camera */
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
+    rebase_heading_delta_v = model_state_16[MS_HEADING_STEP];   /* one step's worth, as the oracle reads it */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     /* the stale-horizon cap is $23B3's SMC operand — see the twin */
@@ -253,6 +255,7 @@ void build_track_geometry(void)
    round trips and are load-bearing. */
     view_origin_marshal_in();   /* read-only: view_delta reads the camera */
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
+    rebase_heading_delta_v = model_state_16[MS_HEADING_STEP];   /* one step's worth, as the oracle reads it */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
     /* live=AXY on the 6502-ABI path only: A is the horizon half-width, X the walk's last

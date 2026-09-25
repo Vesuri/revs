@@ -4227,11 +4227,70 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
    A step advances game time: the player's controls and driving model, and the other cars'
    moves.  The slow tick is the engine's own 93.6 ms frame, and it runs what counts frames
    with the original constants — the race clock (so lap times stay the original's), the lights.
-   ⭐ LEGACY MODE, the only one so far: one step per painted frame, every step a slow tick, and
-   h = 1.  That IS the engine's loop, which is what keeps the whole determinism family a valid
-   gate on the split; the decoupled modes replace these two answers, not the loop. */
-static inline unsigned sim_steps_due(void)     { return 1u; }
-static inline int      sim_slow_tick_due(void) { return 1; }
+   ⭐ LEGACY MODE (Platform::simStepTenths() == 0, the default and what every determinism gate
+   runs): one step per painted frame, every step a slow tick, h = 1.  That IS the engine's loop.
+   ⭐ DECOUPLED MODE: game time is owed against real display fields (20 ms each) and paid in
+   steps of s_simStepTenths; the slow tick fires every 93.6 ms of game time — the engine's own
+   frame, so the race clock adds its 9.36 cs exactly as the BBC did and lap times stay the
+   original's.  All in tenths of a millisecond so every quantity is an integer and nothing
+   divides.  The backlog is capped, and discarded wherever real time passes that is not game
+   time (the session start after any reset or crash hold, the pause spin). */
+#define SIM_BBC_FRAME_TENTHS  936u     /* the frame the race clock is calibrated to */
+#define SIM_FIELD_TENTHS      200u     /* one PAL field */
+#define SIM_BACKLOG_CAP_TENTHS 3000u   /* at most 300 ms of catch-up after a slow frame */
+static unsigned s_simStepTenths;       /* 0 = legacy */
+/* Always compiled: two increments a step, and the only way to prove on the target that game
+   time runs at real time (amiga/sim_clock.gdb: steps / fields x 50 must read 10.68 at h = 1). */
+volatile unsigned long g_simSteps, g_simSlowTicks;
+static unsigned s_simBacklog;          /* game time owed, not yet stepped */
+static unsigned s_simTickAcc;          /* game time since the last slow tick */
+
+static void sim_clock_session_start(void)
+{
+    s_simStepTenths = platform_sim_step_tenths();
+    (void)platform_sim_fields();       /* the fields the reset took are not game time */
+    /* The session's first painted frame runs one step, and it is a slow tick — as the BBC's
+       first frame is. */
+    s_simBacklog = s_simStepTenths;
+    s_simTickAcc = SIM_BBC_FRAME_TENTHS - s_simStepTenths;
+}
+
+void sim_clock_discard_backlog(void)
+{
+    if (s_simStepTenths == 0u) return;
+    (void)platform_sim_fields();
+    s_simBacklog = 0u;
+}
+
+static unsigned sim_steps_due(void)
+{
+    unsigned n = 0u;
+    if (s_simStepTenths == 0u) return 1u;
+    s_simBacklog += (unsigned)(uint16_t)platform_sim_fields() * (uint16_t)SIM_FIELD_TENTHS;
+    if (s_simBacklog > SIM_BACKLOG_CAP_TENTHS) s_simBacklog = SIM_BACKLOG_CAP_TENTHS;
+    while (s_simBacklog >= s_simStepTenths) { s_simBacklog -= s_simStepTenths; n++; }
+    return n;
+}
+
+static int sim_slow_tick_due(void)
+{
+    if (s_simStepTenths == 0u) return 1;
+    s_simTickAcc += s_simStepTenths;
+    if (s_simTickAcc < SIM_BBC_FRAME_TENTHS) return 0;
+    s_simTickAcc -= SIM_BBC_FRAME_TENTHS;
+    return 1;
+}
+
+/* ⭐ WHAT THE GEOMETRY PASS'S RE-BASE IS OWED — the camera motion since the last pass.
+   rebase_edge_point corrects last frame's near edge points by one frame of heading step and
+   pitch delta, which assumes exactly one step between geometry passes.  Once a painted frame
+   covers zero or several, it must correct by the SUM over the steps since the last pass, each
+   taken as the step left it — which, over one step, is exactly the value it always read
+   (including begin_jump_from_a's nudge to element 2 after the heading has moved: the BBC's own
+   quirk, kept).  view_pitch_delta has no other reader, so it becomes the sum in place;
+   element 2 is live model state, so the heading sum travels in rebase_heading_delta_v. */
+static uint16_t s_rebaseHeadingSum;
+static uint8_t  s_rebasePitchSum;
 
 uint8_t race_main_loop_core(RestartDepth depth)
 {
@@ -4278,7 +4337,9 @@ uint8_t race_main_loop_core(RestartDepth depth)
             if (d > g_resetFieldsMax) g_resetFieldsMax = d;
         }
 #endif
-        /* ---- one pass = one game frame ---- */
+        sim_clock_session_start();
+
+        /* ---- one pass = one painted frame ---- */
         do {
             /* ⭐ THE PORT'S PAINT HOOK — see the header for why it is here and not at the
                frame wait.  Its own phase, because renderFrame() spins for the field and
@@ -4298,7 +4359,9 @@ uint8_t race_main_loop_core(RestartDepth depth)
                after it happens once per painted frame. */
             const unsigned steps = sim_steps_due();
             for (unsigned step = 0; step < steps; step++) {
+                g_simSteps++;
                 if (sim_slow_tick_due()) {
+                    g_simSlowTicks++;
                     PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
                     PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
                 }
@@ -4314,7 +4377,13 @@ uint8_t race_main_loop_core(RestartDepth depth)
                    validate, determinism, -drive and -crash alike. */
                 PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
                 PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
+                s_rebaseHeadingSum = (uint16_t)(s_rebaseHeadingSum + model_state_16[MS_HEADING_STEP]);
+                s_rebasePitchSum   = (uint8_t)(s_rebasePitchSum + view_pitch_delta);
             }
+            rebase_heading_delta_v = s_rebaseHeadingSum;   /* the motion since the last pass */
+            view_pitch_delta       = s_rebasePitchSum;
+            s_rebaseHeadingSum = 0u;
+            s_rebasePitchSum   = 0u;
             /* The light column is a view SOURCE and the sweep consumes sources, so it is painted
                on every frame from the last walked arm.  ⚠ In the 6502's order it came before
                phases 3/4; neither reads or writes column 37's ten cells, and the one shared
@@ -4672,7 +4741,7 @@ void rebase_edge_point_core(uint8_t slot)
     mem[MEM_edge_style + slot] = 0;                                     /* $0BA2-$0BA4 */
 
     /* $0BA7-$0BB6 — the point's stored azimuth, less this frame's heading step (16-bit). */
-    uint16_t az = (uint16_t)(edge_x_word(slot) - model_state_16[MS_HEADING_STEP]);
+    uint16_t az = (uint16_t)(edge_x_word(slot) - rebase_heading_delta_v);
     edge_x_word_set(slot, az);
 
     /* $0BBA-$0BC0 — and its scan line, less the frame's pitch delta. */
@@ -4799,6 +4868,11 @@ void edge_nearest_marshal_out(void)
    traffic on Silverstone or on an expansion circuit (strict listing re-scan,
    docs/wide-value-cleanup.md TENTH lesson).  The shims marshal per the IN/OUT rule. */
 uint16_t car_heading_v;   /* not static: apply_driving_model's and mirrors_update's shims pass its high byte */
+/* The heading change rebase_edge_point corrects the near edge points by: the frame driver sets
+   it to the sum of element 2 over the steps since the last geometry pass (§THE SIMULATION
+   CLOCK); every 6502-ABI shim that reaches the re-base sets it to element 2 itself, which is
+   the one-step value the oracle reads out of heading_step_lo/hi. */
+uint16_t rebase_heading_delta_v;
 
 void car_heading_marshal_in(void)
 {
@@ -18802,6 +18876,7 @@ void shift_key_commands_core(uint8_t entryY)
                 osX = ks.x;                      /* its MOS residue is the X the tail then sees */
                 if (ks.x == 0xFFu) break;
             }
+            sim_clock_discard_backlog();         /* the pause was real time, not game time */
         }
         mem[MEM_engine_note]++;                  /* $0F25 INC engine_note */
         mem[MEM_pause_request] = 0u;             /* $0F29 */

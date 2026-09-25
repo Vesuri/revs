@@ -496,6 +496,17 @@ ifeq ($(HOLD_STEER),r)
 EXTRA_DEFINES += -DREVS_HOLD_STEER_RIGHT -DREVS_HOLD_THROTTLE
 endif
 
+# ⭐⭐ THE SIMULATION CLOCK (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  The game's
+# simulation steps are owed against real VERTB fields, SIM_STEP_TENTHS tenths of a millisecond
+# each: 936 = one BBC frame (stage 2 — the decoupled scheduler, physics unchanged).
+# `make SIMLEGACY=1` restores the engine's own loop — one step per painted frame, game speed =
+# framerate — which is the arm to compare a decoupled build against.  ⚠ `make clean` on a switch.
+SIM_STEP_TENTHS ?= 936
+EXTRA_DEFINES += -DSIM_STEP_TENTHS=$(SIM_STEP_TENTHS)u
+ifdef SIMLEGACY
+EXTRA_DEFINES += -DREVS_SIM_LEGACY
+endif
+
 # `make FIXED_RNG=1` — pin any RNG seeding so every build drives the SAME simulation.
 # On the Atari port, render speed shifted the free-running main loop against the 50 Hz
 # interrupt, which shifted the RNG read count, which selected a DIFFERENT level — the
@@ -1528,7 +1539,7 @@ ifdef TAPTEST
 PROBE_SYMS_TAPTEST = g_tapInjected
 endif
 
-PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
+PROBE_SYMS = g_vbiCount g_simSteps g_simSlowTicks g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
              g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA \
              g_mosCharDefCount g_mosCharDefOutOfRange g_mosCharDefLastBad \
              g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \

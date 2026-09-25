@@ -67,6 +67,11 @@ public:
     // simulation, and a beam-derived value would make the trajectory depend on frame timing.
     virtual uint32_t hwMicros() override;
 
+    // ⭐⭐ The simulation clock (Platform::simStepTenths): steps are owed against REAL fields,
+    // counted by the VERTB ISR.  `make SIMLEGACY=1` restores one step per painted frame.
+    virtual unsigned simStepTenths() override;
+    virtual unsigned simFields() override;
+
     // Called from the VERTB ISR: accumulate the mouse counter (see RevsInput::sampleMouse).
     void sampleMouse() { input.sampleMouse(); }
 
@@ -107,4 +112,5 @@ private:
     // does; under STRAIGHT_TO_RACE it wins only until autoRun.done().
     RevsInput input;
     uint16_t lastVsyncCount = 0;
+    uint16_t lastSimFieldCount = 0;   // simFields' previous g_vbiCount
 };

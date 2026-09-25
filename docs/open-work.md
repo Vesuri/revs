@@ -922,6 +922,15 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
   determinism family and remains the gate for every refactor. The new modes are gated by a host
   physical-equivalence suite against h = 1 in game time.
 
+**Status:** stages 1 and 2 are **done**. The default Amiga build is decoupled at h = 1 (one BBC
+step per 93.6 ms of real time, the physics unchanged): `amiga/sim_clock.gdb` +
+`tools/sim_clock_report.py` read **10.67 steps/s and the race clock at 0.999× real time** over
+reset-free intervals. The `SIMLEGACY=1` control reads 10.0–11.0, following the painted rate.
+The host reproduces it with a scripted field pattern (`REVS_SIM_STEP=936 REVS_SIM_FIELDS=4,5`:
+clock/wall 1.003). ⚠ **Until stage 5 redefines the baseline, price with `SIMLEGACY=1`**: a
+decoupled painted frame covers a render-speed-dependent number of steps, so its phase table is
+not comparable with 84.44. **Next: stage 3.**
+
 **Stages** (each gated before the next):
 1. Byte-exact split into `sim_step` / `legacy_tick` / `render_frame`, scheduler at 1:1:1.
    `move_and_draw_cars`, `update_camera_and_height`, the controls read, starter luck, the slip

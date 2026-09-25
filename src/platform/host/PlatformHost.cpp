@@ -77,6 +77,18 @@ PlatformHost::PlatformHost(const char* imagePath) : vbi(0), frames(0), traceKeys
        engine has to be re-driven from the disc image every time, and a run to frame 400
        costs minutes.  Consecutive frames also make "present in most frames" checkable,
        which a single frame cannot be. */
+    if (const char* ss = std::getenv("REVS_SIM_STEP")) simStep = (unsigned)std::strtoul(ss, 0, 0);
+    if (const char* sf = std::getenv("REVS_SIM_FIELDS")) {
+        const char* p = sf;
+        while (*p && simPatternLen < 16) {
+            char* end;
+            unsigned long v = std::strtoul(p, &end, 0);
+            if (end == p) break;
+            simPattern[simPatternLen++] = (unsigned)v;
+            p = (*end == ',') ? end + 1 : end;
+        }
+    }
+    if (simPatternLen == 0) { simPattern[0] = 4u; simPatternLen = 1; }
     const char* dc = std::getenv("REVS_SCREEN_COUNT");
     dumpCount = (dc && dc[0]) ? (unsigned long)std::strtoul(dc, 0, 0) : 1ul;
     if (dumpCount < 1) dumpCount = 1;
@@ -134,6 +146,14 @@ int PlatformHost::loadImage(const char* path)
 }
 
 void PlatformHost::setInterrupt(void (*fn)(void)) { vbi = fn; }
+
+unsigned PlatformHost::simStepTenths() { return simStep; }
+unsigned PlatformHost::simFields()
+{
+    const unsigned n = simPattern[simPatternAt];
+    simPatternAt = (simPatternAt + 1u) % simPatternLen;
+    return n;
+}
 int  PlatformHost::framesPerSecond()              { return 50; }
 
 void PlatformHost::renderFrame()

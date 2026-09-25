@@ -183,6 +183,16 @@ public:
        finer clock (a real timer, the beam position) should override it. */
     virtual uint32_t hwMicros();
 
+    /* ⭐⭐ THE SIMULATION CLOCK's two inputs (race_main_loop_core §THE SIMULATION CLOCK,
+       docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).
+       simStepTenths — the game time one simulation step covers, in tenths of a millisecond;
+       0 selects LEGACY mode (one step per painted frame, the engine's own loop), which is the
+       default and what every determinism gate runs.
+       simFields — display fields elapsed since the previous call: the wall clock the steps are
+       owed against.  Only read when simStepTenths is non-zero. */
+    virtual unsigned simStepTenths() { return 0u; }
+    virtual unsigned simFields()     { return 0u; }
+
 protected:
     /* Has a display frame boundary passed since the last call?  Backs the System VIA
        vsync flag ($FE4D bit 1) that hw_init's alignment spin blocks on.  Default: yes

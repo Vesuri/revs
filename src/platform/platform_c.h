@@ -167,6 +167,10 @@ void platform_poll_events(void);
    tick resets, so the wait could never exit. */
 void platform_tick_vbi(void);
 
+/* The simulation clock's inputs — Platform::simStepTenths / simFields. */
+unsigned platform_sim_step_tenths(void);
+unsigned platform_sim_fields(void);
+
 #ifdef __cplusplus
 }
 #endif

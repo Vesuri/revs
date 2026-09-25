@@ -161,6 +161,12 @@ per painted frame) — the user's stated future goal, deliberately deferred (`do
 §The rest of the port). Until it lands, every frame-time win below ~93.6 ms speeds the game up,
 and `determinism` still holds because the sim is framerate-locked, not wall-clock-locked.
 
+⭐ **In progress (2026-09-25): the default Amiga build is DECOUPLED** — game time is owed against real
+VERTB fields and the slow tick is the 93.6 ms frame, so the table above describes `make SIMLEGACY=1`
+only. Measured on the target (`amiga/sim_clock.gdb`): 10.67 steps/s, race clock 0.999× real time.
+The host gates stay in legacy mode, which is byte-exact. `docs/open-work.md` §FRAME-RATE-INDEPENDENT
+SIMULATION.
+
 ## ⭐⭐ THE CURRENT NUMBERS
 
 **FPS baseline** (rendered, moving car): `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +

@@ -255,6 +255,28 @@ uint32_t PlatformAmiga::hwMicros()
 #endif
 }
 
+// ⭐⭐ THE SIMULATION CLOCK's inputs.  The step length is a build constant for now
+// (SIM_STEP_TENTHS, amiga/Makefile): 936 = one BBC frame, i.e. the decoupled scheduler with the
+// physics unchanged (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION, stage 2).  The field
+// count is the VERTB ISR's own, so under warp it is EMULATED time and a FIXED_RNG run stays
+// deterministic.
+unsigned PlatformAmiga::simStepTenths()
+{
+#ifdef REVS_SIM_LEGACY
+    return 0u;
+#else
+    return SIM_STEP_TENTHS;
+#endif
+}
+
+unsigned PlatformAmiga::simFields()
+{
+    const uint16_t now = g_vbiCount;
+    const uint16_t n   = (uint16_t)(now - lastSimFieldCount);
+    lastSimFieldCount = now;
+    return n;
+}
+
 /* ===========================================================================
    OSRDCH — the game's only text input                                (rdch)
    ---------------------------------------------------------------------------

@@ -149,6 +149,14 @@ void platform_tick_vbi(void) {
     if (platform) platform->tickVBI();
 }
 
+unsigned platform_sim_step_tenths(void) {
+    return platform ? platform->simStepTenths() : 0u;
+}
+
+unsigned platform_sim_fields(void) {
+    return platform ? platform->simFields() : 0u;
+}
+
 void platform_poll_events(void) {
     if (platform) platform->pollEvents();
 }

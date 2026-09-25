@@ -609,6 +609,8 @@ extern uint16_t edge_nearest_v;  /* edge_nearest ($10/$11) relocated — see rev
 void edge_nearest_marshal_in(void);
 void edge_nearest_marshal_out(void);
 extern uint16_t car_heading_v;   /* car_heading ($0A/$0B) relocated — see revs_native.c */
+extern uint16_t rebase_heading_delta_v;   /* rebase_edge_point's heading correction — see revs_native.c */
+void sim_clock_discard_backlog(void);
 extern uint16_t plot_ptr_v, plot_ptr2_v, plot_ptr3_v;
 void plot_ptr_marshal_in(void);   void plot_ptr_marshal_out(void);
 void plot_ptr2_marshal_in(void);  void plot_ptr2_marshal_out(void);

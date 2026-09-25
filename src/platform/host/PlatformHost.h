@@ -55,7 +55,18 @@ public:
        value that only moves in steps of 32 is a constant. */
     virtual uint32_t hwMicros() override;
 
+    /* ⭐ The simulation clock, SCRIPTED: the host has no display, so "fields since the last
+       painted frame" is whatever REVS_SIM_FIELDS says — a comma-separated pattern cycled one
+       entry per call ("4" or "4,5,4") — and REVS_SIM_STEP sets the step length in tenths of a
+       millisecond.  Unset = legacy mode, which every determinism gate runs.  A scripted pattern
+       is what makes a decoupled run as deterministic as a legacy one. */
+    virtual unsigned simStepTenths() override;
+    virtual unsigned simFields() override;
+
 private:
+    unsigned simStep = 0;
+    unsigned simPattern[16] = {0};
+    unsigned simPatternLen = 0, simPatternAt = 0;
     void (*vbi)(void);
     unsigned long frames;
     AutoRun autoRun;

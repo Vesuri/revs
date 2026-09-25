@@ -189,6 +189,8 @@ make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every
 make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
+make SIMLEGACY=1 # the engine's own loop (one sim step per painted frame) — the default build
+                #   is DECOUPLED (game time = real time, docs/open-work.md §FRAME-RATE-INDEPENDENT)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build).  ⭐ SILENT
                 #   (`--audio_driver=dummy` — a warp run's audio is a screech and no probe reads
                 #   it); `FSUAE_SOUND=1` restores it, `FSUAE_SILENT=1` mutes the audible ./run.sh
@@ -403,7 +405,8 @@ The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is 
 Be conscious of absolute milliseconds always.
 
 **Baseline: the bracketed FRAME in `docs/open-work.md`'s header** (`PROBES=1 FIXED_RNG=1
-STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000` + `phase4_prof.gdb`, warp, driving, priced with
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000 SIMLEGACY=1` + `phase4_prof.gdb` — ⚠ SIMLEGACY
+until the decoupled baseline is defined, see docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION, warp, driving, priced with
 `diag_run.sh 45`). **This is the number a change is sized against**, and it is both the
 bracketed total (`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to
 0.02 ms, so the brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` is NOT
