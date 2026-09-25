@@ -361,7 +361,7 @@ TARGET   := build/revs
 
 
 .PHONY: determinism-lights determinism-lights-record
-.PHONY: todo cpu-lint macro-lint all clean gen validate image runtime dashcode sweep endian-lint refloop bbcprof refloop-keys \
+.PHONY: todo cpu-lint macro-lint fatscan all clean gen validate image runtime dashcode sweep endian-lint refloop bbcprof refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
         trackmenu trackmenu-fixture titlescreen \
@@ -995,6 +995,43 @@ image:
 # `ENDIAN-OK:` and it is allowed through.
 cpu-lint:
 	@python3 tools/cpu_lint.py
+
+# ⭐ `make fatscan` — THE 6502-RESIDUE SCANNER (tools/fatscan.py, docs/open-work.md §9).  Ranks
+# dead exit fields, flag replay into them, zero-page scratch inside loops and marshal round trips
+# by what they cost the TARGET per frame: executions come from a --coverage host build driving
+# the STRAIGHT_TO_RACE + HOLD_THROTTLE scene (counters zeroed at FATSCAN_FROM, exit at
+# FATSCAN_TO), instructions from amiga/out/Revs.elf's line table.  The build is OUT OF TREE
+# (build/fatscan/), so it never touches build/revs or a determinism flavour's objects.
+# ⚠ It reads the Amiga ELF as it stands: rebuild that PLAIN first (`cd amiga && make clean && make`).
+FATSCAN_DIR  := build/fatscan
+# The window is the first DRIVE: the car moves from frame 10 and hits the barrier at 221 (the reset
+# then replays the same ~222-frame drive), so 20..220 is 200 frames of driving with no reset in it
+# — the tool refuses a window in which race_resume_point ran.  ⚠ A PRACTICE session: no other car
+# is on track, so the object plotter's car arm is absent (CLAUDE.md §the baseline trajectory).
+FATSCAN_FROM ?= 20
+FATSCAN_TO   ?= 220
+FATSCAN_DEFS := --coverage -DREVS_FATSCAN -DREVS_STRAIGHT_TO_RACE -DREVS_HOLD_THROTTLE
+FATSCAN_OBJS := $(addprefix $(FATSCAN_DIR)/,$(OBJS))
+
+$(FATSCAN_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(FATSCAN_DEFS) $(DEPFLAGS) -c -o $@ $<
+
+$(FATSCAN_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(FATSCAN_DEFS) $(DEPFLAGS) -c -o $@ $<
+
+$(FATSCAN_DIR)/revs: $(FATSCAN_OBJS)
+	$(CXX) $(CXXFLAGS) --coverage -o $@ $(FATSCAN_OBJS)
+
+-include $(FATSCAN_OBJS:.o=.d)
+
+fatscan: $(FATSCAN_DIR)/revs
+	@find $(FATSCAN_DIR) -name '*.gcda' -delete
+	REVS_FIXED_RNG=1 REVS_FATSCAN_FROM=$(FATSCAN_FROM) REVS_FATSCAN_TO=$(FATSCAN_TO) \
+	  ./$(FATSCAN_DIR)/revs >/dev/null 2>&1
+	@FATSCAN_CFLAGS="$(CFLAGS) -DREVS_FATSCAN -DREVS_STRAIGHT_TO_RACE -DREVS_HOLD_THROTTLE" \
+	  PATH="$$HOME/.local/opt/bin:$$PATH" python3 tools/fatscan.py --objdir=$(FATSCAN_DIR) --frames=$$(( $(FATSCAN_TO) - $(FATSCAN_FROM) )) $(FATSCAN_ARGS)
 
 # ⭐⭐ THE BLOCK-OP DIFFERENTIAL.  src/platform/amiga/fastmem.c replaces the toolchain's
 # byte-loop memset/memcpy/memmove on the shipping Amiga binary, so a defect in it is a wrong

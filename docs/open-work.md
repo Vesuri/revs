@@ -811,20 +811,40 @@ only route and must not be proposed as one.**
 delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
 on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)
 
-### 9. ⏸ `make fatscan` — FIND THE 6502 RESIDUE AUTOMATICALLY (user: "at some point", after prepareFrame + the drivers)
-A ranked scanner for the fat the object-plotter cleanup removed by hand (`docs/perf-method.md` §the
-object plotter's C). Four static detectors, each weighted by measured HOTNESS (host call counts,
-the phase table, steptrace) — never ranked by raw count:
-1. **Dead exit ABI** — the 55 struct-returning cores (`SlotExit`, `*Exit`, `AddFlags`, `ProjPoint`);
-   a regex pass already finds 25 with a caller that discards the whole result. Per-FIELD use needs
-   the clang AST (`-ast-dump=json`, member accesses per call site).
-2. **Flag replay** — `adc_overflow`/`sbc_overflow`/… whose value only reaches a returned flag (16 left).
-3. **Zero-page scratch in a loop** — objdump: `move.b` to `<mem+0x00..0xFF>` inside a back-edge.
-4. **Marshal round trips** — `*_marshal_in/out` pairs on per-frame shims.
-⚠ The part it cannot finish: an ORACLE that reaches a native shim may BRANCH on an exit
-(scale_shape_vectors' C, draw_track_object's X). The tool shortlists them — find each shim call in
-`revs_gen.c` and test whether the next statements read `cpu.*` before writing it — and a human
-confirms. Output: one table, routine × detector × instructions/frame.
+### 9. 🧹 THE 6502 RESIDUE `make fatscan` FINDS — ~960 target instructions a frame, ~1.5 ms: CLEANUP, NOT A LEVER
+`make fatscan` (tools/fatscan.py; method in its docstring) ranks four detectors by target instructions
+per frame: host `--coverage` executions over frames 20..220 of the driving scene × the plain ELF's own
+instructions. Sabotaged: one planted defect per detector, all four found at the planted line and at
+the expected size, and gone again on revert. Totals: **marshal 591, exit 245, zp 123, flag 3**.
+- **marshal** (a native per-frame path through the 6502 ABI):
+  - `read_driving_controls_frame` (170) re-imports the whole model-state and car-angle vectors every
+    frame;
+  - `build_road_sign` (112) round-trips five bases;
+  - `apply_driving_model_frame_native` (109) publishes five and then stores **seven `cpu` exit
+    registers that nothing reads** (the shortlist says NO READER);
+  - `check_crash_native` (61);
+  - `build_track_geometry_native` (41).
+  A marshal-out may still be a RESULT the next pass reads from `mem[]`, so each needs the reader
+  audit (CLAUDE.md §the results rule) before it goes.
+- **exit**:
+  - `interp_edge_publish` (93): both indices are read only by the `interp_edge` shim;
+  - `emit_edge_width_offset_core` (41);
+  - `integrate_state_rates_core` (24).
+  The shortlist names every oracle consumer: no transliteration the port can run reads any
+  shim-only field; the main loop's "reads" are all `race_main_loop`, whose transliteration never runs.
+- ⭐ **The flag chain (user: "a clear sign of 6502 rot").** There are ten `adc_overflow`/`sbc_overflow`
+  sites, and none computes a V anything tests:
+  - **Five** reach only a shim's `cpu.V`: `edge_run_flat`, `edge_runs_asm_raw`, `column_gap_walk`,
+    `write_object_slot`, `scale_wing_settings`.
+  - **Four** are `draw_road`'s `chainV`, which each core copies from entry to exit untested. Its one
+    consumer is the **circuit-hook seam** (`revs_track_hook_regs`), and no hook reads V:
+    `revs_track_hooks.c` has no `cpu.V` read, and its six `PHP`s save and restore.
+  - **One** is `hook_merge_horizon_edges`.
+  The target already pays ~0 for them (GCC deletes most after inlining), so deleting them is
+  a rot fix, not a speed fix. Gate: `make validate` with the exit masks narrowed under a reader
+  audit, `determinism`, and **`make viewdiff`** for the hook-seam four.
+- **zp**: `fill_line_attr_core`'s `shared_temp_76`/`$82`/`span_line_cursor` stores, ~24/frame each.
+  They are the transliteration's handoff cells, so each is a RESULTS question, not a code-shape one.
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be

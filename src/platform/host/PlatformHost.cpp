@@ -156,11 +156,37 @@ unsigned PlatformHost::simFields()
 }
 int  PlatformHost::framesPerSecond()              { return 50; }
 
+#ifdef REVS_FATSCAN
+extern "C" void __gcov_reset(void);   /* the --coverage runtime's counter reset */
+#endif
+
 void PlatformHost::renderFrame()
 {
     /* No display.  Just count: this is the hook at the top of the engine's main loop
        ($1701), so `frames` is a game-frame counter and nothing else. */
     frames++;
+
+#ifdef REVS_FATSCAN
+    /* ⭐ `make fatscan`'s WINDOW (tools/fatscan.py).  The build is `--coverage`, and a line count
+       over the whole run is boot + the front end + the grid, so the counters are zeroed on the
+       window's first frame and the run leaves on its last — exit() is what writes the .gcda.
+       REVS_FATSCAN_FROM/TO are game frames of this counter; the tool divides by TO - FROM. */
+    {
+        static unsigned long from = 0, to = 0;
+        if (!to) {
+            const char* f = std::getenv("REVS_FATSCAN_FROM");
+            const char* t = std::getenv("REVS_FATSCAN_TO");
+            from = f ? std::strtoul(f, 0, 0) : 20;    /* the Makefile's default window */
+            to   = t ? std::strtoul(t, 0, 0) : 220;
+        }
+        if (frames == from) __gcov_reset();
+        if (frames == to) {
+            std::printf("fatscan: window frames %lu..%lu\n", from, to);
+            std::fflush(0);
+            std::exit(0);
+        }
+    }
+#endif
 
     /* ⭐ SHAPE builds: the per-paint frame-buffer delta, at the same point the Amiga takes it
        (immediately before the decode it prices).  See src/platform/shape.h. */

@@ -124,6 +124,9 @@ make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80),
                            #   that reaches any `& $80` arm — every other determinism run is a
                            #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of
                            #   them are the qualifying session the grid is reached through
+make fatscan               # the 6502-RESIDUE SCANNER: dead exit fields, flag replay, zp scratch in
+                           #   loops, marshal round trips — ranked by TARGET instructions/frame
+                           #   (host --coverage counts x amiga/out/Revs.elf; rebuild that PLAIN first)
 make todo                  # ⭐⭐ WHAT IS OPEN: docs/open-work.md's queue + a live sweep for
                            #   TODO/FIXME/HACK markers in the tracked, non-vendored tree.
                            #   Expected output is "none" — a printed marker is either a real
