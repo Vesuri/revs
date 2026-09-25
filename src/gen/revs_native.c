@@ -4541,7 +4541,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
             PROBE_SHAPE_ROAD_AFTER();
             PROBE_PHASE(12); PROBE_SHAPE_PHASE(12); engine_sound_update();
             PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface_core();
-            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();       /* the shim — see phase 5 */
+            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign_native();   /* publishes — see phase 5 */
             /* $172B: the object slot count is the starting slot */
             PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
             /* $172B-$172D — slot $17 drawn: the sign phase 14 has just assembled.  ⭐ NO
@@ -14327,8 +14327,12 @@ static void build_road_sign_core(void)
    gets as far as the bearing — an SMC trap at either sign-table site returns before it — so the
    marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
    holding exactly what they held on entry, which is what the 6502 left there. */
-void build_road_sign(void)      { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
-                                  car_heading_marshal_in();  view_origin_marshal_in();
+void build_road_sign(void)      { car_heading_marshal_in();  view_origin_marshal_in();
+                                  build_road_sign_native(); }
+/* ⭐ The frame driver's entry, one level below the two wipe-only INs (car_heading, view_origin —
+   the arrays are authoritative in production: docs/wide-value-cleanup.md §DROPPING THE
+   IN-MARSHALS).  The three multi-tenant zero-page pairs keep their IN, and every OUT stays. */
+void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
                                   build_road_sign_core();
                                   hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
                                   view_origin_marshal_out(); }
@@ -16095,9 +16099,13 @@ static void read_driving_controls_core(void)
    steering angle in car_angle_16[2] and publishes it itself, so a car_angle_marshal_out() here
    would write three cells that are overwritten from the same array a phase later.  The shim
    keeps it, because a 6502 caller reads its result out of mem[]. */
-void read_driving_controls_frame(void)  { model_state_marshal_in(); car_angle_marshal_in();
-                                          read_driving_controls_core(); }
-void read_driving_controls(void)        { read_driving_controls_frame(); car_angle_marshal_out(); }
+/* ⭐ ...and without car_angle's IN: after draw_dash_needles_native's post-plot IN (the one place a
+   plotted line can reach $62A0..$62A5) the only writers of those lanes are car_angle_marshal_out()s
+   of this same array, so the lanes can tell it nothing.  model_state's IN stays: a needle can land
+   in $62D0..$62EE and nothing else re-imports that range after the plot. */
+void read_driving_controls_frame(void)  { model_state_marshal_in(); read_driving_controls_core(); }
+void read_driving_controls(void)        { car_angle_marshal_in(); read_driving_controls_frame();
+                                          car_angle_marshal_out(); }
 void steer_demand_from_slip(void)       { model_state_marshal_in(); car_angle_marshal_in(); steer_demand_from_slip_core();
                                           car_angle_marshal_out(); }
 void steer_apply_with_assist(void)      { car_angle_marshal_in(); steer_apply_with_assist_core();

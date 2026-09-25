@@ -565,7 +565,8 @@ void draw_dash_needles_native(void);
 void mirrors_update_native(void);
 void process_car_contact_native(void);
 CameraExit apply_driving_model_frame_native(int entryC);   /* the exit is the oracle path's */
-void apply_driving_model_frame_step(void);                  /* the native frame loop's entry */
+void apply_driving_model_frame_step(void);
+void build_road_sign_native(void);   /* the frame driver's entry, below the wipe-only INs */                  /* the native frame loop's entry */
 void road_edge_walk_resume_native(void);
 uint8_t road_edge_walk_resume_from(uint8_t sectionX);   /* $2490 by value */
 void    abs8_regs(HookRegs *r);          /* $637C with the file as a value */

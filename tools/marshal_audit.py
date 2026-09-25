@@ -41,18 +41,39 @@ BASES = {
 }
 
 def shim_bodies():
-    """name -> body text, for every `void NAME(void) { ... }` in the native sources."""
-    out = {}
+    """name -> body text, for every `void NAME(void) { ... }` in the native sources.
+    ⭐ A shim that enters its routine through a `<name>_native` split (the frame driver's entry,
+    one level below the oracle-only marshal-INs) marshals the rest INSIDE that split, so the
+    split's body is read as part of the shim's: without it every such shim — build_track_geometry,
+    build_road_sign — reads as NO MARSHAL for the lanes the split still carries."""
+    out, every = {}, {}
     for f in SRC:
         s = open(f, encoding='utf-8').read()
-        for m in re.finditer(r'^void ([a-z_0-9]+)\(void\)[^{;]*\{', s, re.M | re.S):
+        for m in re.finditer(r'^[A-Za-z_][\w ]*?\b([a-z_0-9]+)\([^;{)]*\)[^{;]*\{', s, re.M | re.S):
             i = s.index('{', m.end() - 1); d = 0
             for j in range(i, len(s)):
                 if s[j] == '{': d += 1
                 elif s[j] == '}':
                     d -= 1
                     if d == 0: break
-            out[m.group(1)] = s[i:j]
+            every[m.group(1)] = s[i:j]
+            if re.match(r'^void [a-z_0-9]+\(void\)', m.group(0)):
+                out[m.group(1)] = s[i:j]
+    validated = set(re.findall(r'"([a-z_0-9]+)"',
+                               open('src/gen/revs_validate_list.h', encoding='utf-8').read()))
+    def expand(body, depth, seen):
+        # follow the wrappers a shim reaches its core through (`_native` splits, `_frame`
+        # entries): not a validated shim (those bracket themselves) and not a `_core` (the
+        # closure being audited), three levels at most
+        if depth == 0: return body
+        for callee in set(re.findall(r'\b([a-z_0-9]+)\s*\(', body)):
+            if callee in every and callee not in validated and callee not in seen \
+                    and not callee.endswith('_core') and not callee.endswith('_marshal_in') \
+                    and not callee.endswith('_marshal_out'):
+                body = body + expand(every[callee], depth - 1, seen | {callee})
+        return body
+    for n in list(out):
+        out[n] = expand(out[n], 3, {n})
     return out
 
 def main():
