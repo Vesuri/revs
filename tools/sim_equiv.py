@@ -15,7 +15,8 @@ one-step mode cannot see.
 
 The drive is STRAIGHT_TO_RACE + HOLD_THROTTLE (a practice session, throttle held from the
 start), with REVS_HOLD_STEER=l for --steer.  Each series starts on the first frame the car
-moves and is cut at the first crash reset (the race clock going backwards).  ⚠ Built into
+moves and is cut at the first crash reset (the race clock going backwards).  REVS_T2_ZERO pins the
+VIA timer (the only entropy) so every mode draws the same "random" numbers.  ⚠ Built into
 build/revs — `make clean` and rebuild plain before any determinism gate.
 """
 import os, subprocess, sys, glob, shutil
@@ -38,7 +39,7 @@ def sample(m):
                 gear=m[0x40], height=m[0x2D], clock=clock)
 
 def run(mode, steer, seconds):
-    env = dict(os.environ, REVS_FIXED_RNG='1', REVS_MEM_DUMP='1', REVS_QUIT_AFTER_DUMP='1')
+    env = dict(os.environ, REVS_FIXED_RNG='1', REVS_T2_ZERO='1', REVS_MEM_DUMP='1', REVS_QUIT_AFTER_DUMP='1')
     if steer: env['REVS_HOLD_STEER'] = 'l'
     if mode == 'legacy':
         dt = 93.6
@@ -69,7 +70,9 @@ def run(mode, steer, seconds):
             started = f
         if rows and s['clock'] < rows[-1][1]['clock']:
             break                                # a crash reset — the comparison ends here
-        rows.append(((f - started) * dt / 1000.0, s))
+        # t is game time at the END of the frame: the first moving frame has already run its
+        # whole frame of steps, which is 93.6 ms in legacy and one short step in a decoupled mode
+        rows.append(((f - started + 1) * dt / 1000.0, s))
         if rows[-1][0] > seconds: break
     shutil.rmtree(d, ignore_errors=True)
     return rows

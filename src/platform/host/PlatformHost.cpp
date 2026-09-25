@@ -631,6 +631,17 @@ uint32_t PlatformHost::hwMicros()
         const char* e = std::getenv("REVS_FIXED_RNG");
         return e && e[0] && e[0] != '0';
     }();
+    /* ⭐ REVS_T2_ZERO=1 — the game's ONLY entropy source reads 0 (T2 = -micros).  For
+       tools/sim_equiv.py: two simulation step sizes cannot share one random stream, because T2
+       is sampled at a different moment of wall time in each, so a standing start lands on a
+       different jitter (legacy 0x28+7, decoupled 0x28+2) and the launch diverges for a reason
+       that has nothing to do with the physics.  With T2 pinned the starter catches on the
+       first draw, the rev jitter is 0 and the grass bump is its minimum in every mode. */
+    static const bool zero = [] {
+        const char* e = std::getenv("REVS_T2_ZERO");
+        return e && e[0] && e[0] != '0';
+    }();
+    if (zero) return 0u;
     if (fixed) return Platform::hwMicros();
 
     using namespace std::chrono;

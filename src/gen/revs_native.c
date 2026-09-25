@@ -4248,6 +4248,9 @@ static unsigned s_simTickAcc;          /* game time since the last slow tick */
 static uint16_t s_rateRem[3];          /* integrate_state_rates, per element */
 static uint16_t s_posRem[2];           /* integrate_car_position, per component */
 static uint16_t s_headingRem;          /* ...and the heading */
+static uint16_t s_revsRem;             /* the engine's coasting revs */
+static uint16_t s_revsPrevRem;         /* ...and the gear-change drop's */
+static uint16_t s_steerRem;            /* the steering demand's (keyboard, slip-centring, CAS) */
 
 static void sim_clock_session_start(void)
 {
@@ -4257,6 +4260,9 @@ static void sim_clock_session_start(void)
     memset(s_rateRem, 0, sizeof s_rateRem);
     memset(s_posRem, 0, sizeof s_posRem);
     s_headingRem = 0u;
+    s_revsRem = 0u;
+    s_revsPrevRem = 0u;
+    s_steerRem = 0u;
     (void)platform_sim_fields();       /* the fields the reset took are not game time */
     /* The session's first painted frame runs one step, and it is a slow tick — as the BBC's
        first frame is. */
@@ -4315,6 +4321,20 @@ static inline int32_t sim_scale(int16_t rate, unsigned shift, uint16_t* rem)
     p += *rem;
     *rem = (uint16_t)((uint32_t)p & ((1u << drop) - 1u));
     return p >> drop;                                  /* arithmetic: floor, so *rem >= 0 */
+}
+
+/* A STEERING DEMAND WORD x h.  Every incremental steering path — the keyboard's fixed ramp, the
+   slip-centring when no key is held, and CAS — ends in apply_steer_demand's `angle -= demand`,
+   so the demand is a RATE per engine frame and gets h.  It is scaled at each PRODUCER, never
+   inside apply_steer_demand, because slip-centring then CLAMPS it to the angle (so the wheel
+   lands exactly on centre): a clamp applied before the scaling would turn that snap into an
+   exponential approach.  Bit 0 is not magnitude — it is the direction flag the angle carries in
+   its own bit 0 — so it passes through, and the magnitude is scaled in units of 2.  The mouse
+   and joystick set the angle outright and never come here. */
+static uint16_t sim_scale_steer(uint16_t demand)
+{
+    return (uint16_t)(((uint16_t)sim_scale((int16_t)demand >> 1, 0u, &s_steerRem) << 1)
+                      | (demand & 1u));
 }
 
 /* ⭐ WHAT THE GEOMETRY PASS'S RE-BASE IS OWED — the camera motion since the last pass.
@@ -13424,6 +13444,30 @@ static uint8_t engine_coast_arm(uint8_t carryIn)
 {
     uint8_t a = engine_revs;                                        /* $499F */
     uint8_t x = (uint8_t)(pedal_mode - 1);       /* $49A1-$49A3 — LDX pedal_mode; DEX (X escapes) */
+    if (sim_h_q16) {
+        /* ⭐ x h (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  Both arms are RATES
+           per engine frame: the creep adds 7 + carry, and the fall subtracts 12 from wherever
+           the creep left it and adds the jitter back — so a failed creep nets 7 + c - 12 + J.
+           The floor is a LEVEL (0x28 + J every frame), so it needs no h. */
+        const int16_t creep = (int16_t)(x == 0 ? 7 + (carryIn ? 1 : 0) : 0);
+        uint16_t rem = s_revsRem;
+        uint8_t up = (uint8_t)(a + sim_scale(creep, 0u, &rem));
+        if (x == 0 && up < pedal_amount && up < 0x8Cu) {
+            s_revsRem = rem;
+            engine_revs = up; engine_revs_prev = up;
+            return x;
+        }
+        if ((uint8_t)(a + creep) >= 0x2Au) {     /* the 6502's test, on the frame's arithmetic */
+            uint8_t jitter = (uint8_t)(bus_read(USRVIA_T2CL) & 0x07u);
+            math_lo = (uint8_t)(a + creep - 0x0Cu);
+            a = (uint8_t)(a + sim_scale((int16_t)(creep - 0x0C + jitter), 0u, &s_revsRem));
+            engine_revs = a; engine_revs_prev = a;
+        } else {
+            s_revsRem = 0u;
+            engine_revs_from(0x28u);
+        }
+        return x;
+    }
     if (x == 0) {                                /* $49A4 — pedal_mode == 1: on the throttle */
         a = (uint8_t)(a + 0x07u + (carryIn ? 1u : 0u));  /* $49A6 — ADC adds the CALLER'S carry (D=0) */
         if (a < pedal_amount && a < 0x8Cu) {     /* $49A8-$49AE — creeping up, still in range */
@@ -13471,6 +13515,13 @@ static EngineRegs engine_starter_poll(void)
         engine_revs_prev = 0x00u;
         r.x = kr.x;                              /* MOS ABI — X as OSBYTE 129 left it */
         r.y = y;
+        return r;
+    }
+    if (!sim_tick_step) {
+        /* ⭐ The starter's luck is drawn once per ENGINE frame — the slow tick — so the chance
+           of catching per real second is the original's (1-in-8, or 1-in-32 after a crash).
+           On the steps between, the engine keeps cranking where it was. */
+        r.x = kr.x; r.y = kr.y;
         return r;
     }
     {
@@ -13559,7 +13610,9 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
                 if (compare && a < engine_revs_prev) {            /* $4A22-$4A24 */
                     a = engine_revs_prev;                         /* $4A2C — revs decay from prev */
                     if (engine_revs_prev >= 0x6Cu) {              /* $4A2E-$4A30 */
-                        a = (uint8_t)(engine_revs_prev - 0x02u);  /* $4A32 (flags dead) */
+                        a = (uint8_t)(engine_revs_prev - (sim_h_q16      /* $4A32 (flags dead) */
+                            ? (uint8_t)sim_scale(2, 0u, &s_revsPrevRem)   /* ⭐ -2 a frame x h */
+                            : 0x02u));
                         engine_revs_prev = a;                     /* $4A35 */
                     }
                     disarm = 0;
@@ -15640,6 +15693,9 @@ static void steer_demand_from_slip_core(void)
     }
     /* $1601-$1606 — quarter the 16-bit magnitude (its low byte lives in STEER_SIGN). */
     uint16_t mag = (uint16_t)(slip >> 2);
+    /* ⭐ x h BEFORE the limiter below, so the clamp to the driver's angle still snaps the wheel
+       exactly to centre (sim_scale_steer; bit 0 is already clear here). */
+    if (sim_h_q16) mag = sim_scale_steer(mag);
     uint8_t  a   = (uint8_t)(mag >> 8);
     mem[STEER_SIGN] = (uint8_t)mag;
     /* $1607 CMP — carry (demand >= driver's own angle) feeds the limiter. */
@@ -15719,6 +15775,7 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
        `& $FFFE` on the word, and the second re-sign is one negate. */
     uint16_t signedProd = diffNegative ? (uint16_t)(0u - prod) : prod;   /* $1F7E PLP / $1F7F abs16 */
     uint16_t demand = (uint16_t)(signedProd & 0xFFFEu);   /* $1F82-$1F88 */
+    if (sim_h_q16) demand = sim_scale_steer(demand);      /* ⭐ a rate: x h (sim_scale_steer) */
 
     /* $1F8A-$1F93 — and by the steering's own sign: negate unless bit 0 of steer_angle_lo is set. */
     if ((car_angle_16[CAR_ANGLE_STEER] & 0x0001u) == 0u)   /* $1F8A LSR / $1F8E BCS */
@@ -15981,6 +16038,11 @@ static void read_driving_controls_core(void)
         mem[STEER_DEMAND] = (0x02u >= (uint8_t)(car_angle_16[CAR_ANGLE_STEER] >> 8))
                             ? 0x01u : 0x00u;
         mem[STEER_SIGN]   = 0x80u;
+    }
+    if (sim_h_q16) {                                   /* ⭐ the keyboard ramp is a rate: x h */
+        uint16_t d = sim_scale_steer((uint16_t)((mem[STEER_DEMAND] << 8) | mem[STEER_SIGN]));
+        mem[STEER_DEMAND] = (uint8_t)(d >> 8);
+        mem[STEER_SIGN]   = (uint8_t)d;
     }
 
     {
