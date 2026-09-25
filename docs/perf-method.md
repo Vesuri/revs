@@ -34,7 +34,7 @@ and it is printed beside the figure so the figure is never read without it.
 | **the real BBC, its own hardware** | **97.0** | 1.00× |
 | the port, bracketed | ~190 | **1.96× slower** |
 | the port, less `decode()` (phase 27, work the BBC never did) | ~173 | 1.78× |
-| **the port now**, bracketed (`docs/open-work.md` header) | **99.10** | **1.02×** — 1.09× the comparable 91.0 |
+| **the port now**, bracketed (`docs/open-work.md` header; crash reset excluded like the BBC's median does) | **95.46** | **0.98×** — 1.05× the comparable 91.0 |
 | the stated **floor**, 25 FPS | 40 | **2.43× FASTER than the original** |
 | the stated **target**, 50 FPS | 20 | **4.85× FASTER than the original** |
 
@@ -150,7 +150,7 @@ times — run at real time only at a 93.6 ms frame**, which is the frame rate Cr
 | 93.6 ms — the calibration | 1.00× real time |
 | 97.0 ms — the real BBC in this scene (its 6 ms practice pad included) | 0.965× |
 | 104.83 ms — the port at `c07761b` | 0.89× |
-| 99.10 ms — the port with the walk in asm | 0.94× |
+| 95.46 ms — the port with the walk in asm (crash reset excluded) | 0.98× |
 | 48 ms — the target | **1.95× — the game would run double speed** |
 
 ⭐ **This is why the port "feels right" once it is near BBC speed** (user, playing `c07761b`: the
@@ -2818,6 +2818,27 @@ car, which driving never produces; the horizon is rarely extended from here; and
 floor(N/d) unless d divides N+1 (that sabotage was a "no change" by arithmetic and was replaced by a
 quotient-plus-one). With the fuzzer all five fail. Brands Hatch (patched `$261A`, the C arm) passes
 too.
+
+⭐⭐⭐ **THE DRAIN WAS THE RESET — ph26's "6.9 ms" held ~3.7 ms/frame of CRASH/SESSION RESET, and
+the frame is 95.46, not 99.10** (2026-09-25, same binary, `PROBE_PHASE_RESET` = phase 63). The crash
+hold spins on `field_countdown`, which only `tick_wheel_spin` moves — inside a drained 50 Hz tick —
+so the hold ALWAYS exited with phase 26 open, and `race_resume_point` plus the whole session reset
+(`reset_driving_variables`, `build_player_car`, the track rebuilds) ran on the drain's bill until the
+next frame's first bracket. Split out: ph63 = 90 fields over the window's two resets (~0.9 s each,
+3.66 ms/frame amortised), ph26 6.86 → 3.21, `ONE BODY TICK` 1284 → 675 µs, frame 99.10 → 95.46.
+How it was found: `BODYSPLIT` put 1101 µs a cycle in phase 26's REMAINDER, which by the code is a
+loop, a claim test and a return; single-stepping 40 whole `fireIrq1vField` calls then read **119
+instructions a cycle** (reuse arm; 236/434 on the IRQ-chain cycles) — ~170 µs, a sixth of the
+bracket. ⇒ **When a bracket reads six times what single-stepping its code reads, look for what
+CLOSES it** — a phase is open from one `PROBE_PHASE` to the next wherever control goes in between.
+⚠ Consequences: (1) every frame figure before this includes the reset, and a change that also sped
+up the reset (anything in the track rebuilds) read a little better as a frame than as its own row —
+the walk's −6.06 frame against −5.50 of ph5 is that shape; quote rows. (2) The drain is not a
+lever: ~1.2 ms a frame shipping, ~1.5 more of probe transitions in a PROBES build. (3) Like-for-like
+with the BBC's 97.0 — a MEDIAN over settled frames, which excludes the crash/reset workload — the
+port is now at 0.98×. (4) ⚠ A PC-sampler profile cannot see any of this: it samples WALL time,
+which is dominated by the phase-0 holds and the resets (`add_frame_time`, `mosCall`, `drainTicks`
+itself topping the list are all the hold loop).
 
 ⭐⭐ **THE WALK'S WHOLE POINT LOOP IN 68000 ASM IS −5.50 ms OF ph5** (16.27 → 10.77, frame 105.16 →
 99.10; `src/platform/amiga/walk_m68k.s`, `make WALKASM=0` the control, 2026-09-25). The C was already

@@ -646,6 +646,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   the change giving itself back.** `draw_road` −4.79 ms read as phase 28 +3.03 and a frame total of
   only −1.39; two identical control runs read the frame total 2 ms apart. **Size a change against
   `Σ(phases 1..39) − phase 28`, or against the single phase row you changed.**
+- ⚠⚠ **THE CRASH/SESSION RESET HAS ITS OWN PHASE, 63, AND IS EXCLUDED FROM THE FRAME LIKE PHASE 0.**
+  The crash hold can only end inside a drained 50 Hz tick, so for months every reset after it was
+  billed to phase 26 ("the drain") — ~3.7 ms/frame amortised, making the drain look like a 7 ms
+  lever when a band cycle is 119 instructions. `Σ(1..39) − 28` excludes 63 by construction; a
+  change that speeds up the RESET is not a frame win, so read ph63 beside ph0 when two arms differ.
+  ⭐ **A bracket can be left OPEN across a control-flow exit — when a row is implausible, find what
+  closes it.** `docs/perf-method.md` §the drain was the reset.
 - **FPS over-reads wins — under ~3% is noise.** Quote a static cycle count or a differential ratio
   as the win; quote FPS only as the standing baseline. ⚠ Per-iteration ("t/it") phase numbers are
   not a safer alternative (~±10% trajectory noise) and must never be diffed across builds. Phase

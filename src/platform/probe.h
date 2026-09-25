@@ -121,7 +121,7 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
    plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry, 44-49
    ROADSPLIT's of draw_road and 50-58 DECODESPLIT's of RevsScreen::prepareFrame() (see the bottom of
    this file), so the table must be sized past them. */
-#define PROBE_PHASES 63
+#define PROBE_PHASES 64
 
 /* ⭐ The DISPLAY-frame wait, bracketed on its own.
  *
@@ -245,6 +245,13 @@ extern int g_viewPhaseIdx;
 #define PROBE_PHASE_DRAIN  26
 #define PROBE_PHASE_PREPARE 27
 #define PROBE_PHASE_SPIN   28
+/* ⭐⭐ THE CRASH/SESSION RESET, excluded from the frame like phase 0.  The crash hold ($1760 on
+   field_countdown) can only end inside a drained 50 Hz tick — tick_wheel_spin is what moves the
+   counter — so it always exited with phase 26 OPEN, and everything after it (race_resume_point and
+   the whole session reset: reset_driving_variables, build_player_car, the track rebuilds) was
+   billed to "the drain" until the next frame's first bracket.  That was ~5.7 of the drain's
+   6.9 ms/frame.  Single-stepped, a band cycle is 119 instructions.  Id 63 sits above everything. */
+#define PROBE_PHASE_RESET  63
 /* ⭐ `make DUALPF=1`: the cockpit layer's own bracket, carved out of the decode's.  Its own row
    because ph27 alone cannot say whether a move is the terrain conversion or the second layer —
    the same reason the rectangle painter got one (§12c). */
@@ -316,6 +323,7 @@ extern volatile unsigned long g_probeFrozenUnits[3], g_probeFrozenRuns[3], g_pro
 #define PROBE_VIEW_LINE()     ((void)0)
 #define PROBE_PHASE_DRAIN     26
 #define PROBE_PHASE_PREPARE    27
+#define PROBE_PHASE_RESET     63
 #define PROBE_PHASE_COCKPIT   30
 #define PROBE_PHASE_SPIN      28
 #define PROBE_PHASE_BODYARM   29

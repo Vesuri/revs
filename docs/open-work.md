@@ -26,8 +26,11 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 99.10 ms bracketed** (149.18 at the plan's start) — **1.02× the
-real BBC's 97.0, and 0.94× real-time game speed** (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
+**Where the frame stands:** **Σ(1..39) − ph28 = 95.46 ms bracketed** (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.98× the real BBC's 97.0 (1.05× its comparable 91.0), and 0.98× real-time game speed**.
+⚠⚠ 2026-09-25: the crash/session RESET now has its own phase (63) and is excluded like phase 0 — it had been billed to
+the drain (ph26) since the hold ends inside a drained tick; the same binary read 99.10 before the split and 95.46 after
+(ph26 6.86 → 3.21, ph63 3.66 amortised = 90 fields over two resets). Every earlier frame figure includes it (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
 FRAMERATE). 2026-09-24, one session, every arm `PROBEFIELDS=3000` with phase 0 checked equal: terrain painter in asm
 115.51 → 110.13; source scan in asm ph24 20.55 → 18.00 (quoted by its row — that pair's `ONE BODY TICK` moved, a trajectory);
 own-reset memoised ph24 → 17.68; `prepareFrame` ph27 7.65 → 6.74 (frame 108.39); the walk's width emitter in asm ph5
@@ -161,8 +164,10 @@ by certainty × size:
      six circuits pass, six sabotages caught. ⇒ What is left in ph5 (~10.8 ms against the BBC's
      21.7) is `road_edge_start`, the subdivide and the tail — re-step before going further; the
      row is now well under the 6502's.
-  2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
-     since the drain self-heals as the frame shrinks.
+  2. **The port-only rows:** `prepareFrame` ~6.4. ⛔ **The drain is NOT a lever**: its "excess" was
+     the crash reset billed to it (now phase 63). A band cycle single-steps at 119 instructions
+     (~170 µs; 236-434 on the rare cycles that run the game's IRQ chain), so the shipping drain is
+     ~1.2 ms a frame; ph26 still reads 3.21 in a PROBES build because each tick crosses two brackets.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
   4. **Then STEP 2**: the direct span-to-bitplane renderer that deletes the `$3000` intermediate.
      Re-price it after step 1.
@@ -204,9 +209,10 @@ goes first (user decision).
 
 ⇒ **The last 8 ms (48 → 40) is where the `50/N` ladder steps to 25 fps; not planned until 48.**
 
-⭐ **And `ph26`+`ph29` (12.47 ms, the 50 Hz drain) SELF-HEALS as the frame shrinks** — the body is
-a 50 Hz tick, so a 154 ms frame drains 8.78 of them and a 40 ms frame would drain 2. Never count it
-as a target; never count its disappearance as a win either.
+⭐ **And `ph26`+`ph29` (the 50 Hz drain) SELF-HEALS as the frame shrinks** — the body is a 50 Hz
+tick, so a 154 ms frame drains 8.78 of them and a 40 ms frame would drain 2. Never count it as a
+target; never count its disappearance as a win either. ⚠ Its old 12.47 ms also held the crash
+reset (phase 63 now) — the real drain is ~1.2 ms a frame at ~100 ms.
 ⭐⭐⭐ **THE DEFAULT NOW CARRIES THE WHOLE STACK — `DUALPF`, `TYRESPRITE` and `LOWOWN` are on, and
 there is no per-frame `mem[]` → bitplane conversion left (§5b).** Against the previous default
 (`DUALPF=0 TYRESPRITE=0`, which turned ownership of 117..157 off with them) that is

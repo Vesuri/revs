@@ -4162,6 +4162,9 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
                see it (determinism dumps one frame, long after the hold), so it is KEPT on
                the faithfulness argument, not a measured one. */
         } while (load_a(field_countdown) & 0x80);
+        /* The hold ends inside a drained tick (tick_wheel_spin moves the counter), so without
+           this the reset below would be billed to phase 26 — src/platform/probe.h §RESET. */
+        PROBE_PHASE(PROBE_PHASE_RESET);
 #if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
             unsigned vbiD = (unsigned)((g_vbiCount - vbi0) & 0xFFFFu);
             g_crashHolds++;

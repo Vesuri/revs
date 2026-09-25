@@ -56,7 +56,6 @@ printf "%-34s %3lu.%02lu %9lu  %lu\n", "tick_wheel_spin      (29)", \
 printf "%-34s %3lu.%02lu %9lu  %lu\n", "remainder            (26)", \
   (g_phaseTicks[26]/$f)/4006, ((g_phaseTicks[26]/$f)%4006)*100/4006, \
   (g_phaseTicks[26]/$bt)/4, g_phaseCount[26]
-printf "
-(us/cycle = ticks/body-cycle / 4.006 ticks-per-us; subtract the control from each)
-"
+printf "\n(us/cycle = ticks/body-cycle / 4.006 ticks-per-us; subtract the control from each)\n"
+printf "crash/session reset (63, excluded from the frame): %lu fields\n", g_phaseTicks[63]/80120
 printf "\ncontrol-correct every row: subtract 61 before quoting it\n"

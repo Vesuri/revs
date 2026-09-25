@@ -78,8 +78,8 @@ set $fields = g_vbiCount
 if g_probeFrozen > 0
   set $fields = $wall / 80120
 end
-printf "loop ticks %lu of %lu elapsed  (accounted %d.%01d%% + phase 0 — MUST total ~100)\n", \
-  $tot, $wall, ($tot/$eper)/10, ($tot/$eper)%10
+printf "loop ticks %lu of %lu elapsed  (accounted %d.%01d%% + phase 0 + phase 63 %d.%01d%% — MUST total ~100)\n", \
+  $tot, $wall, ($tot/$eper)/10, ($tot/$eper)%10, (g_phaseTicks[63]/$eper)/10, (g_phaseTicks[63]/$eper)%10
 # ⚠ calls MATTERS here.  Phase 0 is re-opened at L_1760, the ENGINE's own frame wait, which
 # $1753 branches past whenever $62F6 is zero.  calls=0 ⇒ that wait is never entered and phase 0
 # really is just boot; calls>0 ⇒ phase 0 is boot PLUS a per-frame engine wait and must not be
@@ -95,8 +95,12 @@ printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu = %
 # runs: a ~100-field difference means they are not the same workload.
 # This line must equal `loop ticks / loopFrames` above to ~0.1 ms — that identity is what proves
 # the brackets account for the whole frame.
-printf "FRAME = %lu ms  (wall %lu ms minus phase 0; compare THIS across builds, never wall)\n", \
-  (($wall - g_phaseTicks[0])/g_phaseFrames)/4006, ($wall/g_phaseFrames)/4006
+# ⭐ Phase 63 is the crash/session RESET that follows a hold (src/platform/probe.h §RESET) —
+# crash handling like phase 0, so it is excluded from the frame too and printed on its own.
+printf "phase 63 (crash/session reset after a hold, excluded): ticks=%lu calls=%lu = %lu fields\n", \
+  g_phaseTicks[63], g_phaseCount[63], g_phaseTicks[63]/80120
+printf "FRAME = %lu ms  (wall %lu ms minus phases 0 and 63; compare THIS across builds, never wall)\n", \
+  (($wall - g_phaseTicks[0] - g_phaseTicks[63])/g_phaseFrames)/4006, ($wall/g_phaseFrames)/4006
 # ⭐⭐ PHASE 26 IS THE 50 Hz BODY, AND ITS SIZE IS A RATIO, NOT A ROUTINE.  It runs once per
 # DISPLAY FIELD, so at ~1 painted FPS it runs ~50 times per painted frame — which is faithful (a
 # BBC's User VIA fires regardless of how long the foreground takes) and is why it can dominate a
