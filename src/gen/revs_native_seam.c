@@ -992,6 +992,15 @@ void draw_starting_lights(void)
         mem[STACK_PAGE + cpu.S] = (uint8_t)pattern;
 }
 
+/* The frame driver's paint half.  The PHA/PLA pair brackets the fill, so the residue belongs
+   with the paint, not with the walk. */
+void starting_lights_paint(void)
+{
+    int pattern = starting_lights_paint_core();
+    if (pattern >= 0)
+        mem[STACK_PAGE + cpu.S] = (uint8_t)pattern;
+}
+
 void update_horizon_band(void)
 {
     /* $4F44 — result-only (exit regs/flags dead at both callers).  The shim reproduces the

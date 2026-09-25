@@ -578,6 +578,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
 void    stage_nearby_car_at_core(uint8_t orderIndex);
 void    move_and_draw_cars_core(void);
+void    move_and_draw_cars_steps(unsigned steps);   /* the frame driver's: `steps` moves, one draw */
 void draw_car_field_core(void);
 void check_car_pair_core(void);
 void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
@@ -850,6 +851,9 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 int draw_starting_lights_core(void);
+int starting_lights_advance_core(void);   /* the slow-tick half: walk the sequence */
+int starting_lights_paint_core(void);     /* the per-paint half: the column */
+void starting_lights_paint(void);         /* ...with the $7B83 PHA residue */
 void draw_corner_marker_core(uint16_t offset, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
 void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
 void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);

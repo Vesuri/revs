@@ -4222,6 +4222,17 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
 
 /* The idiomatic core.  `depth` is how much of the session state the FIRST pass resets, which
    is the only thing the 6502 prologue decides before the loop starts. */
+/* ⭐⭐ THE SIMULATION CLOCK — how many simulation steps a painted frame covers, and which of
+   them carry the SLOW TICK (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).
+   A step advances game time: the player's controls and driving model, and the other cars'
+   moves.  The slow tick is the engine's own 93.6 ms frame, and it runs what counts frames
+   with the original constants — the race clock (so lap times stay the original's), the lights.
+   ⭐ LEGACY MODE, the only one so far: one step per painted frame, every step a slow tick, and
+   h = 1.  That IS the engine's loop, which is what keeps the whole determinism family a valid
+   gate on the split; the decoupled modes replace these two answers, not the loop. */
+static inline unsigned sim_steps_due(void)     { return 1u; }
+static inline int      sim_slow_tick_due(void) { return 1; }
+
 uint8_t race_main_loop_core(RestartDepth depth)
 {
 
@@ -4282,20 +4293,34 @@ uint8_t race_main_loop_core(RestartDepth depth)
             /* ⭐ Phase 1 takes nothing: the four ambient flag bits it used to be handed
                (scale_wing_settings' C and V above, plus D = 0 and I = 0) went only into the
                seeder's $6362 PHP residue, which is stack residue and no longer reproduced. */
-            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
-            PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
-            /* ⭐ PHASES 3 AND 4 TALK DIRECTLY, NOT THROUGH mem[].  Both are native and adjacent,
-               so the steering angle passes in car_angle_16[2]: the `_frame` entries drop phase 3's
-               closing publish of the three car angles and phase 4's re-import of them and the
-               fifteen model-state elements — 42 byte accesses a frame that only went out to mem[]
-               and straight back.  The 6502-ABI shims keep both marshals.
-               ⚠ Every relocated value is still published once a frame by phase 4's own output
-               marshals, so mem[] stays the mirror the differential compares.
-               ⚠⚠ This is the pair `make determinism-steer` exists for: with the wheel straight the
-               stale and fresh values are equal, so dropping either publish is invisible to
-               validate, determinism, -drive and -crash alike. */
-            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
-            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
+            /* ⭐⭐ THE SIMULATION STEPS this painted frame covers, and the slow tick among them
+               (sim_steps_due, above).  Everything in this loop advances game time; everything
+               after it happens once per painted frame. */
+            const unsigned steps = sim_steps_due();
+            for (unsigned step = 0; step < steps; step++) {
+                if (sim_slow_tick_due()) {
+                    PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
+                    PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
+                }
+                /* ⭐ PHASES 3 AND 4 TALK DIRECTLY, NOT THROUGH mem[].  Both are native and adjacent,
+                   so the steering angle passes in car_angle_16[2]: the `_frame` entries drop phase 3's
+                   closing publish of the three car angles and phase 4's re-import of them and the
+                   fifteen model-state elements — 42 byte accesses a frame that only went out to mem[]
+                   and straight back.  The 6502-ABI shims keep both marshals.
+                   ⚠ Every relocated value is still published once a frame by phase 4's own output
+                   marshals, so mem[] stays the mirror the differential compares.
+                   ⚠⚠ This is the pair `make determinism-steer` exists for: with the wheel straight the
+                   stale and fresh values are equal, so dropping either publish is invisible to
+                   validate, determinism, -drive and -crash alike. */
+                PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
+                PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
+            }
+            /* The light column is a view SOURCE and the sweep consumes sources, so it is painted
+               on every frame from the last walked arm.  ⚠ In the 6502's order it came before
+               phases 3/4; neither reads or writes column 37's ten cells, and the one shared
+               cell, math_lo, is written by the WALK (still in its place), so the move is
+               byte-exact — which `make determinism-race` (the only trajectory with lights) gates. */
+            PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  starting_lights_paint();
             /* ⚠ the SHIM, not the core: this driver is the one caller of these two that is not
                a transliterated parent, and the shim is where the relocated wide values (hypot_max,
                bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
@@ -4342,7 +4367,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
                explanation three (no change at all), which is the argument above, not a gap. */
             draw_track_object_core(0x17u);
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
-            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars_core();
+            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars_steps(steps);
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18);
 #if defined(REVS_EDGE_START) && !defined(REVS_EDGE_START_CHECK)
             /* ⭐ `make EDGESTART=1` — the boundary tables WITHOUT the 136-cell gap fill (§what
@@ -15206,12 +15231,20 @@ uint8_t menu_wait_key_core(uint8_t count)
    cell's exit value still written.
    Returns the painted pattern (the byte the 6502 PHA'd), or -1 on the early exits
    so the shim can reproduce that push's stack residue; exit regs/flags are dead at
-   the sole (native) caller, race_main_loop. */
-int draw_starting_lights_core(void)
-{
-    /* $42C0 = view_src_blocks column 37, offset $40 — the ten-row light column. */
-    const uint16_t light_col = (uint16_t)(MEM_view_src_blocks + 37u * 0x80u + 0x40u);
+   the sole (native) caller, race_main_loop.
+   ⭐ TWO HALVES, because they run at DIFFERENT RATES once the simulation is decoupled from
+   painting (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  Walking the sequence is
+   elapsed time — a 64-frame dwell, one state per frame — so it belongs to the slow tick.
+   Painting the column is a view SOURCE write, and the sweep consumes sources destructively,
+   so it has to happen on every painted frame whether or not a tick fell inside it.  The
+   paint repeats the last walked arm; draw_starting_lights_core is the two in their 6502
+   order, which is what the fixture and the oracle path run. */
+static uint8_t s_lightPattern, s_lightEor;
+static int     s_lightLit;                          /* the last walk reached the paint */
 
+int starting_lights_advance_core(void)
+{
+    s_lightLit = 0;
     if (!(session_is_race & 0x80u)) return -1;      /* $7B4A — race only */
     uint8_t state = start_light_state;              /* $7B4E */
     if (state == 0) return -1;                      /* $7B50 — lights dark */
@@ -15242,7 +15275,22 @@ int draw_starting_lights_core(void)
 
     start_light_state = new_state;                  /* $7B81 */
     math_lo = eor;                                  /* $7B84 — the 6502 parked Y here across the fill */
+    s_lightPattern = pattern;
+    s_lightEor     = eor;
+    s_lightLit     = 1;
+    return (int)pattern;
+}
 
+/* The paint half: the last walked arm's column, or nothing once the lights are dark.
+   Returns the pattern painted (the PHA'd byte), or -1 when nothing was painted. */
+int starting_lights_paint_core(void)
+{
+    /* $42C0 = view_src_blocks column 37, offset $40 — the ten-row light column. */
+    const uint16_t light_col = (uint16_t)(MEM_view_src_blocks + 37u * 0x80u + 0x40u);
+    const uint8_t  pattern   = s_lightPattern;
+    const uint8_t  eor       = s_lightEor;
+
+    if (!s_lightLit) return -1;
     { int i;
       for (i = 9; i >= 0; i--) { mem[light_col + i] = 0xF0u;   /* $7B8A — clear ten rows */
                                  PROBE_SHAPE_MARK(light_col + i);
@@ -15258,6 +15306,12 @@ int draw_starting_lights_core(void)
       }
     }
     return (int)pattern;
+}
+
+int draw_starting_lights_core(void)
+{
+    (void)starting_lights_advance_core();
+    return starting_lights_paint_core();
 }
 
 /* $4F23 / $4F39  irq1v_release + enter_mos_text_mode — THE END OF A RACE  (twin #175)
@@ -17710,7 +17764,12 @@ void reject_all_object_slots_core(void)
    And nothing is bought by paying it — the delay exists to slow practice to RACE pacing, and the
    port is already 12x below 50 Hz.  Keep the memory effect, drop the cycles.
    (docs/perf-method.md §twin #179's delay loop) */
-void move_and_draw_cars_core(void)
+/* ⭐ `steps` is how many simulation steps this painted frame covers (docs/open-work.md
+   §FRAME-RATE-INDEPENDENT SIMULATION): the other cars MOVE once per step and are DRAWN once.
+   Their moves stay here, after the car-ahead un-reject, rather than beside the player's step,
+   because drive_one_car's across-track nudge reads that slot's reject bit — so this is the
+   one place in the frame where they see the state they always saw. */
+void move_and_draw_cars_steps(unsigned steps)
 {
     if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
         /* $262D-$2636 is a 1536-iteration busy delay whose ONLY memory effect is math_lo
@@ -17724,7 +17783,8 @@ void move_and_draw_cars_core(void)
     uint8_t aheadSlot = mem[MEM_car_order + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
     mem[MEM_car_flags_shape + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
 
-    drive_other_cars();                                        /* $2649 — the per-car update engine */
+    while (steps-- != 0u)
+        drive_other_cars();                                    /* $2649 — the per-car update engine */
     car_distance_marshal_in();                         /* check_car_pair walks every pair in
                                                           car_order, so the whole distance array */
     check_car_pair_core();                             /* $264C — overtaking / position changes */
@@ -17752,6 +17812,8 @@ void move_and_draw_cars_core(void)
     draw_car_field_core();
     stage_nearby_car_at_core(car_ahead);               /* $2679/$267B — and the car ahead */
 }
+
+void move_and_draw_cars_core(void) { move_and_draw_cars_steps(1u); }
 
 /* $66DF  draw_car_field — DRAW EVERY OTHER CAR, BACK TO FRONT  (twin #180)
    The frame's other-car draw pass, and move_and_draw_cars' last call but one.  Three groups,

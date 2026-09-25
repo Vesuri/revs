@@ -359,6 +359,8 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
+
+.PHONY: determinism-lights determinism-lights-record
 .PHONY: todo cpu-lint macro-lint all clean gen validate image runtime dashcode sweep endian-lint refloop bbcprof refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
@@ -564,6 +566,55 @@ determinism-race:
 	   echo "determinism-race: 64K byte-identical (stack scratch aside) at frame $(DET_RACE_FRAME), THE RACE PROPER (session_is_race = \$$80) — PASS"; \
 	 else \
 	   echo "determinism-race: FAIL — the race trajectory diverged"; exit 1; \
+	 fi
+
+# ⭐ …AND THE STARTING LIGHTS, WHICH NO OTHER TRAJECTORY CAN SEE.  The light column is a view
+# SOURCE the sweep consumes within the same frame, and the sequence is over ~150 frames after the
+# race starts, so by determinism-race's frame 13000 it has left no trace: skipping the paint
+# entirely PASSES that gate (measured 2026-09-25).  The race proper starts at frame ~3290 on this
+# script and the lights run to ~3458; frame 3375 is mid-sequence, the painted column is on
+# screen, and the same sabotage changes 30 frame-buffer bytes there.  It is the gate on the
+# lights' walk/paint split (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION), whose walk
+# runs on the slow tick once a painted frame covers several simulation steps.
+# ⚠ The frame is a property of the autorun script: if the script changes, re-find the window
+# (start_light_state $6D bit 7 set, with session_is_race $6C = $80) before re-recording.
+DET_LIGHTS_REF   := tmp/determinism/ref_lights.mem
+DET_LIGHTS_RUN   := tmp/determinism/lights
+DET_LIGHTS_FRAME ?= 3375
+
+determinism-lights-record:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory RELEASE=1 RACEPROPER=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_LIGHTS_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_LIGHTS_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_LIGHTS_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@python3 -c "import sys; b=open('$(DET_LIGHTS_RUN).mem.$(DET_LIGHTS_FRAME)','rb').read(); \
+	  sys.exit(0 if b[0x6C]==0x80 and b[0x6D]&0x80 else 'determinism-lights: frame $(DET_LIGHTS_FRAME) is not inside the light sequence — re-find the window')"
+	@cp $(DET_LIGHTS_RUN).mem.$(DET_LIGHTS_FRAME) $(DET_LIGHTS_REF)
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
+	@echo "determinism-lights: recorded frame $(DET_LIGHTS_FRAME) -> $(DET_LIGHTS_REF)"
+
+determinism-lights:
+	@test -f $(DET_LIGHTS_REF) || \
+	  { echo "no reference — run 'make determinism-lights-record' first"; exit 1; }
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory RELEASE=1 RACEPROPER=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_LIGHTS_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_LIGHTS_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_LIGHTS_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@python3 tools/det_compare.py $(DET_LIGHTS_REF) $(DET_LIGHTS_RUN).mem.$(DET_LIGHTS_FRAME) \
+	  && r=PASS || r=FAIL; \
+	 $(MAKE) --no-print-directory clean >/dev/null; \
+	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	 if [ "$$r" = PASS ]; then \
+	   echo "determinism-lights: 64K byte-identical (stack scratch aside) at frame $(DET_LIGHTS_FRAME), THE STARTING LIGHTS ON SCREEN — PASS"; \
+	 else \
+	   echo "determinism-lights: FAIL — the light sequence diverged"; exit 1; \
 	 fi
 
 # ⭐⭐ …AND A FIFTH TRAJECTORY, WITH THE WHEEL TURNED.  The four above all drive in a STRAIGHT
