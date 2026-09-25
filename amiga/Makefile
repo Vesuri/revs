@@ -1039,6 +1039,19 @@ endif
 NEEDLE ?= 1
 ifeq ($(NEEDLE),1)
 EXTRA_DEFINES += -DREVS_NEEDLE_PLANES
+# ⭐⭐ `NDLASM=1` (the DEFAULT) — plot_line_octant's needle DDA in 68000 assembly
+# (src/platform/amiga/needle_m68k.s).  `make NDLASM=0` is the control.  ⭐⭐ `make NDLASMCHECK=1`
+# (a PROBES build) runs the C loop and the asm on the same 64 KB every line, after a fuzzer
+# (amiga/ndl_check.gdb); `NDLASM_SABOTAGE=N` assembles defect N for it to catch.
+NDLASM ?= 1
+ifeq ($(NDLASM),1)
+EXTRA_DEFINES += -DREVS_NDL_ASM
+ASM_SRCS += $(AMIGA_SRC)/needle_m68k.s
+ifeq ($(NDLASMCHECK),1)
+EXTRA_DEFINES += -DREVS_NDL_ASM_CHECK
+PROBE_SYMS_NDLASM = g_ndlChecks g_ndlMismatch g_ndlMismatchAt g_ndlFuzzCases g_ndlFuzzMismatch g_ndlFuzzFull g_ndlFuzzOutside g_ndlBad
+endif
+endif
 PROBE_SYMS_NEEDLE = g_needleOutside g_needleMaskBad g_needleOverflow g_needlePaints \
                     g_needleRenders g_needlePoolFull g_needleTooWide g_needleColourBad \
                     g_needlePixLast g_needlePen
@@ -1221,6 +1234,7 @@ endif
 GEOASM_SABOTAGE ?= 0
 WALKASM_SABOTAGE ?= 0
 EDGEASM_SABOTAGE ?= 0
+NDLASM_SABOTAGE ?= 0
 # ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
 # the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
 # ⚠ Diagnostic only; no framerate may be quoted from such a build.
@@ -1598,7 +1612,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM)
+PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM) $(PROBE_SYMS_NDLASM)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
@@ -1737,6 +1751,10 @@ obj/walk_m68k.o : $(AMIGA_SRC)/walk_m68k.s
 obj/edge_m68k.o : $(AMIGA_SRC)/edge_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(EDGEASM_SABOTAGE) -o $@ "$<"
+
+obj/needle_m68k.o : $(AMIGA_SRC)/needle_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(NDLASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

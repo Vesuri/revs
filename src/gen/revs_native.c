@@ -5251,7 +5251,23 @@ void undraw_plot_lines_core(void)
     plot_undo_count = 0u;                        /* $5137 STA plot_undo_count with Y = 0 */
 }
 
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_NEEDLE_PLANES) && defined(REVS_NDL_ASM) \
+    && !defined(REVS_NEEDLE_VERIFY)
+/* ⭐⭐ THE NEEDLE DDA RUNS IN 68000 ASSEMBLY — src/platform/amiga/needle_m68k.s, whose banner has the
+   shape.  The `for (;;)` below stays the reference (the host runs it, `make NDLASM=0` is the control,
+   `make NDLASMCHECK=1` runs both on the same 64 KB every call); s_ndlRef selects it inside the check. */
+#define REVS_NDL_ASM_ON 1
+unsigned needle_dda_m68k(unsigned x, unsigned y, unsigned acc, unsigned po, unsigned line,
+                         unsigned cell);
+static int s_ndlRef;
+#endif
+#if defined(REVS_NDL_ASM_ON) && defined(REVS_NDL_ASM_CHECK)
+static void plot_line_octant_body(uint8_t entryScanline);
+void plot_line_octant_core(uint8_t entryScanline);
+static void plot_line_octant_body(uint8_t entryScanline)
+#else
 void plot_line_octant_core(uint8_t entryScanline)
+#endif
 {
     /* The producers (dial_needle_angle, draw_dash_needle) still seed $70/$71 as bytes — they run
        once a frame, so the pointer is read in here once and written back at every exit. */
@@ -5293,6 +5309,18 @@ void plot_line_octant_core(uint8_t entryScanline)
        planted case 2155 walks addr=$0074 twelve times). */
     uint8_t acc = (uint8_t)(0u - mem[MEM_point_delta_hi]);     /* $5214-5219 acc = -delta; C then cleared */
 
+#ifdef REVS_NDL_ASM_ON
+    if (!s_ndlRef) {
+        const unsigned outside = needle_dda_m68k(x, y, acc, ndlPo, ndlLine, ndlCell);
+        if (outside != 0xFFFFu) {                /* $FFFF: not one of the eight octants */
+#ifdef REVS_SPAN_STATS
+            g_needleOutside += outside;
+#endif
+            plot_ptr_marshal_out();
+            return;
+        }
+    }
+#endif
     for (;;) {
         /* $521a DDA step: acc += incr, carry-in always 0 (CLC at $5219 / $529a). */
         unsigned sum = (unsigned)acc + math_lo;            /* re-read: the plot can clobber $74 */
@@ -5423,6 +5451,163 @@ void plot_line_octant_core(uint8_t entryScanline)
 #undef NDL_YSTEP
 #undef NDL_XSTEP
 }
+
+#if defined(REVS_NDL_ASM_ON) && defined(REVS_NDL_ASM_CHECK)
+volatile unsigned long g_ndlChecks       = 0;
+volatile unsigned long g_ndlMismatch     = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_ndlMismatchAt   = 0;   /* first differing address; $10000 the list, $10001 the pointer */
+volatile unsigned long g_ndlFuzzCases    = 0;
+volatile unsigned long g_ndlFuzzMismatch = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_ndlFuzzFull     = 0;   /* cases that filled the list — must be non-zero */
+volatile unsigned long g_ndlFuzzOutside  = 0;   /* cases with a pixel off the display — must be non-zero */
+volatile unsigned long g_ndlBad[8];              /* the first bad case: what (bits), count C/A, outside C/A, octant|x<<8|line<<16, math_hi|ptr<<16 */
+static unsigned long s_ndlCaseInputs[2];
+static uint8_t s_ndlBefore[65536] __attribute__((aligned(4))), s_ndlAfterC[65536] __attribute__((aligned(4)));
+static uint8_t s_ndlFuzzSave[65536] __attribute__((aligned(4)));
+
+typedef struct {
+    unsigned short po[REVS_NEEDLE_MAX], pix[REVS_NEEDLE_MAX];
+    unsigned char  count, marks, markAt[REVS_NEEDLE_MARKS];
+    uint16_t       ptr;
+    unsigned long  outside;
+} NdlState;
+static void ndl_save(NdlState* st)
+{
+    memcpy(st->po, g_needlePo, sizeof st->po);  memcpy(st->pix, g_needlePix, sizeof st->pix);
+    memcpy(st->markAt, g_needleMarkAt, sizeof st->markAt);
+    st->count = g_needleCount;  st->marks = g_needleMarks;  st->ptr = plot_ptr_v;
+    st->outside = g_needleOutside;
+}
+static void ndl_load(const NdlState* st)
+{
+    memcpy(g_needlePo, st->po, sizeof st->po);  memcpy(g_needlePix, st->pix, sizeof st->pix);
+    memcpy(g_needleMarkAt, st->markAt, sizeof st->markAt);
+    g_needleCount = st->count;  g_needleMarks = st->marks;  plot_ptr_v = st->ptr;
+    g_needleOutside = st->outside;
+}
+
+/* No memcmp on this target's link — a byte compare, for a few dozen bytes a check. */
+static int ndl_differ(const void* a, const void* b, unsigned n)
+{
+    const unsigned char* p = (const unsigned char*)a;
+    const unsigned char* q = (const unsigned char*)b;
+    while (n--) if (*p++ != *q++) return 1;
+    return 0;
+}
+
+/* The C loop, then the asm, from the same 64 KB and the same list; the asm's result is kept. */
+static void ndl_compare(uint8_t entryScanline, volatile unsigned long* bad)
+{
+    NdlState before, afterC, afterA;
+    unsigned i, n;
+    ndl_save(&before);
+    memcpy(s_ndlBefore, (const void*)mem, sizeof s_ndlBefore);
+    s_ndlRef = 1;
+    plot_line_octant_body(entryScanline);
+    s_ndlRef = 0;
+    ndl_save(&afterC);
+    memcpy(s_ndlAfterC, (const void*)mem, sizeof s_ndlAfterC);
+    memcpy((void*)mem, s_ndlBefore, sizeof s_ndlBefore);
+    ndl_load(&before);
+    plot_line_octant_body(entryScanline);
+    ndl_save(&afterA);
+    n = afterC.count < REVS_NEEDLE_MAX ? afterC.count : REVS_NEEDLE_MAX;   /* entries that exist */
+    if (!*bad && bad == &g_ndlFuzzMismatch) {
+        unsigned long what = 0;
+        if (afterA.count != afterC.count) what |= 1;
+        if (afterA.marks != afterC.marks) what |= 2;
+        if (afterA.outside != afterC.outside) what |= 4;
+        if (ndl_differ(afterA.po, afterC.po, n * sizeof afterC.po[0])) what |= 8;
+        if (ndl_differ(afterA.pix, afterC.pix, n * sizeof afterC.pix[0])) what |= 16;
+        if (ndl_differ(afterA.markAt, afterC.markAt, sizeof afterA.markAt)) what |= 32;
+        if (afterA.ptr != afterC.ptr) what |= 64;
+        if (what) {
+            g_ndlBad[0] = what; g_ndlBad[1] = afterC.count; g_ndlBad[2] = afterA.count;
+            g_ndlBad[3] = afterC.outside - before.outside; g_ndlBad[4] = afterA.outside - before.outside;
+            g_ndlBad[5] = s_ndlCaseInputs[0]; g_ndlBad[6] = s_ndlCaseInputs[1]; g_ndlBad[7] = before.count;
+        }
+    }
+    if (afterA.count != afterC.count || afterA.marks != afterC.marks
+        || afterA.outside != afterC.outside
+        || ndl_differ(afterA.markAt, afterC.markAt, sizeof afterA.markAt)
+        || ndl_differ(afterA.po, afterC.po, n * sizeof afterC.po[0])
+        || ndl_differ(afterA.pix, afterC.pix, n * sizeof afterC.pix[0])) {
+        if (!*bad) g_ndlMismatchAt = 0x10000u;
+        (*bad)++;
+    } else if (afterA.ptr != afterC.ptr) {
+        if (!*bad) g_ndlMismatchAt = 0x10001u;
+        (*bad)++;
+    } else {
+        /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        const uint32_t* a = (const uint32_t*)(const void*)mem;
+        const uint32_t* c = (const uint32_t*)(const void*)s_ndlAfterC;
+        for (i = 0; i < 65536u / 4u; i++)
+            if (a[i] != c[i]) {
+                unsigned j = i * 4u;
+                while (mem[j] == s_ndlAfterC[j]) j++;
+                if (!*bad) g_ndlMismatchAt = j;
+                (*bad)++;
+                break;
+            }
+    }
+}
+
+/* ⭐ THE FUZZER, once, before the first real line.  Driving draws two lines a frame from a narrow
+   band of angles, so each case randomises every input the DDA reads — the octant, the sub-cell
+   column (including the ones past 7 and below 0 that step a cell), the entry line (including the
+   ones that step a character row), the delta, the increment, the count, the mask base, the plot
+   pointer (low bytes 0..7 reach the 6502's borrow re-test) and how full the list already is. */
+static void ndl_fuzz(void)
+{
+    uint32_t r = 0xA54FF53Au;
+    unsigned n;
+    NdlState save;
+#define NDL_RND() (r ^= r << 13, r ^= r >> 17, r ^= r << 5, (unsigned)r)
+    ndl_save(&save);
+    memcpy(s_ndlFuzzSave, (const void*)mem, sizeof s_ndlFuzzSave);
+    for (n = 0; n < 1500u; n++) {
+        const unsigned k = NDL_RND(), m = NDL_RND();
+        const unsigned long out0 = g_needleOutside;
+        shared_temp_76           = (uint8_t)(k & 7u);
+        shared_temp_77           = (uint8_t)((k & 0x10u) ? (k >> 8) : ((k >> 8) & 7u));
+        mem[MEM_point_delta_hi]  = (uint8_t)(k >> 16);
+        math_lo                  = (uint8_t)(k >> 24);
+        math_hi                  = (uint8_t)((m & 0x40u) ? m : (m & 0x3Fu));
+        hypot_min_hi             = (uint8_t)((m & 0x80u) ? (m >> 8) : 0x04u);
+        plot_ptr_v               = (uint16_t)((m & 0x100u) ? (m >> 16)
+                                              : (0x5A80u + ((m >> 16) & 0x1FFFu)));
+        plot_ptr_marshal_out();
+        /* ≤ REVS_NEEDLE_MAX: the append stops at the bound, so the game's count never passes it */
+        {   /* ⚠ no `%`: it links a 32-bit software divide — a mask and a clamp instead */
+            unsigned c = (k & 0x20u) ? (40u + ((m >> 26) & 31u)) : ((m >> 26) & 7u);
+            if (c > REVS_NEEDLE_MAX) c = REVS_NEEDLE_MAX;
+            g_needleCount = (uint8_t)c;
+        }
+        g_needleMarks            = (uint8_t)((m >> 9) & 3u);
+        {
+            const uint8_t line = (uint8_t)((k & 0x40u) ? (m >> 10) : ((m >> 10) & 7u));
+            s_ndlCaseInputs[0] = shared_temp_76 | ((unsigned long)shared_temp_77 << 8)
+                               | ((unsigned long)line << 16) | ((unsigned long)hypot_min_hi << 24);
+            s_ndlCaseInputs[1] = math_hi | ((unsigned long)math_lo << 8) | ((unsigned long)plot_ptr_v << 16);
+            ndl_compare(line, &g_ndlFuzzMismatch);
+        }
+        if (g_needleCount >= REVS_NEEDLE_MAX) g_ndlFuzzFull++;
+        if (g_needleOutside != out0)          g_ndlFuzzOutside++;
+        g_ndlFuzzCases++;
+        memcpy((void*)mem, s_ndlFuzzSave, sizeof s_ndlFuzzSave);
+    }
+#undef NDL_RND
+    ndl_load(&save);
+}
+
+void plot_line_octant_core(uint8_t entryScanline)
+{
+    static int fuzzed;
+    if (!fuzzed) { fuzzed = 1; ndl_fuzz(); }
+    g_ndlChecks++;
+    ndl_compare(entryScanline, &g_ndlMismatch);
+}
+#endif
 
 /* $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE (twin #156)
 

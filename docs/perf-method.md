@@ -2819,6 +2819,22 @@ floor(N/d) unless d divides N+1 (that sabotage was a "no change" by arithmetic a
 quotient-plus-one). With the fuzzer all five fail. Brands Hatch (patched `$261A`, the C arm) passes
 too.
 
+⭐ **THE NEEDLE DDA IN 68000 ASM IS −1.38 ms OF ph32** (the tail, 4.87 → 3.49 — level with the BBC's
+3.4; frame 94.83 → 93.30; `src/platform/amiga/needle_m68k.s`, `make NDLASM=0` the control,
+2026-09-25). The needles have been prerendered sprites since §12d, but `plot_line_octant_core` still
+walked every pixel every frame to build the list the sprite cache is keyed on, at ~76 instructions a
+pixel over ~35 pixels: two `switch`es on the self-modified opcode bytes per pixel, `math_lo`
+re-read and `math_hi` decremented in `mem[]` (needed only on the 6502-plot arm, where a pixel can
+land on them), four scratch stores and the append's global count per pixel. The asm picks one of
+eight octant loops once and keeps everything in registers (the counter shares a register with the
+increment). Per-item rule applied BEFORE writing: 76 against a ~15-instruction minimum. Gate: `make
+NDLASMCHECK=1` + `amiga/ndl_check.gdb` — C loop vs asm on the same 64 KB, the plot pointer and the
+whole pixel list, 300 real lines plus a 1500-case fuzzer (list full 515×, off-display 813×); four
+sabotages caught. ⚠ The fuzzer's first version set the list count past its bound (64), which the
+game can never reach, and the compare then read past the arrays — a check bug that looked like 752
+mismatches. ⇒ **Fuzz inside the INVARIANTS the producer maintains, and bound the compare by them.**
+⚠ Circuit-independent code (the same dials on every track), so it was not re-run per circuit.
+
 ⭐ **`fill_dash_edge_columns` IN 68000 ASM IS ONLY −0.75 ms OF ph18** (5.88 → 5.13, frame 95.45 →
 94.85; `src/platform/amiga/edge_m68k.s`, `make EDGEASM=0` the control, 2026-09-25). Gate: `make
 EDGECHECK=1` + `amiga/edge_check.gdb`, all 64 KB, both plot pointers and the exit registers every

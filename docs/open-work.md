@@ -26,7 +26,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 94.85 ms bracketed** (after `fill_dash_edge_columns` in asm, ph18 5.88 → 5.13) (149.18 at the plan's start, which also carried
+**Where the frame stands:** **Σ(1..39) − ph28 = 93.30 ms bracketed** (after `fill_dash_edge_columns` in asm, ph18 5.88 → 5.13, and the needle DDA in asm, ph32 4.87 → 3.49) (149.18 at the plan's start, which also carried
 ~3-4 ms of crash reset — see below) — **0.98× the real BBC's 97.0 (1.05× its comparable 91.0), and 0.98× real-time game speed**.
 ⚠⚠ 2026-09-25: the crash/session RESET now has its own phase (63) and is excluded like phase 0 — it had been billed to
 the drain (ph26) since the hold ends inside a drained tick; the same binary read 99.10 before the split and 95.46 after
@@ -168,7 +168,8 @@ by certainty × size:
      the crash reset billed to it (now phase 63). A band cycle single-steps at 119 instructions
      (~170 µs; 236-434 on the rare cycles that run the game's IRQ chain), so the shipping drain is
      ~1.2 ms a frame; ph26 still reads 3.21 in a PROBES build because each tick crosses two brackets.
-  3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
+  3. ✅ **The tail** is at parity (3.49 vs 3.4) — the needle DDA was 2.7k instructions of it, now asm.
+     **Sign/object** (4.6 vs 2.9): single-step it next.
   4. **Then STEP 2**: the direct span-to-bitplane renderer that deletes the `$3000` intermediate.
      Re-price it after step 1.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
