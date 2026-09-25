@@ -13782,50 +13782,27 @@ static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
    three calls walk components 2, 1, 0.  math_lo, math_hi and shared_temp_76 are left as
    scratch, and the second subtract's flags are the routine's exit flags. */
 
-SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift)
+/* ⭐ EXIT ABI: NONE.  Its one native caller (build_road_sign_core) reads no exit, and the oracle
+   that reaches the shim (build_road_sign__t6502) reloads A and Y at once and needs only X, which
+   this routine never touches — so the A/Y/N/Z/V/C the twin used to replay were working notes.
+   The scratch cells keep the values the 6502 leaves. */
+void build_sign_origin_core(uint8_t offset, uint8_t shift)
 {
-    uint32_t staged;
-    unsigned places;
-    uint8_t  component;
-
-    /* $4D21-$4D2B — (sign : value : 0), the sign taken from bit 7 of `offset`.  The 6502 staged
-       it through PHA/PLA only to test its sign across the two zeroing stores; the pushed byte at
-       $0100+S is dead stack residue (nothing reads it back), so the twin stages it in a local and
-       reads bit 7 directly.  det_compare skips $01B8..$01FF and the fixture ignores $01FF for the
-       residue the oracle still leaves there. */
-    math_lo        = 0x00u;
-    shared_temp_76 = 0x00u;
-    staged = ((uint32_t)offset << 8);
-    if (offset & 0x80u) { staged |= 0xFF0000u; shared_temp_76 = 0xFFu; }
-
-    /* $4D2D-$4D33 — LSR / ROR / ROR, `shift` times, feeding zeros in at the top. */
-    places = shift ? shift : 256u;
+    /* $4D21-$4D35 — (sign : offset : 0) shifted right `shift` times, 0 meaning 256.  The low two
+       bytes are the signed offset x 256 >> shift; the top byte (shared_temp_76) is only the sign. */
+    uint32_t staged = ((uint32_t)offset << 8) | ((offset & 0x80u) ? 0xFF0000u : 0u);
+    unsigned places = shift ? shift : 256u;
     staged = (places >= 24u) ? 0u : (staged >> places);
-    shared_temp_76 = (uint8_t)(staged >> 16);             /* the loop shifts it too */
+    shared_temp_76 = (uint8_t)(staged >> 16);
     math_lo        = (uint8_t)staged;
-    math_hi        = (uint8_t)(staged >> 8);              /* $4D35 */
+    math_hi        = (uint8_t)(staged >> 8);                /* $4D35 */
 
-    /* $4D37-$4D4C — subtract it from the camera's own component, into origin 6, as ONE 16-bit
-       subtract.  Y is left as the component index; the high SBC's flags are the routine's exit
-       flags, replayed from the high byte (6502 Z is the high byte alone, not the word). */
-    component = shared_temp_77;
+    /* $4D37-$4D4C — the camera's component minus it, into the sign's own origin, one word.
+       The component cursor walks down: the caller seeds 2. */
+    uint8_t component = shared_temp_77;
     shared_temp_77 = (uint8_t)(component - 1u);
-
-    uint16_t wm   = view_origin_16[component];              /* the camera component, one word */
-    uint16_t ws   = (uint16_t)(((uint16_t)math_hi << 8) | math_lo);
-    uint16_t diff = (uint16_t)(wm - ws);
-    view_origin_16[VIEW_ORIGIN_STRIDE + component] = diff;  /* the sign's own origin, one word */
-    uint8_t hiR = (uint8_t)(diff >> 8);
-
-    uint8_t hiM = (uint8_t)(wm >> 8);
-    SignOriginExit e;
-    e.a = hiR;
-    e.y = component;
-    e.c = (wm >= ws) ? 1u : 0u;                          /* no borrow out of the word */
-    e.v = (uint8_t)((((hiM ^ math_hi) & (hiM ^ hiR)) >> 7) & 1u);
-    e.n = (hiR >> 7) & 1u;
-    e.z = (hiR == 0u);
-    return e;
+    view_origin_16[VIEW_ORIGIN_STRIDE + component] =
+        (uint16_t)(view_origin_16[component] - (uint16_t)staged);
 }
 
 /* $2AB3  note_object_contact — IS THIS OBJECT A COLLISION CANDIDATE?  (twin #92)

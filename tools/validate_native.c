@@ -11060,6 +11060,9 @@ static int test_road_sign(void)
                parts of its exit that depended on the exponent loop — are argued dead at every
                caller (the audit is at write_object_slot_core), so A/Y/N/Z/S are compared. */
             if (i == 4) caseMask = LIVE_A | LIVE_Y | LIVE_S | LIVE_N | LIVE_Z;
+            /* build_sign_origin (i==3): exit dead at its caller and at the oracle's (which needs
+               only X, untouched) — the argument is at build_sign_origin_core. */
+            if (i == 3) caseMask = LIVE_X | LIVE_S;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 caseMask, t, &printed);
         }
@@ -11097,7 +11100,7 @@ static int test_road_sign(void)
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=%s  "
                "(%d decimal, %d SMC-random, %d same sign, %d shift window%s)\n",
                list[i].name, cases, subFail,
-               (i == 5) ? "S (mem-only result)" : (i == 4) ? "AY+NZ" : "AXY+flags",
+               (i == 5) ? "S (mem-only result)" : (i == 4) ? "AY+NZ" : (i == 3) ? "X (mem[])" : "AXY+flags",
                decimal, patched, sameSign, shiftBoth,
                i == 4 ? ", both reject arms" : (i == 2 ? ", close cases forced" :
                (i == 5 ? ", near signs forced" : "")));

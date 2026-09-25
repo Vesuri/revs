@@ -211,7 +211,6 @@ typedef struct { uint8_t a, v, c, n, z; } EdgeOffFlags;
 typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
 typedef struct { uint8_t a, n, z, c, v; } Mul8AccumExit;
 typedef struct { uint8_t hi; int declined; } SlipRef;
-typedef struct { uint8_t a, y, n, z, v, c; } SignOriginExit;   /* X passes through the caller's */
 typedef struct { uint8_t a, y, n, z, c; } ContactExit;    /* X and V pass through the caller's */
 typedef struct { uint8_t a, y; } RejectExit;                   /* N/Z derive from a (bit7 set) */
 typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effect; row=X, line=A/Y */
@@ -552,7 +551,7 @@ void read_driving_controls_frame(void);
 void apply_driving_model_frame(void);
 void hold_a_for_irq_seam(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
-SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
+void build_sign_origin_core(uint8_t offset, uint8_t shift);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 /* ⭐⭐ THE _native ENTRIES — a shim minus the marshal-INs that are oracle-only in production.
    Each pair is `void <name>(void)` (the 6502-ABI path `make validate` enters through, which

@@ -686,9 +686,7 @@ void update_camera_and_drive_state(void)
 void build_sign_origin(void)
 {
     view_origin_marshal_in();
-    SignOriginExit e = build_sign_origin_core(cpu.A, cpu.Y);
-    cpu.A = e.a; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    build_sign_origin_core(cpu.A, cpu.Y);    /* exit dead: see build_sign_origin_core */
     view_origin_marshal_out();
 }
 
