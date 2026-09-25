@@ -310,22 +310,32 @@ void apply_driving_model_frame(void)
 {
     view_origin_marshal_in();
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
-    apply_driving_model_frame_native();
+    /* A, X, Y and the flags come back from update_camera_and_height untouched — the 6502 exit,
+       which only this oracle-facing path publishes: the native frame loop reads no register. */
+    CameraExit ce = apply_driving_model_frame_native(cpu.C);
+    cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
+    cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
+    cpu.X = ce.x; cpu.Y = ce.y;
 }
 
-void apply_driving_model_frame_native(void)
+/* The native frame loop's entry: the carry it arrives with is update_engine_revs' coast-arm
+   carry-in (the 6502's C at $469E), and the exit registers it gets back are the oracle path's,
+   so they are dropped — the loop reads none of them. */
+void apply_driving_model_frame_step(void)
 {
-    CameraExit ce = apply_driving_model_core(car_heading_v, cpu.C);
+    (void)apply_driving_model_frame_native(cpu.C);
+}
+
+CameraExit apply_driving_model_frame_native(int entryC)
+{
+    CameraExit ce = apply_driving_model_core(car_heading_v, entryC);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
     lateral_speed_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
     model_state_marshal_out();    /* ...and publish it back to mem[] */
     view_origin_marshal_out();
-    /* A, X, Y and the flags come back from update_camera_and_height untouched. */
-    cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
-    cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
-    cpu.X = ce.x; cpu.Y = ce.y;
+    return ce;
 }
 
 /* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
@@ -420,12 +430,11 @@ void road_span_advance(void)
    the returned pair back there. */
 void interp_edge(void)
 {
-    EdgeIndices r;
     plot_ptrs_marshal_in();               /* it sets the three pages... */
-    r = interp_edge_core(cpu.A, cpu.X, cpu.Y, cpu.C);
+    interp_edge_core(cpu.A, cpu.X, cpu.Y, cpu.C);
     plot_ptrs_marshal_out();              /* ...and an oracle caller reads them from mem[] */
-    cpu.X = r.farIdx;
-    cpu.Y = r.nearIdx;
+    cpu.X = saved_slot_index;             /* $2D05 — the caller's far index */
+    cpu.Y = span_saved_index;             /* $2D08 — ...and the near one, for its INX/INY */
 }
 
 /* The 6502-ABI shim: the edge point index arrives in X (unchanged to exit). */
@@ -507,10 +516,41 @@ void mul16_by_pi(void)
       cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c; cpu.V = e.v; }
 }
 
+/* ⭐ THE FLAGS OF AN ADD THE CORE HAS ALREADY DONE, rebuilt from the value before and after.
+   The driving model's integrators are plain binary adds and no native caller reads their 6502
+   exit flags, so the cores no longer compute them; the oracle-facing shims below recover them
+   here.  Exact: `bits` wide, the addend IS (after - before) mod 2^bits, and the high byte's
+   A / C / V / N / Z follow from before + addend like the 6502's last ADC. */
+static AddFlags add_flags_between(uint32_t before, uint32_t after, unsigned bits)
+{
+    const uint32_t mask = (bits == 24u) ? 0xFFFFFFu : 0xFFFFu;
+    const unsigned top  = bits - 8u;
+    uint32_t m   = (after - before) & mask;
+    uint32_t sum = (before & mask) + m;
+    uint8_t  ah  = (uint8_t)(before >> top), mh = (uint8_t)(m >> top), hr = (uint8_t)(sum >> top);
+    AddFlags f;
+    f.hi       = hr;
+    f.carry    = (uint8_t)(sum > mask);
+    f.overflow = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
+    f.neg      = (uint8_t)(hr >> 7);
+    f.zero     = (uint8_t)(hr == 0u);
+    return f;
+}
+
+/* ...for a model element that has just had element 14 added into it (element 14 itself
+   unchanged, so the value before is after - element 14). */
+static AddFlags element_add_flags(uint8_t slot)
+{
+    uint16_t after = model_state_16[slot];
+    return add_flags_between((uint16_t)(after - model_state_16[MS_INCREMENT]), after, 16u);
+}
+
 void model_integrate_element(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
-    AddFlags f = model_integrate_element_core(cpu.X);   /* X = slot; X/Y unchanged at exit */
+    uint16_t before = model_state_16[cpu.X];            /* X = slot (element 14 may be the slot) */
+    model_integrate_element_core(cpu.X);                /* X/Y unchanged at exit */
+    AddFlags f = add_flags_between(before, model_state_16[cpu.X], 16u);
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
     model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
@@ -531,7 +571,8 @@ void rotate_velocity_by_steer(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_angle_marshal_in();                   /* it multiplies by a car angle */
-    AddFlags f = rotate_velocity_by_steer_core();  /* ends in model_integrate_element on element 8 */
+    rotate_velocity_by_steer_core();          /* ends in model_integrate_element on element 8 */
+    AddFlags f = element_add_flags(8u);
     cpu.X = 8u; cpu.Y = 8u;                      /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
     model_state_marshal_out();    /* ...and publish it back to mem[] */
@@ -541,7 +582,8 @@ void rotate_pair_a_by_steer(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_angle_marshal_in();                   /* it multiplies by a car angle */
-    AddFlags f = rotate_pair_a_by_steer_core(); /* ends in model_integrate_element on element 10 */
+    rotate_pair_a_by_steer_core();            /* ends in model_integrate_element on element 10 */
+    AddFlags f = element_add_flags(10u);
     cpu.X = 10u; cpu.Y = 10u;                    /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
     model_state_marshal_out();    /* ...and publish it back to mem[] */
@@ -552,7 +594,9 @@ void integrate_car_position(void)
     view_origin_marshal_in();
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();
-    AddFlags f = integrate_car_position_core();  /* ends in the heading add (car_heading += step) */
+    uint16_t before = car_heading_v;
+    integrate_car_position_core();               /* ends in the heading add (car_heading += step) */
+    AddFlags f = add_flags_between(before, car_heading_v, 16u);
     car_heading_marshal_out();           /* ...and this routine IS that add: publish it */
     cpu.Y = 0xFEu; cpu.X = 0xFFu;                /* $4922/$4923 two DEYs -> $FE; $4924 DEX -> $FF */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
@@ -562,7 +606,11 @@ void integrate_car_position(void)
 void integrate_state_rates(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
-    AddFlags f = integrate_state_rates_core();   /* last pass leaves A / C / V of the high add live */
+    /* the last pass (slot 0) is the one whose A / C / V are live: element 0 with its fraction */
+    uint32_t before = ((uint32_t)model_state_16[0] << 8) | mem[MEM_model_state_frac];
+    integrate_state_rates_core();
+    AddFlags f = add_flags_between(before,
+                                   ((uint32_t)model_state_16[0] << 8) | mem[MEM_model_state_frac], 24u);
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow;
     cpu.Y = 0u;                                  /* $4956's DEY ran until Z — Y leaves at zero */
     cpu.X = 0xFFu; cpu.N = 1u; cpu.Z = 0u;       /* $4974's DEX (0 -> $FF); ITS N/Z are the exit flags */

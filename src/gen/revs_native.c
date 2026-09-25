@@ -4494,7 +4494,8 @@ uint8_t race_main_loop_core(RestartDepth depth)
                    stale and fresh values are equal, so dropping either publish is invisible to
                    validate, determinism, -drive and -crash alike. */
                 PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
-                PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
+                PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);
+                apply_driving_model_frame_step();
                 /* At h = 1 the re-base owes element 2 as the step left it (the BBC's value, its
                    quirk included); at h < 1 the heading moved by element 2 x h, and that — the
                    change it actually made — is what the near points must be turned by. */
@@ -4760,12 +4761,12 @@ static void stage_lateral_speed_delta_core(void);
 void update_grip_limits_core(void);
 EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 /* promoted for revs_native_abi.c */ void update_slip_sound_core(uint8_t axle, uint8_t ambientY);
-AddFlags rotate_velocity_by_steer_core(void);
-AddFlags rotate_pair_a_by_steer_core(void);
+void rotate_velocity_by_steer_core(void);
+void rotate_pair_a_by_steer_core(void);
 static void derive_axle_loads_core(void);
 static void apply_drag_terms_core(void);
-AddFlags integrate_state_rates_core(void);
-AddFlags integrate_car_position_core(void);
+void integrate_state_rates_core(void);
+void integrate_car_position_core(void);
 CameraExit update_camera_and_height_core(void);
 
 /* $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
@@ -9667,17 +9668,15 @@ void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine)
    have written is one 6502-stack byte the oracle still writes; the fixture ignores it. */
 
 /* $2B26's three exits all run the same tail: publish this endpoint for the next span unless the
-   endpoints were swapped, then report the two indices. */
-static EdgeIndices interp_edge_publish(void)
+   endpoints were swapped.  ($2D05/$2D08 then reload the caller's far/near indices into X/Y for its
+   INX/INY — a 6502 exit only the transliterated callers read, so the `interp_edge` shim reloads
+   them itself; both native callers ignored them.) */
+static void interp_edge_publish(void)
 {
-    EdgeIndices r;
     if (!(span_swapped & 0x80u)) {          /* $2CFC — not swapped: carry the endpoint forward */
         shared_temp_7e   = shared_temp_77;
         span_line_cursor = mem[SPAN_LINE_END];
     }
-    r.farIdx  = saved_slot_index;           /* $2D05 — the caller's far index */
-    r.nearIdx = span_saved_index;           /* $2D08 — ...and the near one, for its INX/INY */
-    return r;
 }
 
 /* ⭐ WRITTEN OVER LOCALS.  Every cell this routine stores it still stores, with the same final
@@ -9687,7 +9686,7 @@ static EdgeIndices interp_edge_publish(void)
    in locals from the moment they are computed.  On the 68000 each read-back was a 12-20 cycle
    memory operand, and the pattern loop re-read surface_style_index from mem[] every iteration
    because its own stores might have aliased it (docs/open-work.md, step 1: the per-span setup). */
-EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
+void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
                                     int publishOnly)
 {
     uint8_t swapped = 0;
@@ -9721,12 +9720,12 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     mem[SPAN_LINE_END] = lineEnd;
     saved_slot_index   = farPoint;
     span_saved_index   = nearPoint;
-    if (publishOnly) return interp_edge_publish();
+    if (publishOnly) { interp_edge_publish(); return; }
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 2
     /* ⚠⚠ `make ROADARM=2` — PICTURE WRONG BY CONSTRUCTION, a PRICING arm: the span body (setup,
        walk and plot) is skipped and only the endpoint hand-over runs, so ph11 minus the control
        IS what one span's body costs the port.  amiga/Makefile §ROADARM. */
-    return interp_edge_publish();
+    { interp_edge_publish(); return; }
 #endif
 
     /* The previous span's endpoint, as interp_edge_publish left it. */
@@ -9736,7 +9735,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     /* Both ends have to be usable.  Bit 6 clear means the PREVIOUS point was on screen and
        this one starts a span; bit 6 set with bit 7 set means neither is. */
     if (clip & 0x40u) {
-        if (clip & 0x80u) return interp_edge_publish();
+        if (clip & 0x80u) { interp_edge_publish(); return; }
         /* $2B69 — walk from the previous endpoint to this one instead. */
         { uint8_t t;
           t = x7e;    x7e    = x77;     x77     = t;
@@ -9790,7 +9789,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     mem[SPAN_DY]  = dy;
     mem[SPAN_DX]  = dx;
     mem[SPAN_ARM] = arm;
-    if (dx == 0 && dy == 0) return interp_edge_publish();  /* no extent */
+    if (dx == 0 && dy == 0) { interp_edge_publish(); return; }  /* no extent */
 
     /* Does the abandon path stamp a surface code?  Only when both ends were usable. */
     span_cap_pending = (clip & 0xC0u) ? (uint8_t)(arm & 0x80u) : (uint8_t)(clip & 0xC0u);
@@ -9861,7 +9860,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     math_hi = mh;
     uint8_t block = (uint8_t)(mh >> 2);
     mem[SPAN_BLOCK] = block;
-    if (block >= 0x28u) return interp_edge_publish();   /* off the side */
+    if (block >= 0x28u) { interp_edge_publish(); return; }   /* off the side */
     /* The three screen pages, from the endpoint's block: (block >> 1) + $30, and plot_ptr3
        one page above. */
     uint8_t page = (uint8_t)((block >> 1) + 0x30u);
@@ -9905,7 +9904,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     }
     ROAD_PHASE(ROAD_PHASE_SPANS);
 
-    return interp_edge_publish();
+    { interp_edge_publish(); return; }
 }
 
 /* $1933 edge_x_offscreen (twin #36) and $193E fill_line_attr (twin #37)
@@ -12045,27 +12044,12 @@ Wide16Exit mul16_by_1_5_core(uint16_t x)
    One 16-bit add over the state vector.  Element 14 is the per-frame delta the sub-models
    above have been accumulating into, so this is the model's integration step; the two
    rotations ($47A5/$47C5) each end with one. */
-static AddFlags add16_flags(uint8_t ah, uint8_t mh, unsigned sum)
-{
-    uint8_t  hr = (uint8_t)(sum >> 8);
-    AddFlags f;
-    f.hi       = hr;
-    f.carry    = (uint8_t)(sum > 0xFFFFu);
-    f.overflow = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
-    f.neg      = (uint8_t)((hr >> 7) & 1u);
-    f.zero     = (uint8_t)(hr == 0);
-    return f;
-}
-
-AddFlags model_integrate_element_core(uint8_t slot)
+void model_integrate_element_core(uint8_t slot)
 {
     /* $47E5 — element[slot] += element[14], one 16-bit binary add (D=0 on the driving-model
-       path, docs/static-map.md §Decimal mode); the HIGH add's flags are the exit flags, returned
-       for the shim / caller to replay. */
-    uint16_t a = model_state_16[slot], m = model_state_16[MS_INCREMENT];
-    unsigned sum = (unsigned)a + (unsigned)m;
-    model_state_16[slot] = (uint16_t)sum;
-    return add16_flags((uint8_t)(a >> 8), (uint8_t)(m >> 8), sum);
+       path, docs/static-map.md §Decimal mode).  The high add's flags are the 6502 exit, and no
+       native caller reads them: the shim rebuilds them (add_flags_between). */
+    model_state_16[slot] = (uint16_t)(model_state_16[slot] + model_state_16[MS_INCREMENT]);
 }
 
 /* $48A0  add_signed_into_element — ELEMENT Y += ±(math_hi : math_lo)  (twin #54)
@@ -12283,7 +12267,7 @@ static void stage_lateral_speed_delta_core(void)
    The mode bytes are the whole difference: $80/$40 for the (8, 9) pair and $00/$C0 for the
    (10, 12) one, i.e. the two products swap signs between the two rotations, which is what
    makes one turn the opposite way from the other. */
-AddFlags rotate_velocity_by_steer_core(void)
+void rotate_velocity_by_steer_core(void)
 {
     /* $47A5-$47AF — element 14 = -(element 9 * steer):  bit 7 negates, bit 6 clear stores. */
     mem[MUL_SIGN] = 0x80u;
@@ -12291,12 +12275,12 @@ AddFlags rotate_velocity_by_steer_core(void)
     /* $47B2-$47BC — element 9 += element 8 * steer:  bit 6 set accumulates instead. */
     mem[MUL_SIGN] = 0x40u;
     apply_angle_term_core(9, STEER_ANGLE, 8);
-    /* $47BF-$47C1 — and element 8 advances by the delta just built; its add's flags are the
-       exit flags (element/index 8 in X, last source 8 in Y — replayed at the shim). */
-    return model_integrate_element_core(8);
+    /* $47BF-$47C1 — and element 8 advances by the delta just built (its add's flags, X = 8 and
+       Y = 8 are the 6502 exit, rebuilt at the shim). */
+    model_integrate_element_core(8);
 }
 
-AddFlags rotate_pair_a_by_steer_core(void)
+void rotate_pair_a_by_steer_core(void)
 {
     /* $47C5-$47CF — element 14 = +(element 12 * steer), stored. */
     mem[MUL_SIGN] = 0x00u;
@@ -12304,9 +12288,9 @@ AddFlags rotate_pair_a_by_steer_core(void)
     /* $47D2-$47DC — element 12 -= element 10 * steer. */
     mem[MUL_SIGN] = 0xC0u;
     apply_angle_term_core(12, STEER_ANGLE, 10);
-    /* $47DF-$47E1 — element 10 advances; its add's flags are the exit flags (index 10 in X,
-       last source 10 in Y — replayed at the shim). */
-    return model_integrate_element_core(10);
+    /* $47DF-$47E1 — element 10 advances (its add's flags, X = 10 and Y = 10 are the 6502 exit,
+       rebuilt at the shim). */
+    model_integrate_element_core(10);
 }
 
 /* $47F9  derive_axle_loads — THE YAW TORQUE AND THE TWO LOADS  (twin #61)
@@ -12440,7 +12424,7 @@ static void derive_axle_loads_core(void)
    left, i.e. the doubling's own carry out.  The doubling and the add are ONE 24-bit operation.
    ⚠ The name's second half is a misnomer worth keeping in mind — what $4927 advances is the
    HEADING, not a position (disasm/symbols.csv). */
-AddFlags integrate_car_position_core(void)
+void integrate_car_position_core(void)
 {
     uint8_t slot;
 
@@ -12475,17 +12459,13 @@ AddFlags integrate_car_position_core(void)
     }
     /* $4922/$4923's two DEYs leave Y = $FE and $4924's DEX leaves X = $FF (replayed at the shim). */
 
-    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The HIGH
-       add's A / N / V / Z / C are this routine's exit flags, returned for the shim to replay. */
-    { uint8_t  hc = (uint8_t)(car_heading_v >> 8), hm = ms_hi(MS_HEADING_STEP);
-      /* ⭐ x h, with a remainder: a gentle turn is a small step, and truncating it every step
-         would bias every bend (sim_scale). */
-      unsigned h  = (unsigned)car_heading_v + (sim_h_q16
-                  ? (unsigned)(uint16_t)sim_scale((int16_t)model_state_16[MS_HEADING_STEP], 0u, &s_headingRem)
-                  : (unsigned)model_state_16[MS_HEADING_STEP]);
-      car_heading_v = (uint16_t)h;                  /* relocated out of mem[$0A/$0B] */
-      return add16_flags(hc, hm, h);
-    }
+    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  (The high
+       add's flags are the 6502 exit; the shim rebuilds them from the heading before and after.)
+       ⭐ x h, with a remainder: a gentle turn is a small step, and truncating it every step would
+       bias every bend (sim_scale). */
+    car_heading_v = (uint16_t)(car_heading_v + (sim_h_q16
+                  ? (uint16_t)sim_scale((int16_t)model_state_16[MS_HEADING_STEP], 0u, &s_headingRem)
+                  : model_state_16[MS_HEADING_STEP]));   /* relocated out of mem[$0A/$0B] */
 }
 
 /* $4937  integrate_state_rates — ELEMENTS 3/4/5 ARE THE RATES OF 0/1/2  (twin #66)
@@ -12495,13 +12475,12 @@ AddFlags integrate_car_position_core(void)
    the odd shift on X = 2 is a per-axis scale factor, four times the other two.
 
    The shift's own carry out is discarded: $495E clears it before the add. */
-AddFlags integrate_state_rates_core(void)
+void integrate_state_rates_core(void)
 {
     uint8_t slot;
-    AddFlags f = { 0, 0, 0, 0, 0 };
 
     /* All binary 24-bit adds: D = 0 on the driving-model path (docs/static-map.md §Decimal
-       mode).  The LAST pass (slot 0) leaves A / C / V live; the DEX below rewrites N / Z. */
+       mode).  The last pass's (slot 0) A / C / V are the 6502 exit, rebuilt at the shim. */
     for (slot = 2; slot != 0xFFu; slot--) {
         uint16_t rate  = model_state_16[3 + slot];              /* $493D-$4942 — the RATE word */
         uint8_t  lo    = (uint8_t)rate;
@@ -12511,13 +12490,11 @@ AddFlags integrate_state_rates_core(void)
         /* ⭐ x h: the rate is per engine frame, the step is h of one (sim_scale). */
         unsigned wide  = sim_h_q16 ? (unsigned)sim_scale((int16_t)rate, shift, &s_rateRem[slot])
                                    : (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
-        uint8_t  ah = (uint8_t)(model_state_16[slot] >> 8), mh, hr;
         uint32_t sum;
 
         math_lo        = (uint8_t)wide;                         /* $4951-$4959 (live in mem) */
         math_hi        = (uint8_t)(wide >> 8);
         shared_temp_76 = (uint8_t)(wide >> 16);
-        mh = shared_temp_76;
 
         /* $495B-$4971 — add the low 24 bits of the shifted rate into element X (FRAC:LO:HI); the
            shift's own carry out was cleared ($495E CLC), so carry-in is 0. */
@@ -12525,16 +12502,9 @@ AddFlags integrate_state_rates_core(void)
            the separate model_state_frac array — so the wide value is (element << 8) | frac. */
         sum = (((uint32_t)model_state_16[slot] << 8) | mem[MEM_model_state_frac + slot])
             + (wide & 0xFFFFFFu);
-        hr = (uint8_t)(sum >> 16);
         mem[MEM_model_state_frac + slot] = (uint8_t)sum;
         model_state_16[slot]         = (uint16_t)(sum >> 8);
-        /* the HIGH byte add's A / C / V — live only from the last pass (slot 0). */
-        f.hi       = hr;
-        f.carry    = (uint8_t)(sum > 0xFFFFFFu);
-        f.overflow = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
     }
-    /* N / Z are NOT the add's — the shim replays $4974's DEX (X: 0 -> $FF). */
-    return f;
 }
 
 /* The 6502-ABI shims. */

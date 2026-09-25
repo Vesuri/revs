@@ -206,7 +206,6 @@ typedef struct {
    (draw_surface_spans_core) tracks x/y in its own locals and IGNORES this return; only the
    transliterated oracle (draw_surface_spans__t6502) does INX/INY on them, so the interp_edge
    SHIM marshals these two fields back into cpu.X/cpu.Y for that oracle's benefit. */
-typedef struct { uint8_t farIdx, nearIdx; } EdgeIndices;
 typedef struct { uint8_t a, v, c, n, z; } EdgeOffFlags;
 typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
 typedef struct { uint8_t a, n, z, c, v; } Mul8AccumExit;
@@ -565,7 +564,8 @@ void check_crash_native(void);
 void draw_dash_needles_native(void);
 void mirrors_update_native(void);
 void process_car_contact_native(void);
-void apply_driving_model_frame_native(void);
+CameraExit apply_driving_model_frame_native(int entryC);   /* the exit is the oracle path's */
+void apply_driving_model_frame_step(void);                  /* the native frame loop's entry */
 void road_edge_walk_resume_native(void);
 uint8_t road_edge_walk_resume_from(uint8_t sectionX);   /* $2490 by value */
 void    abs8_regs(HookRegs *r);          /* $637C with the file as a value */
@@ -758,16 +758,16 @@ void lateral_speed_entry_marshal_out(void);
 /* ⭐⭐ Validation-harness only: scribble every relocated global so neither model in diff_run can
    inherit the other's marshal.  See the banner in revs_native.c. */
 void relocated_poison(void);
-AddFlags integrate_car_position_core(void);
-AddFlags integrate_state_rates_core(void);
-EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);
+void integrate_car_position_core(void);
+void integrate_state_rates_core(void);
+void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);
 int kbd_test_key_core(uint8_t keyCode);
 uint8_t limit_steer_demand_core(uint8_t a, int carryIn);
 void load_section_triple_core(uint8_t destSection, uint8_t segmentByte);
 SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
 Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y);
 Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
-AddFlags model_integrate_element_core(uint8_t slot);
+void model_integrate_element_core(uint8_t slot);
 Mul8AccumExit mul8_accum_core(void);
 Wide16Exit    mul16_by_1_5_core(uint16_t x);
 ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC);
@@ -805,8 +805,8 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
 void    scale_by_track_gradient_regs(HookRegs *r);   /* $4610 with the file as a value */
 void    scale_by_track_gradient_tail_regs(HookRegs *r);  /* $461B, ditto — for the $57BB seam */
 int road_span_advance_core(uint8_t y);
-AddFlags rotate_velocity_by_steer_core(void);
-AddFlags rotate_pair_a_by_steer_core(void);
+void rotate_velocity_by_steer_core(void);
+void rotate_pair_a_by_steer_core(void);
 void section_coord_add_delta_core(uint8_t dst, uint8_t src, const uint8_t dlo[3], const uint8_t dhi[3]);
 void plot_object_core(uint8_t slot);
 void build_section_step_delta_core(uint8_t y);
