@@ -29,21 +29,32 @@
 |   is inserted in that same order), so a fill never runs backwards.  A descending list would jump past
 |   the fill block; TERRAINCHECK's cell walk relies on the same order.
 |
-| void terrain_paint_m68k(unsigned lines, uint8_t *plane, uint8_t *own, const uint8_t *bgEnd,
+| ⭐⭐ AN UNCHANGED LINE IS NOT PAINTED.  The display is double buffered and this painter is the only
+|   writer of its rows, so a line whose entry byte and event list equal what THIS BUFFER's same row
+|   was last painted from already holds the right pixels — 74% of lines on a driving sweep (census,
+|   docs/perf-method.md).  Each row keeps that signature (the entry byte as a word, then the list's
+|   words up to its sentinel) in `sig`; a match steps the two plane cursors and paints nothing, a
+|   mismatch copies the new signature and paints.  RevsPlot.cpp invalidates every signature whenever
+|   anything else could have written these rows.  `sig` = 0 disables it (a block outside the table).
+|   ⚠ Two sentinels match whatever their second byte: the scan writes only the $FF start.
+|
+| void terrain_paint_m68k(unsigned lines, uint8_t *plane, uint16_t *sig, const uint8_t *bgEnd,
 |                         const ViewSpan *ev, const uint32_t *expand4)
 |   lines   n >= 1 sweep lines, first downwards (display rows y0 .. y0 + n - 1)
 |   plane   display row y0's plane-1 byte 0 (plane 2 at +40, row y0 + 1 at +80)
-|   own     &g_plotOwn[y0]
+|   sig     row y0's signature slot (SIGSTRIDE bytes a row), or 0 — the caller claims g_plotOwn
 |   bgEnd   &g_viewRowBg[first] + 1 (read pre-decrement: the lines run downwards)
 |   ev      &g_viewEv[first][0] (each lower line's list is EVSTRIDE bytes below)
 |   expand4 g_bbcExpand4 — {lo4, hi4} per colour byte, 8 bytes an entry
 | Registers:
 |   a0 the event cursor   a1 plane-1 cursor   a3 plane-2 cursor (a1 + 40)   a2 expand4
-|   a4 this line's list   a5 bgEnd cursor     a6 own cursor
+|   a4 this line's list   a5 bgEnd cursor     a6 signature cursor (0: none)
 |   d0 the event's cell   d1 scratch          d2/d3 the run's lo4/hi4 broadcast
-|   d6.w cells painted (a multiple of 4, 0..40) d7.w lines - 1 (dbra)
+|   d4 this row's signature slot              d6.w cells painted (a multiple of 4, 0..40)
+|   d7.w lines - 1 (dbra)
 
 	.equ	EVSTRIDE, 96                | sizeof g_viewEv[0]: 48 two-byte ViewSpans
+	.equ	SIGSTRIDE, 128              | one row's signature: 1 + 48 words, rounded (RevsPlot.cpp)
 	.equ	CELLS,    40                | cells a line = bytes a plane row
 	.equ	ARGS,     44+4              | past the eleven saved registers and the return
 
@@ -89,14 +100,54 @@ terrain_paint_m68k:
 tp_line:
 	moveq	#0,d1
 	move.b	-(a5),d1                    | the line's entry byte
-	COLOUR
-	move.b	#1,(a6)+                    | claim the display row
 	move.l	a4,a0
 	.if SABOTAGE == 5
 	lea	-EVSTRIDE+2(a4),a4          | SABOTAGE 5: the next line's list one entry off
 	.else
 	lea	-EVSTRIDE(a4),a4
 	.endif
+	move.l	a6,d4                       | this row's signature slot
+	jbeq	tp_paint                    | no table: paint every line
+	cmp.w	(a6)+,d1                    | the entry byte, kept as a word
+	bne.s	tp_miss
+	.if SABOTAGE == 8                   | SABOTAGE 8: the entry byte alone decides — the list unread
+	jbra	tp_same
+	.endif
+tp_cmp:
+	move.w	(a0)+,d0
+	cmp.w	(a6)+,d0
+	bne.s	tp_cmpne
+	cmp.w	#0xFF00,d0                  | a matching sentinel ends a matching list
+	bcs.s	tp_cmp
+	jbra	tp_same
+tp_cmpne:
+	cmp.w	#0xFF00,d0                  | the new word is not a sentinel: a real difference
+	bcs.s	tp_miss
+	.if SABOTAGE != 7                   | SABOTAGE 7: any sentinel matches any stored word
+	cmp.b	#0xFF,-2(a6)                | ...or the stored one is not: a real difference
+	bne.s	tp_miss
+	.endif
+tp_same:
+	lea	2*CELLS(a1),a1              | the row already holds this: step both plane cursors
+	lea	2*CELLS(a3),a3
+	move.l	d4,a6
+	lea	SIGSTRIDE(a6),a6
+	dbra	d7,tp_line
+	jbra	tp_done
+tp_miss:
+	move.l	d4,a6                       | keep the new signature: the entry byte, then the list
+	lea	EVSTRIDE(a4),a0
+	move.w	d1,(a6)+
+tp_copy:
+	move.w	(a0)+,d0
+	move.w	d0,(a6)+
+	cmp.w	#0xFF00,d0
+	bcs.s	tp_copy
+	move.l	d4,a6
+	lea	SIGSTRIDE(a6),a6
+	lea	EVSTRIDE(a4),a0
+tp_paint:
+	COLOUR
 	moveq	#0,d6
 
 tp_event:
@@ -151,6 +202,7 @@ tp_eol:
 	lea	CELLS(a1),a3
 	dbra	d7,tp_line
 
+tp_done:
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts
 	.size	terrain_paint_m68k, .-terrain_paint_m68k

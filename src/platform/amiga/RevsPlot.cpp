@@ -11,6 +11,7 @@
    already typedefs int8_t/uint8_t — and as `char`, not `signed char`, so the compat stdint.h
    redeclares them incompatibly and the build fails.  The fixed-width names below come from it. */
 #include "../bbc_screen.h"
+#include "RevsTyres.h"            /* the tread footprint the terrain oracle leaves to the outline */
 #include "../../cpu/mem_decl.h"
 #include "../../cpu/m68k_math.h"   /* the 68000 has NO 32-bit mul/div (make muldiv-audit) */
 #include "../../gen/mem.h"         /* MEM_<name> offsets — NEEDLEVERIFY reads the undo list */
@@ -45,6 +46,19 @@ static uint16_t s_planeOff[FB_BYTES];
 static uint8_t  s_lineOf[FB_BYTES];
 static uint8_t  s_mapBuilt;
 static uint8_t* s_target;
+/* ⭐⭐ THE TERRAIN PAINTER'S ROW SIGNATURES (terrain_m68k.s §an unchanged line is not painted):
+   per buffer, per display row TSIG_Y0.., the entry byte as a word and the event words up to the
+   sentinel that row was last painted from.  Valid only while the painter is the sole writer of
+   those rows, so every other path that writes them sets `s_tsigStale`, and the next sweep
+   invalidates both tables before it trusts one.  0xFFFF in a slot's first word matches no entry
+   byte, so it is the invalid mark. */
+#define TSIG_Y0     80u
+#define TSIG_ROWS   80u
+#define TSIG_WORDS  64u                  /* terrain_m68k.s SIGSTRIDE = 128 bytes */
+static uint16_t      s_tsig[2][TSIG_ROWS][TSIG_WORDS];
+static uint8_t*      s_tsigTgt[2];
+static unsigned char s_tsigStale = 1u;
+#define TSIG_STALE() (s_tsigStale = 1u)
 
 /* ⭐⭐ BOTH PLANE BUFFERS, for the delta painter below — and it is a different thing from
    `s_target`.  `s_target` is "the buffer the next decode will fill", aimed once per painted frame
@@ -141,6 +155,7 @@ extern "C" void revs_plot_target(unsigned char* planeBase)
 {
     if (!s_mapBuilt) buildMap();
     s_target = planeBase;
+    if (!planeBase) TSIG_STALE();     /* MODE 7 reuses the buffers */
 #ifdef REVS_NEEDLE_PLANES
     if (!planeBase) ndlTargetLost();
 #endif
@@ -270,6 +285,7 @@ typedef char revs_plot_own_size_check[(sizeof g_plotOwn == 208) ? 1 : -1];
    serves MANY stores, and a span changes value every line.  The 80-byte block is too short. */
 extern "C" void revs_plot_span(unsigned short addr, unsigned char value)
 {
+    TSIG_STALE();                     /* a writer of the terrain rows other than the painter */
     const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
 
     if (!s_target) { SPAN_STAT(g_plotNoTarget++); return; }
@@ -424,8 +440,19 @@ static void terrain_check_line(unsigned off, unsigned background, const ViewSpan
            sabotage test by accident (CLAUDE.md §verify the instrument). */
         const ViewSpan* e = evHead;
         unsigned        v = background, c;
+#ifdef REVS_TYRE_SPRITES
+        /* ⚠ ITS SCOPE EXCLUDES THE TREAD CELLS: `revs_tyres_outline` ANDs the tread out of these
+           rows after every paint, and an UNCHANGED row is not repainted (terrain_m68k.s), so the
+           buffer legitimately holds the painted-then-masked byte there — measured, 384 mismatches
+           all in the footprint.  The DUALPF oracle excludes the same cells for the same reason. */
+        const unsigned y = s_lineOf[off];
+        const int tread = (y >= REVS_TYRE_Y0 && y < REVS_TYRE_Y0 + REVS_TYRE_LINES);
+#endif
         for (c = 0; c < BBC_SCREEN_CELLS; c++) {
             if (e->start == c) { v = e->colour; e++; }
+#ifdef REVS_TYRE_SPRITES
+            if (tread && (c <= REVS_TYRE_L_CELL + 1u || c >= REVS_TYRE_R_CELL)) continue;
+#endif
             g_terrainChecks++;
             if (p1[c] != g_bbcExpandLo[v] || p1[c + kPlaneGap] != g_bbcExpandHi[v]) {
                 if (!g_terrainMismatch)
@@ -490,7 +517,7 @@ static inline void plot_terrain_line(unsigned short addr, unsigned background, c
    line and `last` is where the driver stopped), and the driver's own loop is then call-free —
    which the carve ladder priced at 107 us a line, more than the fill itself costs. */
 #ifdef REVS_TERRAIN_ASM
-extern "C" void terrain_paint_m68k(unsigned lines, uint8_t* plane, uint8_t* own,
+extern "C" void terrain_paint_m68k(unsigned lines, uint8_t* plane, uint16_t* sig,
                                    const uint8_t* bgEnd, const ViewSpan* ev,
                                    const unsigned long* expand4);
 /* ⚠ ALWAYS COMPILED, like g_decodeGapFrames: a block whose ends are not the contiguous rows the
@@ -501,6 +528,8 @@ extern "C" { volatile unsigned long g_terrainAsmFallback = 0; }
 extern "C" { volatile unsigned long g_terrainRowBad = 0; }     /* ⚠⚠ MUST BE 0 */
 #endif
 #endif
+
+extern "C" void revs_plot_terrain_stale(void) { TSIG_STALE(); }
 
 extern "C" void revs_plot_terrain(unsigned first, unsigned last)
 {
@@ -520,8 +549,28 @@ extern "C" void revs_plot_terrain(unsigned first, unsigned last)
         const unsigned offN = (unsigned)g_viewRowAddr[last]  - BBC_SCREEN_BASE;
         if (off0 < FB_BYTES && offN < FB_BYTES
                 && (unsigned)s_lineOf[offN] - s_lineOf[off0] == first - last) {
-            const unsigned y0 = s_lineOf[off0];
-            terrain_paint_m68k(first - last + 1u, s_target + s_planeOff[off0], &g_plotOwn[y0],
+            const unsigned y0 = s_lineOf[off0], n = first - last + 1u;
+            uint16_t* sig = 0;
+            unsigned  b;
+            /* the claim, which the asm used to make a byte a row: every row is the painter's */
+            __builtin_memset(&g_plotOwn[y0], 1, n);
+            if (s_tsigStale) {
+                unsigned r;
+                for (b = 0; b < 2u; b++) {
+                    s_tsigTgt[b] = 0;
+                    for (r = 0; r < TSIG_ROWS; r++) s_tsig[b][r][0] = 0xFFFFu;
+                }
+                s_tsigStale = 0u;
+            }
+            b = (s_tsigTgt[0] == s_target) ? 0u : (s_tsigTgt[1] == s_target) ? 1u : 2u;
+            if (b == 2u) {                /* a buffer not seen since the last invalidation */
+                b = s_tsigTgt[0] ? 1u : 0u;
+                if (s_tsigTgt[b]) { TSIG_STALE(); b = 2u; }   /* a THIRD buffer: trust neither */
+                else s_tsigTgt[b] = s_target;
+            }
+            if (b < 2u && y0 >= TSIG_Y0 && y0 + n <= TSIG_Y0 + TSIG_ROWS)
+                sig = &s_tsig[b][y0 - TSIG_Y0][0];
+            terrain_paint_m68k(n, s_target + s_planeOff[off0], sig,
                                &g_viewRowBg[first] + 1, &g_viewEv[first][0], &g_bbcExpand4[0][0]);
 #ifdef REVS_TERRAIN_CHECK
             /* the oracle, per line, on what the asm wrote — and the contiguity it assumed */
@@ -535,6 +584,7 @@ extern "C" void revs_plot_terrain(unsigned first, unsigned last)
             return;
         }
         g_terrainAsmFallback++;
+        TSIG_STALE();                     /* the C painter below keeps no signatures */
     }
 #endif
 
@@ -559,6 +609,7 @@ extern "C" int revs_plot_has_target(void) { return s_target != 0; }
  * with nowhere to paint leaves it painted by nobody (revs_plot.h §revs_plot_has_target). */
 extern "C" unsigned char* revs_plot_low_line(unsigned short addr)
 {
+    TSIG_STALE();                     /* a writer of the terrain rows other than the painter */
     uint8_t* const base = s_target;
     const unsigned off  = (unsigned)addr - BBC_SCREEN_BASE;
     if (!base) { SPAN_STAT(g_plotNoTarget++); return 0; }
@@ -649,6 +700,7 @@ static uint8_t s_lowSnap[LOW_FULL_LINES * kRowBytes];
 
 extern "C" void revs_plot_low_snap(void)
 {
+    TSIG_STALE();                     /* a writer of the terrain rows other than the painter */
     uint8_t* const p = s_target + LOW_FULL_Y0 * kRowBytes;     /* constants: folded */
     unsigned i;
     if (!s_target) return;
@@ -764,6 +816,7 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
                                          MEM_QUAL const uint8_t* cellBytes)
 {
     const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+    TSIG_STALE();
     unsigned byte = value;
 
     if (!s_target) { SPAN_STAT(g_plotNoTarget++); return (unsigned char)byte; }
@@ -938,6 +991,7 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
                                          MEM_QUAL const uint8_t* cellBytes)
 {
     const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+    TSIG_STALE();
     unsigned byte = spans[0].colour;         /* == the line background; the oracle's MISS=0 is
                                                 what proves the equality, see revs_plot.h */
 
@@ -1911,6 +1965,7 @@ volatile unsigned short g_plotMismatchOff = 0xFFFF;
 
 extern "C" void revs_plot_check_before(void)
 {
+    TSIG_STALE();                     /* a writer of the terrain rows other than the painter */
     if (!s_target) return;
     revs_screen_convert_reference(s_ref);
     for (unsigned i = 0; i < sizeof s_ref; i++) s_target[i] = s_ref[i];

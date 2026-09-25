@@ -1867,6 +1867,9 @@ static void revs_cockpit_paint(const uint8_t* base, uint8_t* cock, const unsigne
    --------------------------------------------------------------------------- */
 unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* shadowMode)
 {
+#ifdef REVS_TERRAIN_SPANS
+    revs_plot_terrain_stale();   /* it can write the terrain painter's rows */
+#endif
     const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
     unsigned converted = 0;
     unsigned y = 0;

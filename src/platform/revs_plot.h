@@ -188,6 +188,9 @@ unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* spans, unsign
  * ⚠ It claims the display lines and it does NOT consume: the scan is the destructive reader now.
  * ⛔ It deliberately does not use `view_span_line` — see the note at the definition. */
 void revs_plot_terrain(unsigned first, unsigned last);
+/* Something other than the terrain painter wrote (or may have written) its rows: the painter's
+   row signatures are no longer the buffers' contents (RevsPlot.cpp §the row signatures). */
+void revs_plot_terrain_stale(void);
 #endif
 
 #ifdef REVS_LOW_OWN
