@@ -2836,6 +2836,23 @@ mismatches. ⇒ **Fuzz inside the INVARIANTS the producer maintains, and bound t
 ⚠ Circuit-independent code (the same dials on every track), so it was not re-run per circuit.
 
 
+⭐⭐⭐ **A DOUBLE-BUFFERED PAINTER THAT IS ITS ROWS' ONLY WRITER NEED NOT REPAINT AN UNCHANGED LINE
+— ph33 7.99 → 5.09, frame 87.86 → 84.44** (2026-09-25, `69b4f51`). The terrain painter was at its
+store floor (20 longword fills a line + ~15 instructions an event), so the lever was not a cheaper
+line but no line: a census counted **61% of phase-1 and 86% of low-block lines** identical — entry
+byte and event list — to what that same BUFFER's row was last painted from. Each row now keeps
+that signature; the asm compares before painting and a match just steps the cursors. ⭐ Two
+conditions make it exact and both are enforced, not assumed: every other writer of the rows marks
+the table stale (found by listing every store into the target — the span/chain plotters, the low
+line plotter, the conversion, a MODE 7 target, the fallback, the check builds' seeds and poison),
+and the oracle reads the BUFFER after the call, so a writer I missed shows up as a mismatch on the
+next skip — which is exactly how the tyre outline was found (384 mismatches, all in the tread,
+an idempotent AND after every paint: excluded from the oracle's scope, as DUALPF already did).
+⚠ Two traps met on the way: an oracle build that poisons the rows (LOWFULLCHECK) marks the table
+stale every sweep and so can never exercise the skip — a PASS there is vacuous for this change;
+and ph24 moved only −0.17 because phase 1's matching lines are mostly flat and were already cheap —
+**a census of skippable ITEMS does not price the skip; weight it by what each skipped item cost.**
+
 ⭐⭐⭐ **`prepareFrame` WAS HALF WORK NOBODY NEEDED AND A THIRD A POPULATION ARTEFACT — ph27 6.30 →
 3.09, ph32 3.52 → 2.18, frame 92.46 → 87.92** (2026-09-25; `a5ba6bc`, `ffe602f`, `b02201d`). Three
 findings, each transferable:

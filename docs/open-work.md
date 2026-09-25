@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 87.92 ms bracketed** (after `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.91× the real BBC's 97.0 (0.97× its comparable 91.0), and ~1.06× real-time game speed**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 84.44 ms bracketed** (after the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.87× the real BBC's 97.0 (0.93× its comparable 91.0), and ~1.11× real-time game speed**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -145,8 +145,12 @@ by certainty × size:
      control): **ph24 20.55 → 18.00 (−2.55)**. The sweep now reads ph24 18.00 + ph33 8.14 =
      26.1 ms against the BBC's 23.5. Re-stepped after both: **18.4k instructions a sweep — the
      painter 6.9k, the scan 6.9k (72 hit calls, 41 seeds, 504 longwords), the drivers 2.7k**;
-     both asm routines are near their store floor, so the sweep's remainder is the drivers
-     (~1.5-2 ms, entangled with `step_scanline`/the `$7EEE` terminator) and STEP 2 below.
+     both asm routines are near their store floor. ✅ **An unchanged line is not painted**
+     (`69b4f51`): each buffer's row keeps the signature it was painted from, and 61% of phase-1 /
+     86% of low-block lines match — **ph33 7.99 → 5.09, frame 87.86 → 84.44**; ph24 only −0.17,
+     because phase 1's matching lines are mostly flat and were already cheap. ⛔ The drivers' C
+     (2.7k instructions) is NOT a lever — see CLOSED. What is left in ph24 is the scan (~10 ms,
+     §1: the price of not touching `draw_road`) and phase 1's changing lines; then STEP 2 below.
   1b. ⭐ **`build_track_geometry` (ph5, 18.8 ms) is ~10.2k instructions a frame, single-stepped:
      `emit_edge_width_offset_core` 3.5k (27 calls × ~131), `road_edge_walk_run` 2.1k,
      `bearing_to_section` 2.0k (29 × 69), `project_point` 1.6k (28 × 58).** The emitter has a
@@ -882,6 +886,11 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ **THE SWEEP DRIVERS' C — the scan-line pair in locals, the `$7EEE` terminator hoisted** —
+  −0.03 ms (87.93 → 87.90; ph24 +0.04, ph33 −0.06), validated and reverted. The trace put ~2.7k of
+  the sweep's 17.3k instructions in the drivers, but deleting ~10 a line of global RMW paid
+  nothing: the drivers now only RECORD a row address and a byte, and the time is in the two asm
+  kernels. (The objdump-over-reads rule, §1b, once more.)
 - ⛔ **THE LOW BLOCK THROUGH THE GROUP PAINTER WITH A NEEDLE WINDOW AND A PER-LINE SEED WALK** —
   +5.74 ms (ph33 14.32 → 20.06). The window variant (~246 instructions a line) and walking each
   line's list to insert run B's entry (~96 a line) were the loss, not the idea: with the needles on
