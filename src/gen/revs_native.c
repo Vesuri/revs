@@ -7438,18 +7438,30 @@ MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 
 uint16_t model_state_16[MODEL_STATE_N];
 
+/* ⭐ WALKED BY POINTER, AND NOT UNROLLED.  Written as an indexed loop, -O3 -funroll-loops unrolled
+   the fifteen elements and then SLP-packed pairs of them into 32-bit registers — clr/swap/move.w
+   shuffles, every byte an absolute-long operand, and a nine-register movem around it: ~10
+   instructions an element plus the save.  A pointer walk that stays a loop is (d16,a0)/(a0)+
+   addressing and no spill — about 9 instructions an element in 12 bytes of loop, with the
+   expensive operand forms gone.  (The copy runs every step and at every publish.) */
 void model_state_marshal_in(void)
 {
-    for (unsigned i = 0; i < MODEL_STATE_N; i++)
-        model_state_16[i] = (uint16_t)(mem[MEM_model_state_lo + i]
-                                       | ((unsigned)mem[MEM_model_state_hi + i] << 8));
+    const uint8_t *lo = &mem[MEM_model_state_lo], *hi = &mem[MEM_model_state_hi];
+    uint16_t *d = model_state_16;
+#pragma GCC unroll 1
+    for (unsigned n = MODEL_STATE_N; n; n--)
+        *d++ = (uint16_t)(((unsigned)*hi++ << 8) | *lo++);
 }
 
 void model_state_marshal_out(void)
 {
-    for (unsigned i = 0; i < MODEL_STATE_N; i++) {
-        mem[MEM_model_state_lo + i] = (uint8_t)model_state_16[i];
-        mem[MEM_model_state_hi + i] = (uint8_t)(model_state_16[i] >> 8);
+    const uint16_t *s = model_state_16;
+    uint8_t *lo = &mem[MEM_model_state_lo], *hi = &mem[MEM_model_state_hi];
+#pragma GCC unroll 1
+    for (unsigned n = MODEL_STATE_N; n; n--) {
+        uint16_t v = *s++;
+        *lo++ = (uint8_t)v;
+        *hi++ = (uint8_t)(v >> 8);
     }
 }
 
