@@ -34,7 +34,7 @@ and it is printed beside the figure so the figure is never read without it.
 | **the real BBC, its own hardware** | **97.0** | 1.00× |
 | the port, bracketed | ~190 | **1.96× slower** |
 | the port, less `decode()` (phase 27, work the BBC never did) | ~173 | 1.78× |
-| **the port at `c07761b`**, bracketed (`docs/open-work.md` header) | **104.83** | **1.08×** — within 1.15× of the comparable 91.0 |
+| **the port now**, bracketed (`docs/open-work.md` header) | **99.10** | **1.02×** — 1.09× the comparable 91.0 |
 | the stated **floor**, 25 FPS | 40 | **2.43× FASTER than the original** |
 | the stated **target**, 50 FPS | 20 | **4.85× FASTER than the original** |
 
@@ -150,6 +150,7 @@ times — run at real time only at a 93.6 ms frame**, which is the frame rate Cr
 | 93.6 ms — the calibration | 1.00× real time |
 | 97.0 ms — the real BBC in this scene (its 6 ms practice pad included) | 0.965× |
 | 104.83 ms — the port at `c07761b` | 0.89× |
+| 99.10 ms — the port with the walk in asm | 0.94× |
 | 48 ms — the target | **1.95× — the game would run double speed** |
 
 ⭐ **This is why the port "feels right" once it is near BBC speed** (user, playing `c07761b`: the
@@ -2817,6 +2818,32 @@ car, which driving never produces; the horizon is rarely extended from here; and
 floor(N/d) unless d divides N+1 (that sabotage was a "no change" by arithmetic and was replaced by a
 quotient-plus-one). With the fuzzer all five fail. Brands Hatch (patched `$261A`, the C arm) passes
 too.
+
+⭐⭐ **THE WALK'S WHOLE POINT LOOP IN 68000 ASM IS −5.50 ms OF ph5** (16.27 → 10.77, frame 105.16 →
+99.10; `src/platform/amiga/walk_m68k.s`, `make WALKASM=0` the control, 2026-09-25). The C was already
+tidy by eye — ~70 instructions of loop, ~55 of bearing, ~40 of projection a point — and a static
+estimate put the win near 3 ms; it paid almost twice that. Where it went: every `mem[]` cell was an
+absolute-long operand (now `(d16,a0)`), each section coordinate took six instructions to assemble
+(now three off one `lea` of the triple), `project_point` returned its struct through the stack, and
+three calls a point each paid a `movem` and an argument push — the emitter is now entered below its
+prologue (`emit_width_core`), with the walk's constants in the registers it preserves. The two DIVUs
+a point are unchanged; they are the floor. A word's high byte goes to a `mem[]` cell by
+`move.w d,-(sp)` / `move.b (sp)+,cell` (24 cycles against 38 for a `lsr.w #8`).
+Gate: `make GEOCHECK=1` runs the C loop and the asm on the same 64 KB every walk and compares all of
+it, the four C words (`edge_nearest_v`, `bearing_v`, `hypot_min_v`, `hypot_max_v`) and the exit X —
+770 real walks on Silverstone and ~100 on each of the other five circuits, plus a 1000-case fuzzer
+that forces equal magnitudes (the diagonal) and the resume entry; six sabotages caught, one of them
+(a lost diagonal) also by a single real walk.
+⚠⚠ **The check had TWO state-coherence holes on the expansion circuits, both invisible on
+Silverstone**, and both were the CHECK's, not the asm's: (1) a circuit hook re-enters the walk at
+`$2490`, so under the check a nested comparison ran inside the outer one and overwrote its 64 KB
+snapshot (the nested walk now just runs the calling arm); (2) that resume marshals the camera and
+heading back IN from `mem[]`, and the fuzzer had randomised the C words without their `mem[]` copies,
+so the C arm walked with one camera and the asm arm with another (648 of 1000 cases). ⇒ **A fuzzer
+that randomises a relocated wide value must randomise its `mem[]` mirror to agree** — the game keeps
+them coherent, and any path that marshals IN will otherwise import a different world. The same
+inspection turned up a real suspect on the C path, queued in `docs/open-work.md`: the resume also
+re-imports `edge_nearest`, whose cells ARE stale mid-walk.
 
 ⚠⚠ **And the oracle had the shared-input blind spot until it was sabotaged.** With the seed moved
 into the scan, the REFERENCE run painter saw the seed as a real event at its run's first cell and

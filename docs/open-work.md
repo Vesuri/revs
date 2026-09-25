@@ -26,12 +26,13 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 104.83 ms bracketed at `c07761b`** (149.18 at the plan's start) — **1.08× the
-real BBC's 97.0, and 0.89× real-time game speed** (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
+**Where the frame stands:** **Σ(1..39) − ph28 = 99.10 ms bracketed** (149.18 at the plan's start) — **1.02× the
+real BBC's 97.0, and 0.94× real-time game speed** (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
 FRAMERATE). 2026-09-24, one session, every arm `PROBEFIELDS=3000` with phase 0 checked equal: terrain painter in asm
 115.51 → 110.13; source scan in asm ph24 20.55 → 18.00 (quoted by its row — that pair's `ONE BODY TICK` moved, a trajectory);
 own-reset memoised ph24 → 17.68; `prepareFrame` ph27 7.65 → 6.74 (frame 108.39); the walk's width emitter in asm ph5
-18.91 → 16.13, frame 108.39 → **104.83**. Before that session: the whole span pass in asm, 126.64 → 116.47 (ph11 26.62 → 17.10).
+18.91 → 16.13, frame 108.39 → 104.83. 2026-09-25: the walk's whole point loop in asm, ph5 16.27 → 10.77, frame 105.16 →
+**99.10** (control `WALKASM=0`, phase 0 220/218 fields, body tick 1301/1284 µs). Before that session: the whole span pass in asm, 126.64 → 116.47 (ph11 26.62 → 17.10).
 The per-phase table below is the 2026-09-23 snapshot (port ~143.5) and its BBC column still ranks what is left.
 ⭐⭐⭐ **THE PER-PHASE COMPARISON — the port against a real BBC, row for row (2026-09-23).**
 `make bbcprof` brackets the real BBC's 24 main-loop call sites plus the three tail calls, one row
@@ -150,10 +151,16 @@ by certainty × size:
      span pass was (~9.2k of the 10.2k).
      ✅ **The emitter is in 68000 asm** (`emit_width_m68k.s`, `GEOASM=0` the control): **ph5 18.91 →
      16.13, frame 108.39 → 104.83**. V is the `add.w`'s own overflow flag (the 6502's high-byte
-     ADC with the low carry in IS the 16-bit signed overflow). ⇒ NEXT: `bearing_to_section` +
-     `point_distance_hypot` + `project_point` per point (~3.6k), then the walk loop itself — the
-     relocated `bearing_v`/`hypot_*_v` statics must be exported for it, and GEOCHECK's compare must
-     grow to cover them.
+     ADC with the low carry in IS the 16-bit signed overflow).
+     ✅ **The walk's whole point loop is in 68000 asm** (`walk_m68k.s`, `WALKASM=0` the control):
+     bearing, hypot, running nearest, projection, the emitter (entered below its prologue) and the
+     step, with the four bases and the camera/heading words in registers. **ph5 16.27 → 10.77
+     (−5.50), frame 105.16 → 99.10** — about twice what the static count predicted. Subdivide and
+     the `$248B` seam stay C. Gate: `make GEOCHECK=1` + `amiga/walk_check.gdb` — every walk C vs asm
+     on all 64 KB, the four words and the exit X, plus a 1000-case fuzzer (diagonal, resume, cap);
+     six circuits pass, six sabotages caught. ⇒ What is left in ph5 (~10.8 ms against the BBC's
+     21.7) is `road_edge_start`, the subdivide and the tail — re-step before going further; the
+     row is now well under the 6502's.
   2. **The port-only rows:** `prepareFrame` ~7.5 and the drain's excess of ~6. Measure after 1,
      since the drain self-heals as the frame shrinks.
   3. **The tail** (5.4 vs 3.4) **and sign/object** (4.5 vs 2.9): single-step each once.
@@ -793,6 +800,22 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.
+
+### 🔎 SUSPECTED, expansion circuits: a hook's resume re-imports a STALE `edge_nearest` mid-walk
+Found while gating the asm walk (2026-09-25), and identical on the C path, so it predates it.
+`hook_edge_walk_limit` ($56BC, the `$248B` patch on Brands/Donington/Oulton/Snetterton) resumes
+the walk through `road_edge_walk_resume_from`, whose `edge_nearest_marshal_in()` reloads
+`edge_nearest_v` from `mem[$10/$11]` — but production marshals that pair OUT only at the end of
+`build_track_geometry_native`, so mid-walk the cells hold LAST frame's final value, not this
+frame's running minimum (armed `$FFxx` at `$24F9`, then beaten down natively). The resumed points
+then test the running nearest against the wrong floor, which can move `edge_nearest_section` (the
+subdivision floor) and `nearest_edge_*`. The 6502 has one copy, so it cannot happen there.
+[INFERRED from the code; not yet observed in a picture.] Gate: `make viewdiff CIRCUITS=…` /
+`--trace-edge` on a frame where the hook resumes; the fix is a resume entry that marshals in only
+what a hook could have changed (the harness needs the full marshal on its 6502-ABI path — see the
+comment at `hook_edge_walk_limit`). The camera and heading re-imports on the same path are
+coherent [DERIVED]: `apply_driving_model_frame_native` (phase 4) publishes both to `mem[]` before
+phase 5 runs, and nothing in the walk changes them.
 
 ### ⏸ FRAME-RATE-INDEPENDENT SIMULATION — **the user's stated future goal, deferred**
 The engine steps its whole simulation once per painted frame and its clock is calibrated to a

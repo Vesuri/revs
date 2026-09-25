@@ -201,6 +201,7 @@ EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=steptrace.gdb ./diag_run.sh 400   # ⭐⭐ 
 python3 ../tools/steptrace_report.py .run/gdb-out.log   # instructions + memory operands per source line — run from the repo root
 make WALKCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 && GDBSCRIPT=walkcheck.gdb ./diag_run.sh 400   # ⭐ the span-walk ASM vs its C loop, every span + a fuzzer (SPANASM=0 = the C control)
 make SETUPCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 && GDBSCRIPT=setupcheck.gdb ./diag_run.sh 500   # ⭐ the whole span PASS in asm vs the C, all 64 KB a pass + a fuzzer (SETUPASM=0 = the C control; TRACK=n per circuit)
+make GEOCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 && GDBSCRIPT=walk_check.gdb ./diag_run.sh 500   # ⭐ the geometry WALK in asm vs its C loop, all 64 KB a walk + two fuzzers (WALKASM=0 / GEOASM=0 = the C controls; TRACK=0..5 per circuit)
 ```
 ⭐⭐ **When a bracket and the source disagree by an order of magnitude, single-step a call** — the
 PC sampler costs ~1.2 s a sample through the gdb stub; a stepped trace of 24 calls is ~10k

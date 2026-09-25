@@ -4686,7 +4686,7 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
    docs/wide-value-cleanup.md): a shim whose core produces the value marshals OUT, one whose core
    consumes it marshals IN.  Four accesses at an ABI crossing, none on the core-to-core road
    pass. */
-static uint16_t hypot_max_v;
+uint16_t hypot_max_v;   /* not static: road_edge_walk_m68k (walk_m68k.s) writes it */
 
 /* hypot_min ($78/$79) is the sibling relocation: the same producer sorts both magnitudes and
    the same consumer reads both, so the pairs marshal at identical seams.
@@ -4704,7 +4704,7 @@ static uint16_t hypot_max_v;
    ⚠⚠ The consumer produces the pair back CONDITIONALLY and ASYMMETRICALLY: the near arm's >>3
    stores only the high lane, the far arm rewrites both (see point_distance_hypot_apply).
    Writing d.min whole on both arms is a differential failure. */
-static uint16_t hypot_min_v;
+uint16_t hypot_min_v;   /* not static: road_edge_walk_m68k (walk_m68k.s) writes it */
 
 void hypot_min_marshal_in(void)
 {
@@ -4797,7 +4797,7 @@ void car_heading_marshal_out(void)
    publish is what keeps mem[$8A/$8B] from going stale for a frame, and determinism sees that as
    one diverging byte.  Removing it is a representation change — moving the whole chain
    core-to-core and re-recording the baseline — tracked in docs/wide-value-cleanup.md. */
-static uint16_t bearing_v;
+uint16_t bearing_v;   /* not static: road_edge_walk_m68k (walk_m68k.s) writes it */
 
 void bearing_marshal_in(void)
 {
@@ -5861,7 +5861,13 @@ static uint8_t emit_width_compare(unsigned sectionByte, volatile unsigned long* 
     }
     return vA;
 }
-#define EMIT_WIDTH(sb)  emit_width_checked((unsigned)(sb))
+/* The walk comparison below runs the C walk and the asm walk back to back; inside it the emitter
+   must be the plain C core (the reference arm, 1) or the plain asm (the asm arm's C subdivide, 2),
+   never the emitter's own nested comparison. */
+static int s_walkRef;
+#define EMIT_WIDTH(sb)  (s_walkRef == 1 ? emit_width_c((unsigned)(sb))                 \
+                       : s_walkRef == 2 ? (uint8_t)emit_width_m68k((unsigned)(sb))     \
+                       : emit_width_checked((unsigned)(sb)))
 #else
 #define EMIT_WIDTH(sb)  ((uint8_t)emit_width_m68k((unsigned)(sb)))
 #endif
@@ -6164,6 +6170,53 @@ static OffAxis angle_off_axis(unsigned addr, uint8_t threshold)
     return o;
 }
 
+/* $2479-$248F — THE OFF-AXIS SEAM, reached once the point at edge_cursor has swung past the threshold.
+   Shared by the C loop and the asm walk's wrapper (the asm hands this exit back with the cursor
+   untouched and the emitter's V), so the $248B SMC site and a circuit's hook have ONE implementation. */
+static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot);
+static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t offAxis, uint8_t emitV)
+{
+    unsigned here = edge_cursor;                                 /* $2475 LDY $12 */
+    OffAxis prev = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
+
+    /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
+       a circuit's own JMP is real 6502 code that READS the registers, so before
+       dispatching to it re-establish the entry ABI: A + N/Z/C are the SECOND
+       compare's ($2489, the previous point's — it is the last flag writer before
+       the SMC site), Y = edge_cursor (the $2475 LDY), X = section.  After the
+       hook runs it owns the exit. */
+    if (mem[MEM_smc_edge_walk_hook] == 0xB0 && mem[MEM_smc_edge_walk_hook + 2] == 0x4C) {    /* unpatched: Silverstone */
+        if (!prev.carry)
+            return road_edge_walk_subdivide(section, midSlot);
+        return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
+    }
+    HookRegs hr;
+    /* ⭐⭐ V AT A HOOK SEAM — the argument every seam below cites.  V comes from
+       the $246A call, the last instruction before this seam that writes it (the
+       width ADC, or that call's own entry V).  ⚠ That entry V is project_point's,
+       three call levels up, and it is UNOBSERVABLE here: the five circuits' hook
+       corpus contains no `BVC`/`BVS` at all and exactly six `PHP`s, and all six are
+       the scale_by_track_gradient tail entries ($54EB/$555C/$57BB/$59D9) that only
+       the CAMERA and STEERING seams dispatch to — the seams that keep `cpu`
+       deliberately, because that pushed P byte is a real store the differential
+       compares.  Nothing a geometry/horizon/walk seam can reach reads V.  So V is
+       handed over for the rule, not for an observable, and this seam's exit feeds
+       only X.  `make viewdiff` is the gate. */
+    hr.v = emitV;
+    hr.a = prev.magnitude;
+    hr.n = prev.neg;  hr.z = prev.zero;  hr.c = prev.carry;
+    hr.y = (uint8_t)here;
+    hr.x = (uint8_t)section;
+    if (mem[MEM_smc_edge_walk_hook] == 0x4C) {                           /* a circuit's own JMP */
+        uint16_t target = (uint16_t)(mem[MEM_smc_edge_walk_hook + 1] | (mem[MEM_smc_edge_walk_hook + 2] << 8));
+        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
+        else                                      platform_smc_unhandled(MEM_smc_edge_walk_hook, target);
+        return hr.x;                                     /* the hook owns the exit X */
+    }
+    platform_smc_unhandled(MEM_smc_edge_walk_hook, mem[MEM_smc_edge_walk_hook]);
+    return hr.x;
+}
+
 /* $2403-$2469 — the step was too coarse.  Interpolate three quarter-way midpoints between
    the section point the walk came from and this one, stage them in the scratch triple, and
    emit THAT point instead; then the side is finished either way.  Emits nothing at all when
@@ -6233,8 +6286,8 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
    $2475-$248F arm carry it); the two subdivide exits inherit subdivide's exit X. */
 /* The walk's loop, shared by its two entry points.  `resume` enters it at the $2490 step
    instead of at the top of a point — see road_edge_walk_resume_core below. */
-static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t pointCap,
-                                  uint8_t offAxis, int resume)
+static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t pointCap,
+                                    uint8_t offAxis, int resume)
 {
     for (;;) {
         if (!resume) {
@@ -6269,46 +6322,8 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                already out there, in which case the side is done. */
             if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
                 unsigned here = edge_cursor;                             /* $2475 LDY $12 */
-                if (angle_off_axis(MEM_edge_x_hi + here, offAxis).carry) {
-                    OffAxis prev = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
-
-                    /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
-                       a circuit's own JMP is real 6502 code that READS the registers, so before
-                       dispatching to it re-establish the entry ABI: A + N/Z/C are the SECOND
-                       compare's ($2489, the previous point's — it is the last flag writer before
-                       the SMC site), Y = edge_cursor (the $2475 LDY), X = section.  After the
-                       hook runs it owns the exit. */
-                    if (mem[MEM_smc_edge_walk_hook] == 0xB0 && mem[MEM_smc_edge_walk_hook + 2] == 0x4C) {    /* unpatched: Silverstone */
-                        if (!prev.carry)
-                            return road_edge_walk_subdivide(section, midSlot);
-                        return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
-                    }
-                    HookRegs hr;
-                    /* ⭐⭐ V AT A HOOK SEAM — the argument every seam below cites.  V comes from
-                       the $246A call, the last instruction before this seam that writes it (the
-                       width ADC, or that call's own entry V).  ⚠ That entry V is project_point's,
-                       three call levels up, and it is UNOBSERVABLE here: the five circuits' hook
-                       corpus contains no `BVC`/`BVS` at all and exactly six `PHP`s, and all six are
-                       the scale_by_track_gradient tail entries ($54EB/$555C/$57BB/$59D9) that only
-                       the CAMERA and STEERING seams dispatch to — the seams that keep `cpu`
-                       deliberately, because that pushed P byte is a real store the differential
-                       compares.  Nothing a geometry/horizon/walk seam can reach reads V.  So V is
-                       handed over for the rule, not for an observable, and this seam's exit feeds
-                       only X.  `make viewdiff` is the gate. */
-                    hr.v = emitV;
-                    hr.a = prev.magnitude;
-                    hr.n = prev.neg;  hr.z = prev.zero;  hr.c = prev.carry;
-                    hr.y = (uint8_t)here;
-                    hr.x = (uint8_t)section;
-                    if (mem[MEM_smc_edge_walk_hook] == 0x4C) {                           /* a circuit's own JMP */
-                        uint16_t target = (uint16_t)(mem[MEM_smc_edge_walk_hook + 1] | (mem[MEM_smc_edge_walk_hook + 2] << 8));
-                        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
-                        else                                      platform_smc_unhandled(MEM_smc_edge_walk_hook, target);
-                        return hr.x;                                     /* the hook owns the exit X */
-                    }
-                    platform_smc_unhandled(MEM_smc_edge_walk_hook, mem[MEM_smc_edge_walk_hook]);
-                    return hr.x;
-                }
+                if (angle_off_axis(MEM_edge_x_hi + here, offAxis).carry)
+                    return road_edge_walk_seam(section, midSlot, offAxis, emitV);
             }
 
         }
@@ -6341,6 +6356,197 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
         section = (from - step) & 0xFFu;
     }
 }
+
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_GEO_ASM) && defined(REVS_WALK_ASM)
+/* ⭐⭐ THE AMIGA RUNS THE WALK'S POINT LOOP IN 68000 ASSEMBLY — src/platform/amiga/walk_m68k.s, whose
+   banner has the shape: bearing, hypot, nearest, projection, the width emitter and the step, with
+   the bases and constant words in registers.  It hands back the exits that are not "the cap": a
+   subdivide, and the off-axis seam (the $248B SMC site), which C finishes here exactly as the loop
+   above would from the same state.  The loop above stays the reference — the host runs it,
+   `make WALKASM=0` is the control, `make GEOCHECK=1` runs both on the same 64 KB every walk.
+   ⚠ GEOSPLIT's point/bearing/project/hypot counters count only the C loop's points. */
+unsigned road_edge_walk_m68k(unsigned section, unsigned pointCap, unsigned offAxis, unsigned resume);
+#ifdef REVS_GEO_CHECK
+static unsigned road_edge_walk_m68k_last;
+#endif
+
+static uint8_t road_edge_walk_run_asm(unsigned section, uint8_t midSlot, uint8_t pointCap,
+                                      uint8_t offAxis, int resume)
+{
+    unsigned r = road_edge_walk_m68k(section, pointCap, offAxis, (unsigned)resume);
+#ifdef REVS_GEO_CHECK
+    road_edge_walk_m68k_last = r;
+#endif
+    switch ((r >> 8) & 3u) {
+    case 0:  return (uint8_t)r;                                       /* 18 points: $24B4 TAX */
+    case 1:  return road_edge_walk_subdivide((uint8_t)r, midSlot);   /* clip or behind */
+    default: return road_edge_walk_seam((uint8_t)r, midSlot, offAxis, (uint8_t)((r >> 10) & 1u));
+    }
+}
+
+#ifdef REVS_GEO_CHECK
+volatile unsigned long g_walkChecks       = 0;
+volatile unsigned long g_walkMismatch     = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_walkMismatchAt   = 0;   /* first differing address; $10000 the exit X, $10001 a C word */
+volatile unsigned long g_walkFuzzCases    = 0;
+volatile unsigned long g_walkFuzzMismatch = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_walkFuzzDiag     = 0;   /* cases whose last point was a diagonal — must be non-zero */
+volatile unsigned long g_walkFuzzDeep     = 0;   /* cases that kept 3+ points — must be non-zero */
+volatile unsigned long g_walkFuzzCap      = 0;   /* cases that ran to the 18-point cap — must be non-zero */
+volatile unsigned long g_walkFuzzBad[8];          /* the first bad fuzz case: n, xC, xA, asm code, hooks C, hooks asm, at, resume */
+
+typedef struct { uint16_t nearest, bearing, hmin, hmax; } WalkWords;
+static WalkWords walk_words(void)
+{   WalkWords w = { edge_nearest_v, bearing_v, hypot_min_v, hypot_max_v }; return w; }
+static void walk_words_set(WalkWords w)
+{   edge_nearest_v = w.nearest; bearing_v = w.bearing; hypot_min_v = w.hmin; hypot_max_v = w.hmax; }
+void view_origin_marshal_out(void);
+
+/* Both walks from the same 64 KB and the same four words; the asm's result is what the game keeps. */
+static uint8_t walk_compare(unsigned section, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis,
+                            int resume, volatile unsigned long* bad, uint8_t* countOut)
+{
+    WalkWords wBefore = walk_words(), wC;
+    uint8_t xC, xA, count0 = shared_counter_42;
+    unsigned i;
+    /* ⚠ The words the walk only READS are restored between the arms too: a circuit hook's resume
+       ($2490, road_edge_walk_resume_from) marshals the camera and heading back IN from mem[], so
+       an arm can leave them changed — the same value in the game, where the two copies agree. */
+    const uint16_t head0 = car_heading_v, vo0 = view_origin_16[0], vo1 = view_origin_16[1],
+                   vo2 = view_origin_16[2];
+
+    unsigned long hk0 = g_trackHookCalls, hkC, hkA;
+    unsigned long badBefore = *bad;
+    memcpy(s_geoBefore, (const void*)mem, sizeof s_geoBefore);
+    s_walkRef = 1;
+    xC = road_edge_walk_run_c(section, midSlot, pointCap, offAxis, resume);
+    hkC = g_trackHookCalls - hk0;
+    wC = walk_words();
+    memcpy(s_geoAfterC, (const void*)mem, sizeof s_geoAfterC);
+    if (countOut) *countOut = (uint8_t)(shared_counter_42 - count0);
+    if (countOut && shared_temp_7e == 0xFFu) g_walkFuzzDiag++;
+    memcpy((void*)mem, s_geoBefore, sizeof s_geoBefore);             /* the same input for the asm */
+    walk_words_set(wBefore);
+    car_heading_v = head0;
+    view_origin_16[0] = vo0;  view_origin_16[1] = vo1;  view_origin_16[2] = vo2;
+    s_walkRef = 2;
+    hk0 = g_trackHookCalls;
+    xA = road_edge_walk_run_asm(section, midSlot, pointCap, offAxis, resume);
+    hkA = g_trackHookCalls - hk0;
+    s_walkRef = 0;
+    if (xA != xC) {
+        if (!*bad) g_walkMismatchAt = 0x10000u;
+        (*bad)++;
+    } else {
+        WalkWords wA = walk_words();
+        if (wA.nearest != wC.nearest || wA.bearing != wC.bearing
+            || wA.hmin != wC.hmin || wA.hmax != wC.hmax) {
+            if (!*bad) g_walkMismatchAt = 0x10001u;
+            (*bad)++;
+        } else {
+            /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+            const uint32_t* a = (const uint32_t*)(const void*)mem;
+            const uint32_t* c = (const uint32_t*)(const void*)s_geoAfterC;
+            for (i = 0; i < 65536u / 4u; i++)
+                if (a[i] != c[i]) {
+                    unsigned j = i * 4u;
+                    while (mem[j] == s_geoAfterC[j]) j++;
+                    if (!*bad) g_walkMismatchAt = j;
+                    (*bad)++;
+                    break;
+                }
+        }
+    }
+    if (badBefore == 0 && *bad && bad == &g_walkFuzzMismatch) {
+        g_walkFuzzBad[0] = g_walkFuzzCases; g_walkFuzzBad[1] = xC; g_walkFuzzBad[2] = xA;
+        g_walkFuzzBad[3] = road_edge_walk_m68k_last; g_walkFuzzBad[4] = hkC; g_walkFuzzBad[5] = hkA;
+        g_walkFuzzBad[6] = g_walkMismatchAt; g_walkFuzzBad[7] = (unsigned long)resume;
+    }
+    return xA;
+}
+
+/* ⭐ THE WALK FUZZER, once, before the first real walk.  Driving data reaches the diagonal (two
+   magnitudes exactly equal) almost never, the resume entry never on Silverstone, and a far-clipped
+   first point only at a crest — so each case randomises the section planes, the view origin, the
+   heading, the nearest, the cursor and the counters, forces equal magnitudes on a quarter of the
+   cases, and requires both walks to agree on all 64 KB, the four words and the exit.  Everything
+   is restored afterwards: the game never sees a fuzzed byte or word. */
+static void walk_fuzz(void)
+{
+    uint32_t r = 0x6A09E667u;
+    unsigned n, i;
+    WalkWords wSave = walk_words();
+    uint16_t headSave = car_heading_v, vo[3];
+#define WALK_RND() (r ^= r << 13, r ^= r >> 17, r ^= r << 5, (unsigned)r)
+    for (i = 0; i < 3; i++) vo[i] = view_origin_16[i];
+    memcpy(s_geoFuzzSave, (const void*)mem, sizeof s_geoFuzzSave);
+    for (n = 0; n < 1000u; n++) {   /* ~0.2 s of target time a case: 64 KB copied five times */
+        const unsigned k = WALK_RND(), m = WALK_RND();
+        unsigned section = (k & 0x7Fu);
+        uint8_t kept;
+        if (section >= 0x78u) section -= 0x08u;
+        /* the section planes: coordinates within ~±4096 of the origin, so points both near and far */
+        for (i = 0; i < 0x100u; i++) {
+            const unsigned v = WALK_RND();
+            mem[0x0900u + i] = (uint8_t)v;
+            mem[0x0A00u + i] = (uint8_t)(((v >> 8) & 0x1Fu) + 0x70u);
+        }
+        for (i = 0; i < 3; i++) view_origin_16[i] = (uint16_t)(0x7F00u + ((WALK_RND() >> 7) & 0x3FFu));
+        car_heading_v  = (uint16_t)m;
+        edge_nearest_v = (uint16_t)((k >> 8) & ((k & 0x80u) ? 0xFFFFu : 0x0FFFu));
+        edge_cursor            = (uint8_t)(((k >> 24) & 1u) * 0x28u + ((k >> 25) & 15u));
+        shared_counter_42      = (uint8_t)(((m >> 16) & 3u) + ((k & 0xC00u) ? 0u : 0x0Eu));  /* a quarter start near the cap */
+        edge_nearest_section   = (uint8_t)((m >> 18) & 7u);
+        view_pitch_offset      = (uint8_t)(((m >> 21) & 15u) - 8u);
+        section_wrap_limit     = (uint8_t)((m >> 25) & 0x7Fu);
+        road_side_index        = (uint8_t)((m >> 31) & 1u);
+        track_direction        = (uint8_t)(k >> 16);
+        mem[MEM_marker_count]  = (uint8_t)((m >> 8) & 3u);
+        horizon_extent         = (uint8_t)((m >> 10) & 0x3Fu);
+        mem[MEM_edge_x_hi + edge_cursor - 1u] = (uint8_t)(m >> 3);    /* the seam's previous point */
+        if ((k & 0x3000u) == 0) {
+            /* equal magnitudes at the first point: component 2's delta mirrors component 0's */
+            const uint16_t d0 = (uint16_t)(section_word(section) - view_origin_16[0]);
+            const uint16_t d2 = (m & 0x40u) ? d0 : (uint16_t)(0u - d0);
+            section_word_set(section + 2u, (uint16_t)(view_origin_16[2] + d2));
+        }
+        /* mem[]'s copies of the fuzzed words must AGREE with them, as they do in the game: a
+           circuit hook's resume marshals them back in from mem[] mid-walk. */
+        view_origin_marshal_out();  car_heading_marshal_out();  edge_nearest_marshal_out();
+        hypot_min_marshal_out();  hypot_max_marshal_out();  bearing_marshal_out();
+        (void)walk_compare(section, 0xFAu, 0x12u, 0x14u, (int)((k >> 14) & 1u) & (int)((k >> 15) & 1u),
+                           &g_walkFuzzMismatch, &kept);
+        if (kept >= 3u) g_walkFuzzDeep++;
+        if (shared_counter_42 >= 0x12u) g_walkFuzzCap++;
+        g_walkFuzzCases++;
+        memcpy((void*)mem, s_geoFuzzSave, sizeof s_geoFuzzSave);
+    }
+#undef WALK_RND
+    for (i = 0; i < 3; i++) view_origin_16[i] = vo[i];
+    car_heading_v = headSave;
+    walk_words_set(wSave);
+}
+
+static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t pointCap,
+                                  uint8_t offAxis, int resume)
+{
+    static int fuzzed;
+    /* ⚠ A circuit's hook RE-ENTERS the walk ($2490, road_edge_walk_resume) from inside the seam,
+       i.e. from inside a comparison already running: that walk belongs to the arm that called the
+       hook, and a nested comparison would overwrite the outer one's 64 KB snapshot. */
+    if (s_walkRef == 1) return road_edge_walk_run_c(section, midSlot, pointCap, offAxis, resume);
+    if (s_walkRef == 2) return road_edge_walk_run_asm(section, midSlot, pointCap, offAxis, resume);
+    if (!fuzzed) { fuzzed = 1; geo_fuzz(); walk_fuzz(); }   /* the emitter's own fuzzer too: under
+                                                              WALKASM no plain emitter check runs */
+    g_walkChecks++;
+    return walk_compare(section, midSlot, pointCap, offAxis, resume, &g_walkMismatch, 0);
+}
+#else
+#define road_edge_walk_run road_edge_walk_run_asm
+#endif
+#else
+#define road_edge_walk_run road_edge_walk_run_c
+#endif
 
 /* $23D2 — the walk proper: start at `firstPoint` on the edge buffers and emit up to 18 points. */
 uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,

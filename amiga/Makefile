@@ -1187,12 +1187,26 @@ GEOASM ?= 1
 ifeq ($(GEOASM),1)
 EXTRA_DEFINES += -DREVS_GEO_ASM
 ASM_SRCS += $(AMIGA_SRC)/emit_width_m68k.s
+# ⭐⭐ `WALKASM=1` (the DEFAULT, needs GEOASM) — the walk's whole POINT LOOP in 68000 assembly too
+# (src/platform/amiga/walk_m68k.s: bearing, hypot, nearest, projection, the emitter, the step).
+# `make WALKASM=0` is its control.  Under GEOCHECK every walk runs the C loop and the asm on the same
+# 64 KB and compares all of it, the four C words and the exit X (amiga/walk_check.gdb), after a
+# fuzzer; `WALKASM_SABOTAGE=N` assembles defect N.
+WALKASM ?= 1
+ifeq ($(WALKASM),1)
+EXTRA_DEFINES += -DREVS_WALK_ASM
+ASM_SRCS += $(AMIGA_SRC)/walk_m68k.s
+endif
 ifeq ($(GEOCHECK),1)
 EXTRA_DEFINES += -DREVS_GEO_CHECK
 PROBE_SYMS_TERRAIN += g_geoChecks g_geoMismatch g_geoMismatchAt g_geoFuzzCases g_geoFuzzMismatch g_geoFuzzV
+ifeq ($(WALKASM),1)
+PROBE_SYMS_TERRAIN += g_walkChecks g_walkMismatch g_walkMismatchAt g_walkFuzzCases g_walkFuzzMismatch g_walkFuzzDiag g_walkFuzzDeep g_walkFuzzCap g_walkFuzzBad
+endif
 endif
 endif
 GEOASM_SABOTAGE ?= 0
+WALKASM_SABOTAGE ?= 0
 # ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
 # the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
 # ⚠ Diagnostic only; no framerate may be quoted from such a build.
@@ -1701,6 +1715,10 @@ obj/scan_m68k.o : $(AMIGA_SRC)/scan_m68k.s
 obj/emit_width_m68k.o : $(AMIGA_SRC)/emit_width_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(GEOASM_SABOTAGE) -o $@ "$<"
+
+obj/walk_m68k.o : $(AMIGA_SRC)/walk_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(WALKASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

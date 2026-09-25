@@ -17,6 +17,10 @@
 | store, so the two can never interleave).
 |
 | unsigned emit_width_m68k(unsigned sectionByte)  -> the exit V, 0 or 1
+| emit_width_core — the same routine for road_edge_walk_m68k (walk_m68k.s), entered by `bsr`/`jsr` with
+|   a0 = mem and d1 = the section byte zero-extended to a word; returns V in d0.  It CLOBBERS d0 and
+|   d2-d6 and a1, and PRESERVES d1, d7, a0 and a2-a6 — including across its C callouts, which save
+|   d1/a0 themselves (the C ABI keeps d2-d7/a2-a6).  The walk keeps its constants in d7/a2-a6 for that.
 | Registers: a0 = mem, a1 table scratch, d1 = the section byte, d2 = the masked flags, d3 scratch
 |   (the feature, then k, then the edge word), d4 = the style, d5 = the offset, d6 = V out.
 
@@ -57,6 +61,14 @@ emit_width_m68k:
 	lea	mem,a0
 	moveq	#0,d1
 	move.b	ARGS+3(sp),d1               | the section byte
+	jbsr	emit_width_core
+	movem.l	(sp)+,d2-d6/a2
+	rts
+	.size	emit_width_m68k, .-emit_width_m68k
+
+	.globl	emit_width_core
+	.type	emit_width_core, @function
+emit_width_core:
 	cmp.b	#0x85,SMC_HOOK(a0)
 	jbne	ew_c                        | a circuit's own horizon hook: the C core, whole
 	cmp.b	#0x84,SMC_HOOK+2(a0)
@@ -188,13 +200,13 @@ ew_style:
 ew_done:
 	moveq	#0,d0
 	move.b	d6,d0
-	movem.l	(sp)+,d2-d6/a2
 	rts
 
 ew_c:
+	movem.l	d1/a0,-(sp)
 	move.l	d1,-(sp)
 	jsr	emit_width_c
 	addq.l	#4,sp
-	movem.l	(sp)+,d2-d6/a2
+	movem.l	(sp)+,d1/a0
 	rts
-	.size	emit_width_m68k, .-emit_width_m68k
+	.size	emit_width_core, .-emit_width_core
