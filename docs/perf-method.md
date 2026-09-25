@@ -2982,6 +2982,51 @@ Two things this left that stand on their own:
   every cell the new painter owes, run it, then require `(old ^ new) & ~(pf2a | pf2b) == 0` per
   byte on both planes.)
 
+### ⛔ THE TERRAIN BY BLITTER AREA FILL — exact, and +5.25 ms on the A500 (2026-09-25)
+
+**The idea.** A view line is `view_consume`'s RLE, i.e. an edge buffer plus a span fill, which is
+what the blitter's EXCLUSIVE fill does in hardware. Run DESCENDING, it outputs per pixel the XOR of
+every source bit at or right of it, resetting per row. So a row D is reproduced by toggles
+`T[x] = D[x] ^ D[x+1]`, and a run of a solid colour byte needs one toggle byte a plane, at its last
+cell. Per BBC byte, `A = D ^ (D << 1)` and `M = D >> 7` per plane; a run of `a` ending before `n`
+is `T_end = A(a) ^ M(n)`, and a patterned run's interior cells carry `K = A ^ M`. Two chip toggle
+buffers alternate by sweep, so the blitter clears the old one while the CPU writes the new. It was
+chosen at run time by CPU (a 68020+ keeps the asm painter — user decision).
+
+**It is exact.** `TERRAINCHECK`'s per-cell oracle ran after the blit completed: 0 mismatches over
+616k–671k cells on both shapes. Seven sabotages were caught (next run's pixel ignored, inclusive
+fill, buffer never cleared, M dropped, first event unrecorded, seeds overriding events, entry fixup
+dropped); the A1200 took the CPU path, also at 0 mismatches.
+
+**And it loses.** Same session, `PROBEFIELDS=3000`, control `TERRAINBLIT=0`:
+
+| arm | frame | ph24 | ph33 |
+|---|---:|---:|---:|
+| asm painter (control) | 84.43 | 17.87 | 5.13 |
+| C toggle writer over the event lists | 96.74 | 21.86 | 12.95 |
+| the scan writes the toggles, a C fixup per line | 89.68 | 22.92 | 4.96 |
+| …no clear blit | 89.61 | 22.79 | 4.99 |
+| …no fill blit | 89.38 | 22.76 | 4.91 |
+
+⭐⭐ **The blitter is nearly free: 0.30 ms of fill and 0.07 of clear contention.** The whole loss is
+CPU work to make the toggles. The fused scan is 10.6k instructions a sweep against the list scan's
+6.9k (≈20 a hit: prev colour, run start, first event, two plane stores), and the C fixup is 2.9k
+(≈38 a line). Together that exceeds what it replaced: the painters cost **6.87 ms** (priced by
+`TERRAINCARVE=1`, which skips them — ph24 −4.11, ph33 −2.76). The reason is the painter's
+unchanged-line skip, which already paints only ~30% of lines: there was little fill work left to
+hand to the blitter, and a per-event cost the blitter cannot touch.
+⇒ **The blitter pays here only if the PRODUCERS emit the toggles and the scan (~10 ms) goes as
+well.** It is the one design where XOR composition beats an ordered insert, but it changes every
+producer and the same-cell composition rule, and only per-circuit `viewdiff` can gate it.
+⚠ Two traps met on the way:
+- `TERRAINCARVE=9` silently also deleted the SCAN, since the ladder's `>= 3` arm matched. The low
+  block then walked unterminated event lists and read 37 ms. **Pick an arm number inside a
+  ladder's meaning, and read the sampler before believing the split.**
+- `make EXTRA_DEFINES+=…` on the command line REPLACES the Makefile's own `+=` list, so the build
+  loses every default flag.
+Census on the way: ~43 patterned runs a sweep at a mean 1.1 cells (single boundary cells), and
+0.27 a sweep longer than four cells. The code is `tmp/blitter_terrain.patch`.
+
 ## Lessons — measurement
 
 - **Compare FPS row vectors, never the `total painted` line.** The total spans a partial

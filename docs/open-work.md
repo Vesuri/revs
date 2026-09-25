@@ -886,6 +886,14 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ **THE TERRAIN BY BLITTER AREA FILL** — exact (0 mismatches over 616k cells, seven sabotages
+  caught) and **+5.25 ms** (84.43 → 89.68), in both shapes: a C toggle writer over the event lists
+  (+12.3) and the toggles written by the scan itself (+5.25). The blits are nearly free — dropping
+  the fill moved the frame 0.30 ms and the clear 0.07 — so the loss is the CPU work of making the
+  toggles (~20 instructions a source hit, ~38 a line for the entry fixup), which exceeds the asm
+  painter's 6.87 ms because that painter's unchanged-line skip already paints only ~30% of lines.
+  The blitter only pays if the PRODUCERS emit toggles and the scan goes too. Patch:
+  `tmp/blitter_terrain.patch`; docs/perf-method.md §the terrain by blitter area fill.
 - ⛔ **THE SWEEP DRIVERS' C — the scan-line pair in locals, the `$7EEE` terminator hoisted** —
   −0.03 ms (87.93 → 87.90; ph24 +0.04, ph33 −0.06), validated and reverted. The trace put ~2.7k of
   the sweep's 17.3k instructions in the drivers, but deleting ~10 a line of global RMW paid
