@@ -393,8 +393,10 @@ sides does.** `docs/perf-method.md` §what the original hardware achieves.
 ⚠⚠ **GAME SPEED IS THE FRAMERATE — the engine has no fixed-rate sim.** Every sim step runs once per
 main-loop frame and the race clock adds 9.36 cs a frame (calibrated to a 93.6 ms frame), so a
 faster frame is a FASTER GAME: real time at 93.6 ms, 1.95× at the 48 ms target. Decoupling the
-simulation from painting is the user's stated future goal, **deferred — do not start it unasked**
-(`docs/open-work.md` §FRAME-RATE-INDEPENDENT SIMULATION, `docs/perf-method.md` §GAME SPEED).
+simulation from painting is **in progress** (user decision: 25 Hz steps on a 68000, 50 Hz on a
+68020 or better, exact h, lap times comparable with the original's) — `docs/open-work.md`
+§FRAME-RATE-INDEPENDENT SIMULATION holds the verified design and its stages; today's loop survives
+as the byte-exact legacy mode that the determinism family gates.
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 

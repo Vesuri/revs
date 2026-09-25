@@ -18,7 +18,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 |---|---|
 | what gates what, and which phase we are in | `docs/phases.md` |
 | what the BINARY is (unpacks, sweep, SMC surface, hardware) | `docs/static-map.md` |
-| a name that contradicts behaviour, or does not exist | `docs/rename.md` (a queue; currently empty) |
+| a name that contradicts behaviour, or does not exist | `docs/rename.md` (a queue) |
 | how to price any change honestly, and every past measurement | `docs/perf-method.md` |
 | the standing RULES | `CLAUDE.md` |
 
@@ -857,15 +857,85 @@ comment at `hook_edge_walk_limit`). The camera and heading re-imports on the sam
 coherent [DERIVED]: `apply_driving_model_frame_native` (phase 4) publishes both to `mem[]` before
 phase 5 runs, and nothing in the walk changes them.
 
-### ⏸ FRAME-RATE-INDEPENDENT SIMULATION — **the user's stated future goal, deferred**
-The engine steps its whole simulation once per painted frame and its clock is calibrated to a
-93.6 ms frame (`docs/perf-method.md` §GAME SPEED IS THE FRAMERATE), so at ~105 ms the port plays at
-0.89× real time — and at the 48 ms target it would play at **1.95×**. The fix is a fixed-rate sim
-tick decoupled from painting. **Not started, and not to be started unasked** ("we'll keep pushing
-and eventually make the physics frame rate independent. But that's in the future"). Owed before
-the performance campaign can ship a frame much below ~93.6 ms. Gates to design against: the
-50 Hz body drain (`docs/amiga-arch.md`), `determinism` (must stay framerate-locked or be re-argued),
-and the faithfulness seam — it is a departure from the BBC and needs its own written argument.
+### ▶ FRAME-RATE-INDEPENDENT SIMULATION — **started 2026-09-25 (user decision)**
+The engine steps its whole simulation once per painted frame, and its clock is calibrated to a
+93.6 ms frame (`docs/perf-method.md` §GAME SPEED IS THE FRAMERATE). So game speed = 93.6 / frame ms:
+1.11× today and **1.95× at the 48 ms target**. This item is the fix. It owes a written faithfulness
+argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
+
+**The user's decisions.**
+- **Step rates:** fixed steps tied to vertical blanks — **25 Hz on a 68000, 50 Hz on a 68020 or better**
+  (chosen at run time, the same way as the blitter's CPU choice).
+- **Timestep:** h is **exact**, h = step / 93.6 ms (0.4274 at 25 Hz, 0.2137 at 50 Hz), applied as a
+  Q16 `mulu.w` at the scaled sites. Game time is therefore real time.
+- **Clock:** lap times stay **comparable with the original's**. `add_frame_time` runs bit-exact on a
+  slow tick that fires every 93.6 ms of game time.
+- Precedent: the user's Stunt Car Racer port (`~/Documents/Stunt Car Racer`, CLAUDE.md §Frame Rate
+  Conversion) runs one step per elapsed vertical blank and draws on the last one.
+
+**The design** — review of an outside proposal, verified against the code 2026-09-25.
+- **Units stay; only accumulation over time scales.** Speeds, forces, yaw rate and grip keep their
+  units. The scaled sites:
+  - `integrate_state_rates`: `<<3`/`<<5` × h;
+  - `integrate_car_position`: 2V·h, plus a heading remainder;
+  - the vertical model: −4h, height += v·h, jump height −2h;
+  - the keyboard steering ramp (the mouse is absolute and needs no h; CAS is still to classify);
+  - engine coast: +7h / −12h;
+  - `drive_one_car`: 4·gap·h, 2·speed·h, ±h lateral;
+  - camera pitch smoothing: 1 − 0.5^h.
+
+  Each scaled quantity carries a fraction remainder.
+- **NOT time steps** (leave alone):
+  - the `0x58`/×1.5 lever arms in `stage_lateral_speed_delta` (rear wheel at x−s, front at x+1.5s);
+  - both steer rotations (elements 8/9 are rebuilt every frame from 0/1 — pure geometry);
+  - `0x4E`, `0xCD`, drag, grip, gear ratios and the power curve;
+  - the `>>2` on elements 10..13 — a scale on the ground, because `check_wheel_slip` rewrites them
+    every frame. It is a genuine decay only while airborne, and on the saturation path (stale values),
+    where its consumers are zeroed anyway. This is Stunt Car Racer's ground/airborne damping split
+    again.
+- **The slow tick** (every 93.6 ms of game time, accumulated per step like Stunt Car Racer's
+  `frameThrottleFlag`) runs with its **original constants**:
+  - `tick_race_timers` (the clock, `loop_counter`, AI reseeding);
+  - the lights;
+  - the session countdowns;
+  - starter luck;
+  - the slip-history roll (OR-ed over the tick's steps);
+  - squeal hysteresis;
+  - the `grip_disturbance` draw (held between ticks — drawn every step it averages the grass bumps
+    away);
+  - engine-note chasing.
+- **Once per render, with the value held between steps:**
+  - the surface probe (grip reads two painted pixels);
+  - player placement and the section walk (they come out of `build_track_geometry`, 10.7 ms — never
+    per step);
+  - CAS edge data;
+  - lap timers, contact, crash, shift keys.
+
+  Holding these is faithful or better while a rendered frame is under ~94 ms, because the BBC's own
+  sample is one frame old. ⚠ Per-frame-change thresholds in this code do scale with the render rate
+  and must be converted: `record_section_jump`'s |Δacross| ≥ $16. `rebase_edge_point` subtracts the
+  heading/pitch change **since the last geometry pass**. `advance_player_section` keeps reading ω
+  (a one-BBC-frame predictor in ω's own units).
+- **Cost:** `apply_driving_model` is 3.62 ms a call. 25 Hz steps cost ~9% of a 68000 (+~4 ms on
+  today's frame); 50 Hz would cost ~18% (+~13 ms), which is why the 68000 steps at 25 Hz.
+- **The legacy mode stays**: one step per render, h = 1. Today's loop is byte-exact under the whole
+  determinism family and remains the gate for every refactor. The new modes are gated by a host
+  physical-equivalence suite against h = 1 in game time.
+
+**Stages** (each gated before the next):
+1. Byte-exact split into `sim_step` / `legacy_tick` / `render_frame`, scheduler at 1:1:1.
+   `move_and_draw_cars`, `update_camera_and_drive_state`, the controls read, starter luck, the slip
+   roll and the disturbance draw are divided; every reordering is proved by a reader/writer audit.
+   Gate: determinism ×5 + `transtrap`.
+2. The scheduler with the physics unchanged (h = 1, one step per 93.6 ms): the since-last-geometry
+   rebase, a catch-up cap, the backlog discarded on the crash hold / reset / front end, a scripted
+   field count on the host.
+3. The h conversion. Gate: the equivalence suite (acceleration, braking, cornering yaw rate, jump
+   airtime, AI lap times) plus sabotages.
+4. The per-frame-change thresholds and the written holding argument.
+5. The Amiga rate choice, and probes for steps a frame and dropped steps.
+6. Docs (CLAUDE.md's GAME SPEED rule).
+7. The user play-tests it.
 
 ### 🔧 The sound BY-EAR pass (`docs/phases.md` §5.4)
 Owed since sound landed, and the one thing in the project that **cannot be verified headlessly**.
