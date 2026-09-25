@@ -266,7 +266,11 @@ void Revs::render()
 #endif
     // ⭐ The BBC frame buffer -> the back bitplane buffer.  Main-loop context: the
     // POINTER swap that presents it happens in vbi(), never here.
-    PROBE_PHASE(PROBE_PHASE_PREPARE);
+    /* ⚠ A FRONT-END FRAME IS BOOT, NOT A RACE FRAME — phase 0.  prepareFrame() hands a MODE 7
+       page to decodeTeletext(), a whole-page decode, and the dozen front-end frames at the top of
+       a STRAIGHT_TO_RACE window used to land on 27 and be averaged over the race frames: ~1.9 ms
+       of the published frame that no race frame ever paid (`calls` read 2x frames + 12). */
+    PROBE_PHASE(tt_active() ? 0 : PROBE_PHASE_PREPARE);
     /* ⭐ SHAPE builds: how much of the picture actually moved since the last paint — the number
        that prices a dirty-region decode.  Taken BEFORE decode() so it describes the bytes this
        decode is about to convert (src/platform/shape.h). */
