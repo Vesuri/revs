@@ -6,7 +6,7 @@ Four decoupled step sizes can never be byte-exact against the 6502 (docs/open-wo
 in legacy mode (one engine step per painted frame, 93.6 ms of game time each) and in decoupled
 modes on the host, compared as functions of GAME TIME.
 
-    python3 tools/sim_equiv.py [--steer] [--seconds=N] [--modes=legacy,h400,h200,h200x5]
+    python3 tools/sim_equiv.py [--steer[=l|r]] [--seconds=N] [--modes=legacy,h400,h200,h200x5]
 
 A mode is `h<step tenths>[x<fields per painted frame>]`; the default field count gives one
 step per painted frame.  `x5` on a 20 ms step puts FIVE steps in each painted frame, which is
@@ -40,7 +40,7 @@ def sample(m):
 
 def run(mode, steer, seconds):
     env = dict(os.environ, REVS_FIXED_RNG='1', REVS_T2_ZERO='1', REVS_MEM_DUMP='1', REVS_QUIT_AFTER_DUMP='1')
-    if steer: env['REVS_HOLD_STEER'] = 'l'
+    if steer: env['REVS_HOLD_STEER'] = steer
     if mode == 'legacy':
         dt = 93.6
     else:
@@ -93,7 +93,10 @@ def distance(rows, t):
 
 def main():
     args = sys.argv[1:]
-    steer = '--steer' in args
+    steer = ''
+    for a in args:
+        if a == '--steer': steer = 'l'
+        if a.startswith('--steer='): steer = a.split('=')[1]
     seconds = 12.0
     modes = ['legacy', 'h400', 'h200', 'h200x5']
     for a in args:
@@ -101,12 +104,12 @@ def main():
         if a.startswith('--modes='): modes = a.split('=')[1].split(',')
     series = {m: run(m, steer, seconds) for m in modes}
     ref = series.get('legacy')
-    print(f"drive: throttle held{' + wheel held left' if steer else ''}; "
+    print(f"drive: throttle held{(' + wheel held ' + ('left' if steer == 'l' else 'right')) if steer else ''}; "
           f"t = game seconds from the first moving frame; each series cut at its first crash reset")
     for m, rows in series.items():
         print(f"  {m:8s} {len(rows):5d} frames, {rows[-1][0] if rows else 0:6.2f} s before a reset")
     keys = [('speed', '%7.2f'), ('revs', '%5.0f'), ('gear', '%3.0f')] + \
-           ([('heading', '%7.1f'), ('lat', '%6.2f')] if steer else [])
+           ([('heading', '%7.1f'), ('lat', '%6.2f'), ('height', '%4.0f')] if steer else [])
     print()
     hdr = '   t  ' + ''.join(f"| {m:^{8 * len(keys) + 9}s}" for m in modes)
     print(hdr)

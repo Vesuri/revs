@@ -613,6 +613,8 @@ extern uint16_t rebase_heading_delta_v;   /* rebase_edge_point's heading correct
 void sim_clock_discard_backlog(void);
 extern uint16_t sim_h_q16;       /* the step as a Q16 fraction of the engine's frame; 0 = exactly 1 */
 extern uint8_t  sim_tick_step;   /* the current step carries the slow tick */
+extern uint8_t  sim_render_ticks;   /* slow ticks since the previous painted frame */
+extern uint8_t  sim_engine_caught;  /* the engine caught since the lights last walked */
 extern uint16_t plot_ptr_v, plot_ptr2_v, plot_ptr3_v;
 void plot_ptr_marshal_in(void);   void plot_ptr_marshal_out(void);
 void plot_ptr2_marshal_in(void);  void plot_ptr2_marshal_out(void);

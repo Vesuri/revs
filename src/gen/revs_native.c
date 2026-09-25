@@ -4209,10 +4209,17 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
     /* The session's own countdown.  Non-zero means the limit was already passed and the car
        is coasting; the frame it would reach zero is the frame the session ends. */
     if (load_x(session_end_countdown) != 0) {
+        /* ⭐ Counted in ENGINE frames: one per slow tick since the previous painted frame. */
+        if (sim_render_ticks == 1u) {
         unsigned remaining = dec_x();
         if (remaining == 0)
             return race_session_end(depth);
         session_end_countdown = (unsigned char)remaining;
+        } else if (sim_render_ticks != 0u) {
+            if (session_end_countdown <= sim_render_ticks)
+                return race_session_end(depth);
+            session_end_countdown = (unsigned char)(session_end_countdown - sim_render_ticks);
+        }
     }
 
     engine_sound_update();        /* the fourth and last note step of the frame */
@@ -4239,6 +4246,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
 #define SIM_FIELD_TENTHS      200u     /* one PAL field */
 #define SIM_BACKLOG_CAP_TENTHS 3000u   /* at most 300 ms of catch-up after a slow frame */
 static unsigned s_simStepTenths;       /* 0 = legacy */
+static uint16_t sim_pitch_k_q16(uint16_t h);
 /* Always compiled: two increments a step, and the only way to prove on the target that game
    time runs at real time (amiga/sim_clock.gdb: steps / fields x 50 must read 10.68 at h = 1). */
 volatile unsigned long g_simSteps, g_simSlowTicks;
@@ -4251,6 +4259,9 @@ static uint16_t s_headingRem;          /* ...and the heading */
 static uint16_t s_revsRem;             /* the engine's coasting revs */
 static uint16_t s_revsPrevRem;         /* ...and the gear-change drop's */
 static uint16_t s_steerRem;            /* the steering demand's (keyboard, slip-centring, CAS) */
+static uint16_t s_shakeRem, s_vspeedRem, s_heightRem, s_pitchRem;   /* the jump and the camera */
+static uint16_t s_pitchK;              /* the camera low pass per step (sim_pitch_k_q16) */
+static uint16_t s_aiSpeedRem[20], s_aiAlongRem[20], s_aiAcrossRem[20];   /* per car: the field is 20 (drive_other_cars counts X down from $14) */
 
 static void sim_clock_session_start(void)
 {
@@ -4263,6 +4274,11 @@ static void sim_clock_session_start(void)
     s_revsRem = 0u;
     s_revsPrevRem = 0u;
     s_steerRem = 0u;
+    s_shakeRem = s_vspeedRem = s_heightRem = s_pitchRem = 0u;
+    memset(s_aiSpeedRem, 0, sizeof s_aiSpeedRem);
+    memset(s_aiAlongRem, 0, sizeof s_aiAlongRem);
+    memset(s_aiAcrossRem, 0, sizeof s_aiAcrossRem);
+    s_pitchK = sim_h_q16 ? sim_pitch_k_q16(sim_h_q16) : 0u;
     (void)platform_sim_fields();       /* the fields the reset took are not game time */
     /* The session's first painted frame runs one step, and it is a slow tick — as the BBC's
        first frame is. */
@@ -4308,19 +4324,48 @@ static int sim_slow_tick_due(void)
    driver, so a validate fixture runs a legacy step. */
 uint16_t sim_h_q16;
 uint8_t  sim_tick_step = 1u;
+/* How many slow ticks fell since the previous painted frame — what the once-per-frame
+   bookkeeping that counts ENGINE frames (the lap timer, its readout, the session-end
+   countdown) is owed.  1 in legacy mode and outside the frame driver. */
+uint8_t  sim_render_ticks = 1u;
+/* ⭐ AN EVENT BETWEEN TICKS MUST BE LATCHED FOR THE SLOW-TICK CODE THAT SAMPLES IT.  The lights
+   wait at $80 until they see the engine running; decoupled, the engine can catch on one step and
+   stall on the next (in gear at rest — the race grid does exactly that), both between two slow
+   ticks, and the lights then wait for ever.  engine_catches sets this and the lights' walk takes
+   it as "running" — only when h < 1, the one case with steps between two walks (at h = 1 every
+   step is a tick, and a validate fixture's random state must not see a stale latch). */
+uint8_t  sim_engine_caught;
 
 /* rate x h x 2^shift, in the accumulator's own least unit, with what falls below that unit
    carried in *rem — so over any number of steps the sum is exact, and a slow rate still moves
    (a plain truncating `* h` would stop a creeping car, the reason the engine carries a fraction
    byte in the first place).  mulu.w on the magnitude: the 68000 has no 32-bit multiply. */
-static inline int32_t sim_scale(int16_t rate, unsigned shift, uint16_t* rem)
+static inline int32_t sim_scale_by(int16_t rate, unsigned shift, uint16_t* rem, uint16_t factor)
 {
     const unsigned drop = 16u - shift;
-    int32_t p = (rate < 0) ? -(int32_t)revs_mulu16((uint16_t)(0u - (uint16_t)rate), sim_h_q16)
-                           :  (int32_t)revs_mulu16((uint16_t)rate, sim_h_q16);
+    int32_t p = (rate < 0) ? -(int32_t)revs_mulu16((uint16_t)(0u - (uint16_t)rate), factor)
+                           :  (int32_t)revs_mulu16((uint16_t)rate, factor);
     p += *rem;
     *rem = (uint16_t)((uint32_t)p & ((1u << drop) - 1u));
     return p >> drop;                                  /* arithmetic: floor, so *rem >= 0 */
+}
+static inline int32_t sim_scale(int16_t rate, unsigned shift, uint16_t* rem)
+{
+    return sim_scale_by(rate, shift, rem, sim_h_q16);
+}
+
+/* ⭐ THE CAMERA'S LOW PASS per step.  The engine's view_pitch_offset is (target + previous) / 2
+   a frame — it keeps half of itself per 93.6 ms — so a step of h frames keeps 2^-h, and moves
+   k = 1 - 2^-h of the way to the target.  e^-x with x = h ln 2, four terms of the series in
+   Q16 (x <= 0.693, error < 0.2%), once a session; mulu.w and divu.w only. */
+static uint16_t sim_pitch_k_q16(uint16_t h)
+{
+    uint16_t x  = (uint16_t)(revs_mulu16(h, 45426u) >> 16);          /* ln 2 = 45426 / 65536 */
+    uint16_t x2 = (uint16_t)(revs_mulu16(x, x) >> 16);
+    uint16_t x3 = (uint16_t)(revs_mulu16(x2, x) >> 16);
+    uint16_t x4 = (uint16_t)(revs_mulu16(x3, x) >> 16);
+    uint32_t e  = 65536u - x + (x2 >> 1) - revs_divu16(x3, 6u) + revs_divu16(x4, 24u);
+    return (uint16_t)(65536u - e);
 }
 
 /* A STEERING DEMAND WORD x h.  Every incremental steering path — the keyboard's fixed ramp, the
@@ -4414,12 +4459,14 @@ uint8_t race_main_loop_core(RestartDepth depth)
                (sim_steps_due, above).  Everything in this loop advances game time; everything
                after it happens once per painted frame. */
             const unsigned steps = sim_steps_due();
+            unsigned frameTicks = 0u;
             for (unsigned step = 0; step < steps; step++) {
                 const uint16_t headingBefore = car_heading_v;
                 g_simSteps++;
                 sim_tick_step = (uint8_t)sim_slow_tick_due();
                 if (sim_tick_step) {
                     g_simSlowTicks++;
+                    frameTicks++;
                     PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
                     PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
                 }
@@ -4444,6 +4491,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
                 s_rebasePitchSum   = (uint8_t)(s_rebasePitchSum + view_pitch_delta);
             }
             sim_tick_step = 1u;                            /* outside the steps, a legacy step */
+            sim_render_ticks = (uint8_t)(frameTicks > 255u ? 255u : frameTicks);
             rebase_heading_delta_v = s_rebaseHeadingSum;   /* the motion since the last pass */
             view_pitch_delta       = s_rebasePitchSum;
             s_rebaseHeadingSum = 0u;
@@ -12679,6 +12727,17 @@ SlipRef derive_slip_reference_core(uint8_t axle)
    Otherwise: the two magnitudes are combined as max + min/2 — alpha-max-plus-beta-min, the
    same cheap hypotenuse the road pass uses — and compared against grip_limit.  ⚠ EQUAL is not
    over: `BNE` past the `CLC` means only a strictly greater magnitude sets the bit. */
+/* ⭐ The two-bit slip history is two ENGINE frames long (update_slip_sound clamps on either),
+   so it rolls on the slow tick; the steps in between OR their answer into the newest bit, which
+   keeps "slipped at any time in the last two frames" true over any step size. */
+static void slip_history_push(uint8_t axle, int over)
+{
+    uint8_t f = mem[MEM_slip_flags + axle];
+    if (sim_tick_step) f = (uint8_t)((over ? 0x80u : 0u) | (f >> 1));
+    else if (over)     f = (uint8_t)(f | 0x80u);
+    mem[MEM_slip_flags + axle] = f;
+}
+
 /* promoted for revs_native_abi.c */ void check_wheel_slip_core(uint8_t axle)
 {
     /* $4A91-$4A99 — is the accumulator zero at all?  (the 6502 parks the answer on the stack
@@ -12697,7 +12756,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
        that goes straight to the history roll with the over-limit bit already set.  A zero
        accumulator skips the test entirely. */
     if (!accumZero && ((shiftedHi ^ (uint8_t)(accum >> 8)) & 0x80u) == 0u) {
-        mem[MEM_slip_flags + axle] = (uint8_t)(0x80u | (mem[MEM_slip_flags + axle] >> 1));
+        slip_history_push(axle, 1);
         return;
     }
 
@@ -12733,7 +12792,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
     /* $4AED-$4AF3 — over the limit?  EQUAL is not over.  Roll the one-bit answer into the two
        frames of slip history. */
     int over = (ref > mem[MEM_grip_limit + axle]);
-    mem[MEM_slip_flags + axle] = (uint8_t)((over ? 0x80u : 0u) | (mem[MEM_slip_flags + axle] >> 1));
+    slip_history_push(axle, over);
 }
 
 /* $4AF7  clamp_slip_to_grip — WHAT SLIPPING DOES TO THE MODEL  (twin #73)
@@ -13202,6 +13261,17 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
 /* promoted for revs_native_abi.c */ JumpExit begin_jump_from_a_core(uint8_t severity, uint8_t savedX)
 {
     car_vertical_speed = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
+    if (sim_h_q16) {
+        /* ⭐ THE ORIGINAL ARC, NOT THE CONTINUOUS ONE.  The engine subtracts gravity BEFORE it
+           moves the car (semi-implicit Euler at 93.6 ms), which is continuous flight launched
+           g/2 slower: a severity-$30 jump peaks at 61 and lands after 11 frames, where exact
+           physics gives 72 and 12.  Finer steps converge on the exact arc (measured 71 at
+           h = 0.43, 73 at h = 0.21), so every launch owes the difference in that bias —
+           g(1 - h)/2 = 2(1 - h) — which goes into the vertical speed's owed gravity. */
+        uint32_t owed = (uint32_t)s_vspeedRem + 2u * (65536u - sim_h_q16);
+        car_vertical_speed = (uint8_t)(car_vertical_speed - (uint8_t)(owed >> 16));
+        s_vspeedRem = (uint16_t)owed;
+    }
     jump_pitch_shake     = (uint8_t)(severity >> 2);  /* $4DCE-$4DCF — ...and / 4 */
     car_height    = (uint8_t)(car_height + 1u);  /* $4DD1 — mark not-under-power */
     /* $4DD4 SEC / ROR heading_step_lo — nudge the heading increment by $80 and halve it (C in = 1
@@ -13334,7 +13404,12 @@ void update_grip_limits_core(void)
     uint8_t surfaceBoth = (uint8_t)(SURFACE_BYTE_0 & SURFACE_BYTE_1);       /* $4BF0-$4BF6 */
     uint8_t oldDisturb  = grip_disturbance;
     uint8_t newDisturb  = 0u;
-    if (SURFACE_BYTE_0 == 0xFFu || SURFACE_BYTE_1 == 0xFFu) {
+    if ((SURFACE_BYTE_0 == 0xFFu || SURFACE_BYTE_1 == 0xFFu) && !sim_tick_step && oldDisturb != 0u) {
+        /* ⭐ The grass bump is a fresh random value each ENGINE frame, so it is held across the
+           steps between slow ticks — drawn every step it would average the bumps away.  The
+           entry edge (old == 0, which can launch a jump) is still taken on any step. */
+        newDisturb = oldDisturb;
+    } else if (SURFACE_BYTE_0 == 0xFFu || SURFACE_BYTE_1 == 0xFFu) {
         newDisturb = (uint8_t)((((unsigned)bus_read(USRVIA_T2CL) * road_speed) >> 8) & 0x07u);
         if (newDisturb == 0u) newDisturb = 1u;            /* $4C0F — never 0 once the arm runs */
         if (oldDisturb == 0u && car_height == 0u && (section_jump_history & 0x80u)) {
@@ -13487,6 +13562,7 @@ static uint8_t engine_coast_arm(uint8_t carryIn)
    untouched, which is what the arm below hands to engine_revs_from. */
 static void engine_catches(void)
 {
+    sim_engine_caught = 1u;                                         /* for the lights (sim_engine_caught) */
     starter_random_mask = 0x07u;                                    /* $4993-$4995 LDX #7 */
     engine_running      = 0xFFu;                    /* $4997-$4999 LDX #$FF — leaves X=$FF; the
                                                        starter poll replays that as its exit X */
@@ -13689,44 +13765,52 @@ CameraExit update_camera_and_height_core(void)
     uint8_t yScale;         /* Y carried $452F→$45D8; a spin's MOS sound may overwrite it (see below) */
 
     if (car_height != 0) {                             /* $44EA-$44EC */
+        if (sim_h_q16) {                               /* ⭐ -2 a frame x h */
+            jump_pitch_shake = (uint8_t)(jump_pitch_shake - (uint8_t)sim_scale(2, 0u, &s_shakeRem));
+        } else {
         jump_pitch_shake = (uint8_t)(jump_pitch_shake - 1u);        /* $44EE — DEC, flags dead (yaw reloads) */
         jump_pitch_shake = (uint8_t)(jump_pitch_shake - 1u);        /* $44F0 */
+        }
     } else {
         jump_pitch_shake     = 0x00u;                         /* $44F5 — both zeroed (car_height==0) */
         car_vertical_speed = 0x00u;
+        s_shakeRem = s_vspeedRem = s_heightRem = 0u;
 
         /* $44F9-$452A — camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power,
            -1 braking, and settling toward 0 in neutral or coasting.  Every register here is
            dead by the yaw: merge below (A/X/Y are all reloaded), so it is plain byte math. */
-        uint8_t bias = camera_pitch_bias;               /* $44FB */
-        int up = 0, down = 0, settle = 0;
-        if (gear_index == 0) settle = 1;                /* $44FC-$44FE */
-        else if (pedal_mode & 0x80u) settle = 1;        /* $4500-$4502 — coasting */
-        else if (pedal_mode == 0) {                     /* $4504 — the brake */
-            if (road_speed != 0) down = 1;              /* $450C-$450E */
-            else settle = 1;
-        } else {                                        /* on the throttle */
-            if (engine_torque != 0) up = 1;             /* $4506-$4508 — pulling */
-            else settle = 1;
-        }
-        if (settle) {                                   /* $4510-$4515 — drift back to centre */
-            /* bias == 0 is already centred: the 6502 branches past the store, which is the same
-               program as storing the value back unchanged, so no step and no special case. */
-            if (bias & 0x80u) { bias++; up = 1; }        /* $4515 — negative: +2 */
-            else if (bias != 0) down = 1;               /* positive: step down */
-        }
-        if (up) {                                       /* $4516-$451F */
-            bias++;
-            if (!(bias & 0x80u)) {                      /* positive: CPY #$04 (carry dead here) */
-                if (bias >= 0x04u) bias = 0x03u;        /* clamped to +3 */
+        /* ⭐ A ±1-A-FRAME COUNTER, so it steps on the slow tick only (the engine's frame). */
+        if (sim_tick_step) {
+            uint8_t bias = camera_pitch_bias;               /* $44FB */
+            int up = 0, down = 0, settle = 0;
+            if (gear_index == 0) settle = 1;                /* $44FC-$44FE */
+            else if (pedal_mode & 0x80u) settle = 1;        /* $4500-$4502 — coasting */
+            else if (pedal_mode == 0) {                     /* $4504 — the brake */
+                if (road_speed != 0) down = 1;              /* $450C-$450E */
+                else settle = 1;
+            } else {                                        /* on the throttle */
+                if (engine_torque != 0) up = 1;             /* $4506-$4508 — pulling */
+                else settle = 1;
             }
-        } else if (down) {                              /* $4521-$4528 */
-            bias--;
-            if (bias & 0x80u) {                         /* negative: CPY #$FB (carry dead here) */
-                if (bias < 0xFBu) bias = 0xFBu;         /* ...and to -5 */
+            if (settle) {                                   /* $4510-$4515 — drift back to centre */
+                /* bias == 0 is already centred: the 6502 branches past the store, which is the same
+                   program as storing the value back unchanged, so no step and no special case. */
+                if (bias & 0x80u) { bias++; up = 1; }        /* $4515 — negative: +2 */
+                else if (bias != 0) down = 1;               /* positive: step down */
             }
+            if (up) {                                       /* $4516-$451F */
+                bias++;
+                if (!(bias & 0x80u)) {                      /* positive: CPY #$04 (carry dead here) */
+                    if (bias >= 0x04u) bias = 0x03u;        /* clamped to +3 */
+                }
+            } else if (down) {                              /* $4521-$4528 */
+                bias--;
+                if (bias & 0x80u) {                         /* negative: CPY #$FB (carry dead here) */
+                    if (bias < 0xFBu) bias = 0xFBu;         /* ...and to -5 */
+                }
+            }
+            camera_pitch_bias = bias;                       /* $452A */
         }
-        camera_pitch_bias = bias;                       /* $452A */
     }
 
     /* $452D-$4568 — the section yaw.  A cheap atan2 over the section's direction vector: the
@@ -13776,9 +13860,16 @@ CameraExit update_camera_and_height_core(void)
         a = (uint8_t)(a + grip_disturbance);           /* $4582-$4583 */
         a = (uint8_t)(a + camera_pitch_bias);          /* $4585-$4586 */
         a = (uint8_t)(a + jump_pitch_shake);                 /* $4589-$458A */
+        if (sim_h_q16) {
+            /* ⭐ (target + previous) / 2 a frame is a low pass towards the target; a step of h
+               frames moves k of the way (sim_pitch_k_q16).  Equal to the engine's at h = 1. */
+            int16_t toward = (int16_t)((int8_t)a - (int8_t)view_pitch_offset);
+            a = (uint8_t)(view_pitch_offset + (uint8_t)sim_scale_by(toward, 0u, &s_pitchRem, s_pitchK));
+        } else {
         a = (uint8_t)(a + view_pitch_offset);          /* $458C-$458D */
         neg = (a & 0x80u) != 0;                         /* $458F-$4592 — C = sign(A) */
         a = (uint8_t)((a >> 1) | (neg ? 0x80u : 0u));  /* $4593 ROR — signed halving */
+        }
         view_pitch_offset = a;                         /* $4594 */
         view_pitch_delta  = (uint8_t)(a - shared_temp_76);  /* $4596-$4599 */
     }
@@ -13800,17 +13891,23 @@ CameraExit update_camera_and_height_core(void)
     shared_temp_77 = 0x00u;                             /* $459B-$459D */
     uint8_t driveNew, cArm, vArm;
     {
-        uint8_t sub  = (uint8_t)(car_vertical_speed - 0x04u);   /* $459F-$45A3 SBC (D=0) */
-        uint8_t vSub = (uint8_t)((((car_vertical_speed ^ 0x04u) &
+        /* ⭐ x h: gravity is -4 a frame and the height moves by the vertical speed a frame, so a
+           step takes h of each (sim_scale).  Only the two OPERANDS change — the landing, the
+           rebound at |v| >= 5, the wrap guard to -56 and the $7F arm all read the same flags. */
+        uint8_t gravity = sim_h_q16 ? (uint8_t)sim_scale(4, 0u, &s_vspeedRem) : 0x04u;
+        uint8_t sub  = (uint8_t)(car_vertical_speed - gravity);   /* $459F-$45A3 SBC (D=0) */
+        uint8_t vSub = (uint8_t)((((car_vertical_speed ^ gravity) &
                                    (car_vertical_speed ^ sub)) >> 7) & 1u);
         uint8_t a    = vSub ? 0xC8u : sub;              /* $45A4 — the step overflowed: saturate */
         unsigned s;
         uint8_t r, cAdd, vAdd, nAdd, zAdd;
+        if (vSub) s_vspeedRem = 0u;
         car_vertical_speed = a;                             /* $45A8 */
-        s    = (unsigned)a + car_height;               /* $45AA-$45AB ADC (D=0) */
+        uint8_t rise = sim_h_q16 ? (uint8_t)sim_scale((int8_t)a, 0u, &s_heightRem) : a;
+        s    = (unsigned)rise + car_height;            /* $45AA-$45AB ADC (D=0) */
         r    = (uint8_t)s;
         cAdd = (uint8_t)(s > 0xFFu);
-        vAdd = (uint8_t)((((~(a ^ car_height)) & (a ^ r)) >> 7) & 1u);
+        vAdd = (uint8_t)((((~(rise ^ car_height)) & (rise ^ r)) >> 7) & 1u);
         nAdd = (uint8_t)((r >> 7) & 1u);
         zAdd = (uint8_t)(r == 0);
         /* ⚠ $45B1's `BPL` keeps the sum; a NEGATIVE sum falls THROUGH to the countdown arm,
@@ -13827,6 +13924,8 @@ CameraExit update_camera_and_height_core(void)
                 absSpin = a;
                 absV = vAdd;
             }
+            s_heightRem = s_vspeedRem = 0u;             /* the height is set outright below */
+            s_heightRem = s_vspeedRem = 0u;             /* the height is set outright below */
             if (absSpin >= 0x05u) {                     /* $45B7 CMP #5 → C=1 */
                 JumpExit se = begin_jump_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
                 yScale = se.y;                          /* the spin's sound OSWORD left this in the MOS's Y */
@@ -15438,6 +15537,8 @@ static int     s_lightLit;                          /* the last walk reached the
 
 int starting_lights_advance_core(void)
 {
+    const uint8_t caught = sim_engine_caught;
+    sim_engine_caught = 0u;
     s_lightLit = 0;
     if (!(session_is_race & 0x80u)) return -1;      /* $7B4A — race only */
     uint8_t state = start_light_state;              /* $7B4E */
@@ -15447,7 +15548,7 @@ int starting_lights_advance_core(void)
     uint8_t pattern, eor;
 
     if (state == 0x80u) {                           /* $7B54 — top of the sequence */
-        if (engine_running & 0x80u) new_state = 0xF0u;  /* $7B58 — force $F0 until engine catches */
+        if ((engine_running & 0x80u) || (sim_h_q16 && caught)) new_state = 0xF0u;  /* $7B58 — force $F0 until engine catches */
         pattern = 0x80u; eor = 0x00u;               /* $7B5E/$7B60 */
     } else if (state == 0xA0u) {                    /* $7B64 CPX #$A0 */
         if ((loop_counter & 0x3Fu) != 0) {          /* $7B75 — still holding (64-frame dwell) */
@@ -18104,11 +18205,26 @@ void draw_car_field_core(void)
                                           GONE by the first race frame and the two roles never
                                           overlap in time (symbols.csv $3850). */
 
+/* ⭐ The other cars' across-track moves are per ENGINE frame — a ±1 centring nudge and the drift
+   settle below — so a step takes h of each, carried per car (sim_scale). */
+static int sim_ai_nudge(uint8_t x, int perFrame)
+{
+    return sim_h_q16 ? (int)sim_scale((int16_t)perFrame, 0u, &s_aiAcrossRem[x]) : perFrame;
+}
+
 /* $28CE-$28E4 — the steering nudge itself, the tail five of the tests above branch to. */
 static void car_steering_settle(uint8_t x)
 {
     uint8_t f    = (uint8_t)(mem[MEM_car_across_drift + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
     uint8_t st2b = mem[MEM_car_section_across + x];
+    if (sim_h_q16) {
+        /* the drift a frame: +f, or -(m + 1) for a negative drift (the EOR #$7F / ADC pair), and
+           the move is taken only if it does not wrap the byte — as on the 6502 */
+        int d = (f & 0x80u) ? -(int)((f & 0x7Fu) + 1u) : (int)f;
+        int r = (int)st2b + sim_ai_nudge(x, d);
+        if (r >= 0 && r <= 0xFF) mem[MEM_car_section_across + x] = (uint8_t)r;
+        return;
+    }
     if (f & 0x80u) {                                     /* $28D4 BPL $28DF — bit7 set arm */
         uint16_t r = (uint16_t)(uint8_t)(f ^ 0x7Fu) + st2b; /* $28D6 EOR #$7F / $28D8 ADC (C=0) */
         if (r > 0xFFu) mem[MEM_car_section_across + x] = (uint8_t)r;   /* $28DB BCS $28E4 store on carry */
@@ -18188,6 +18304,7 @@ static void drive_one_car(uint8_t x)
         uint16_t v = (uint16_t)(((uint16_t)math_hi << 8) | a);
         v = (uint16_t)(v << 2);
         math_hi = (uint8_t)(v >> 8);                         /* $75 exit value = the ROL result */
+        if (sim_h_q16) v = (uint16_t)sim_scale((int16_t)v, 0u, &s_aiSpeedRem[x]);   /* ⭐ a rate: x h */
         /* $2867-$287C: [car_speed_scaled:car_speed_frac] += v; a high byte reaching $BE resets both */
         uint16_t speed = (uint16_t)(((uint16_t)speedScaled << 8)
                                     | mem[CAR_SPEED_FRAC + x]);
@@ -18204,6 +18321,16 @@ static void drive_one_car(uint8_t x)
        unit (track_pos_advance, which books a lap via lap_complete on a distance wrap) */
     {   /* Written back only before a callee runs, and once at the end. */
         uint8_t along = mem[MEM_car_section_along + x];
+        if (sim_h_q16) {
+            /* ⭐ twice the speed a frame is 2 x speed x h a step (sim_scale), and one carry past
+               the byte is one offset unit, as in the 6502's loop (2 x $BD x h < 256 for h < 1). */
+            uint16_t s = (uint16_t)(along + (uint16_t)sim_scale((int16_t)speedScaled, 1u, &s_aiAlongRem[x]));
+            along = (uint8_t)s;
+            if (s > 0xFFu) {
+                mem[MEM_car_section_along + x] = along;
+                track_pos_advance_core(x);
+            }
+        } else
         for (int i = 1; i >= 0; i--) {                       /* $2881 shared_temp_76=1; DEC/BPL loop */
             uint16_t s = (uint16_t)along + speedScaled;      /* $2883 CLC/$2887 ADC */
             along = (uint8_t)s;
@@ -18231,11 +18358,11 @@ static void drive_one_car(uint8_t x)
 
         uint8_t st2 = mem[MEM_car_section_across + x];                  /* $28AD LDA car_section_across,X */
         if (st2 & 0x80u) {                                   /* $28B0 BPL $28C1 — bit7 set arm */
-            if (st2 >= 0xECu) { mem[MEM_car_section_across + x] = (uint8_t)(st2 - 1); return; } /* $28B2/$28B6 DEC/$28B9 */
+            if (st2 >= 0xECu) { mem[MEM_car_section_across + x] = (uint8_t)(st2 + sim_ai_nudge(x, -1)); return; } /* $28B2/$28B6 DEC/$28B9 */
             if (st2 >= 0xE2u) return;                        /* $28BB CMP #$E2 / $28BF BCS $28E7 */
             car_steering_settle(x);                          /* $28BD BCC $28CE (st2 < $E2) */
         } else {                                             /* $28C1 — bit7 clear arm */
-            if (st2 < 0x14u) { mem[MEM_car_section_across + x] = (uint8_t)(st2 + 1); return; } /* $28C5 INC/$28C8 */
+            if (st2 < 0x14u) { mem[MEM_car_section_across + x] = (uint8_t)(st2 + sim_ai_nudge(x, 1)); return; } /* $28C5 INC/$28C8 */
             if (st2 < 0x1Eu) return;                         /* $28CA CMP #$1E / $28CC BCC $28E7 */
             car_steering_settle(x);                          /* fall to $28CE (st2 >= $1E) */
         }
@@ -18504,15 +18631,26 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
     /* $1034 — clock 1, the LAP timer.  Its exit carry is the BCD seconds' own, and the Y it
        leaves (the tick countdown) is the ambient OSWRCH row register every text call below
        inherits — none of them changes it. */
-    FrameTimeExit ft = add_frame_time_core(0x01u);
-    uint8_t timeCarry = ft.c;
-    uint8_t textY     = ft.y;
+    /* ⭐ Clock 1 counts ENGINE frames, so it advances once per slow tick since the previous
+       painted frame (sim_render_ticks; 1 in legacy) — which is what keeps a lap time the
+       original's whatever the frame rate.  With no tick this frame nothing is added, and the
+       row register is the countdown the add would have loaded. */
+    FrameTimeExit ft;
+    uint8_t timeCarry = 0u;
+    uint8_t textY     = time_tick_countdown;
+    for (unsigned tick = 0; tick < sim_render_ticks; tick++) {
+        ft = add_frame_time_core(0x01u);
+        timeCarry |= ft.c;
+        textY = ft.y;
+    }
 
     /* $1037's BIT reads BOTH high bits of lap_completed_flag and the two branches that follow
        pick one of three ways on: bit 6 runs the readout countdown, bit 7 alone books a new lap
        time, and neither goes straight to the deadline check. */
     uint8_t lapFlags = lap_completed_flag;
-    if (lapFlags & 0x40u) {                           /* $1039 BVS $1056 — the countdown */
+    if ((lapFlags & 0x40u) && sim_render_ticks == 0u) {
+        /* no engine frame passed: the readout countdown does not move */
+    } else if (lapFlags & 0x40u) {                    /* $1039 BVS $1056 — the countdown */
         if (lap_time_show_timer != 0u) {              /* $1056/$1059 BEQ */
             if (--lap_time_show_timer == 0u) {        /* $105B DEC / $105E BNE */
                 show_lap_time_lines_core(textY);      /* $1060 — restore both lines... */
