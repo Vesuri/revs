@@ -840,6 +840,19 @@ endif
 EDGEFLAT ?= 1
 ifeq ($(EDGEFLAT),1)
 EXTRA_DEFINES += -DREVS_EDGE_FLAT
+# ⭐⭐ `EDGEASM=1` (the DEFAULT, needs EDGEFLAT) — both ends of fill_dash_edge_columns in 68000
+# assembly (src/platform/amiga/edge_m68k.s).  `make EDGEASM=0` is the control.  ⭐⭐ `make EDGECHECK=1`
+# runs the C walk and the asm on the same 64 KB every frame, after a fuzzer (amiga/edge_check.gdb);
+# `EDGEASM_SABOTAGE=N` assembles defect N for it to catch.
+EDGEASM ?= 1
+ifeq ($(EDGEASM),1)
+EXTRA_DEFINES += -DREVS_EDGE_ASM
+ASM_SRCS += $(AMIGA_SRC)/edge_m68k.s
+ifeq ($(EDGECHECK),1)
+EXTRA_DEFINES += -DREVS_EDGE_CHECK
+PROBE_SYMS_EDGEASM = g_edgeChecks g_edgeMismatch g_edgeMismatchAt g_edgeFuzzCases g_edgeFuzzMismatch g_edgeFuzzAttr
+endif
+endif
 endif
 
 # ⭐⭐ `make EDGEFILL=1` — `fill_dash_edge_columns`' pass A specialised on its own
@@ -1207,6 +1220,7 @@ endif
 endif
 GEOASM_SABOTAGE ?= 0
 WALKASM_SABOTAGE ?= 0
+EDGEASM_SABOTAGE ?= 0
 # ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
 # the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
 # ⚠ Diagnostic only; no framerate may be quoted from such a build.
@@ -1584,7 +1598,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
+PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
@@ -1719,6 +1733,10 @@ obj/emit_width_m68k.o : $(AMIGA_SRC)/emit_width_m68k.s
 obj/walk_m68k.o : $(AMIGA_SRC)/walk_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(WALKASM_SABOTAGE) -o $@ "$<"
+
+obj/edge_m68k.o : $(AMIGA_SRC)/edge_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(EDGEASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

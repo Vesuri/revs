@@ -2819,6 +2819,19 @@ floor(N/d) unless d divides N+1 (that sabotage was a "no change" by arithmetic a
 quotient-plus-one). With the fuzzer all five fail. Brands Hatch (patched `$261A`, the C arm) passes
 too.
 
+⭐ **`fill_dash_edge_columns` IN 68000 ASM IS ONLY −0.75 ms OF ph18** (5.88 → 5.13, frame 95.45 →
+94.85; `src/platform/amiga/edge_m68k.s`, `make EDGEASM=0` the control, 2026-09-25). Gate: `make
+EDGECHECK=1` + `amiga/edge_check.gdb`, all 64 KB, both plot pointers and the exit registers every
+frame, plus a 300-case fuzzer; six circuits pass, six sabotages caught (the horizon compare and the
+colour-index mask only by the fuzzer). ⚠⚠ **The prediction was ~−3 ms and it was a GUESS**: I read
+"4.2k instructions a frame" and assumed asm would halve it without dividing by the ITEM count. There
+are ~154 empty cells a frame; the C was already ~27 instructions a cell (the earlier flattening had
+done its work) and the asm is ~21 (a classification is ~13 even with six tables off one `lea`),
+3.6k a frame single-stepped. ⇒ **Before writing an asm twin, divide the C trace by the number of
+items it handles and write down the asm's minimum per item** — the ratio of those two numbers is
+the prize, and here it was 1.3×, not 2×. What would move ph18 now is fewer classifications, not
+cheaper ones.
+
 ⭐⭐⭐ **THE DRAIN WAS THE RESET — ph26's "6.9 ms" held ~3.7 ms/frame of CRASH/SESSION RESET, and
 the frame is 95.46, not 99.10** (2026-09-25, same binary, `PROBE_PHASE_RESET` = phase 63). The crash
 hold spins on `field_countdown`, which only `tick_wheel_spin` moves — inside a drained 50 Hz tick —

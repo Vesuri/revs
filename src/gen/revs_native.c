@@ -769,6 +769,9 @@ static void view_ev_check(void);
 static int      edge_flat_ok(unsigned startSrc, unsigned firstColumn, unsigned stopColumn);
 static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned stopColumn,
                               unsigned firstLine);      /* §fill_dash_edge_columns as one loop */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_EDGE_ASM)
+static SlotExit edge_runs_asm(uint16_t leftStartSrc, uint16_t rightStartSrc);
+#endif
 #endif
 #ifdef REVS_EDGE_START_CHECK
 static void view_edge_start_check(void);
@@ -7297,8 +7300,12 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
     /* ⭐ ONE test per CALL selects the flattened driver for both runs, or the faithful chain for
        both — never a mix, so the two can never interleave their `mem[]` bookkeeping. */
     if (edge_flat_ok(leftStartSrc, 0x03, 0x06) && edge_flat_ok(rightStartSrc, 0x1A, 0x22)) {
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_EDGE_ASM)
+        return edge_runs_asm(leftStartSrc, rightStartSrc);     /* edge_m68k.s — see there */
+#else
         (void)edge_run_flat(leftStartSrc,  0x03, 0x06, 0x1B);
         return edge_run_flat(rightStartSrc, 0x1A, 0x22, 0x2B);
+#endif
     }
 #endif
     edge_column_pass(leftStartSrc,  0x03, 0x06, 0x1B);
@@ -11240,6 +11247,132 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
       return e; }
 }
 #endif /* REVS_EDGE_FLAT */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_EDGE_ASM)
+/* ⭐⭐ THE AMIGA RUNS BOTH ENDS IN 68000 ASSEMBLY — src/platform/amiga/edge_m68k.s, whose banner has
+   the shape.  edge_run_flat above stays the reference: the host runs it, `make EDGEASM=0` is the
+   control, and `make EDGECHECK=1` runs both on the same 64 KB every frame. */
+unsigned edge_run_m68k(unsigned startSrc, unsigned firstColumn, unsigned stopColumn,
+                       unsigned firstLine);
+
+static SlotExit edge_runs_asm_raw(uint16_t leftStartSrc, uint16_t rightStartSrc)
+{
+    unsigned r;
+    (void)edge_run_m68k(leftStartSrc, 0x03, 0x06, 0x1B);
+    r = edge_run_m68k(rightStartSrc, 0x1A, 0x22, 0x2B);
+    /* $1E0E's CPX: X = the stop column, N = 0, Z = 1, C = 1; A, Y and V are pass A's. */
+    { SlotExit e = { (uint8_t)r, 0x22u, (uint8_t)(r >> 8), 0u, 1u,
+                     adc_overflow(0x22u, 0x60u, 0), 1u };
+      return e; }
+}
+
+#ifndef REVS_EDGE_CHECK
+static SlotExit edge_runs_asm(uint16_t leftStartSrc, uint16_t rightStartSrc)
+{
+    return edge_runs_asm_raw(leftStartSrc, rightStartSrc);
+}
+#else
+volatile unsigned long g_edgeChecks       = 0;
+volatile unsigned long g_edgeMismatch     = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_edgeMismatchAt   = 0;   /* first differing address; $10000 the exit, $10001 a pointer */
+volatile unsigned long g_edgeFuzzCases    = 0;
+volatile unsigned long g_edgeFuzzMismatch = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_edgeFuzzAttr     = 0;   /* cases whose limits let an attribute arm run — must be non-zero */
+static uint8_t s_edgeBefore[65536] __attribute__((aligned(4))), s_edgeAfterC[65536] __attribute__((aligned(4)));
+static uint8_t s_edgeFuzzSave[65536] __attribute__((aligned(4)));
+
+/* Both ends, C then asm, from the same 64 KB and the same two pointer words. */
+static SlotExit edge_compare(uint16_t l, uint16_t r, volatile unsigned long* bad)
+{
+    const uint16_t p0 = plot_ptr_v, q0 = plot_ptr2_v;
+    SlotExit eC, eA;
+    uint16_t pC, qC;
+    unsigned i;
+    memcpy(s_edgeBefore, (const void*)mem, sizeof s_edgeBefore);
+    (void)edge_run_flat(l, 0x03, 0x06, 0x1B);
+    eC = edge_run_flat(r, 0x1A, 0x22, 0x2B);
+    pC = plot_ptr_v;  qC = plot_ptr2_v;
+    memcpy(s_edgeAfterC, (const void*)mem, sizeof s_edgeAfterC);
+    memcpy((void*)mem, s_edgeBefore, sizeof s_edgeBefore);
+    plot_ptr_v = p0;  plot_ptr2_v = q0;
+    eA = edge_runs_asm_raw(l, r);
+    if (eA.a != eC.a || eA.x != eC.x || eA.y != eC.y || eA.n != eC.n || eA.z != eC.z
+        || eA.v != eC.v || eA.c != eC.c) {
+        if (!*bad) g_edgeMismatchAt = 0x10000u;
+        (*bad)++;
+    } else if (plot_ptr_v != pC || plot_ptr2_v != qC) {
+        if (!*bad) g_edgeMismatchAt = 0x10001u;
+        (*bad)++;
+    } else {
+        /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        const uint32_t* a = (const uint32_t*)(const void*)mem;
+        const uint32_t* c = (const uint32_t*)(const void*)s_edgeAfterC;
+        for (i = 0; i < 65536u / 4u; i++)
+            if (a[i] != c[i]) {
+                unsigned j = i * 4u;
+                while (mem[j] == s_edgeAfterC[j]) j++;
+                if (!*bad) g_edgeMismatchAt = j;
+                (*bad)++;
+                break;
+            }
+    }
+    return eA;
+}
+
+/* ⭐ THE FUZZER, once, before the first real frame.  Driving data holds each end's handful of
+   columns on a few classifier arms, so each case randomises every input the two walks read — the
+   source blocks (mostly empty, some $55), the block starts, the four boundary tables, both
+   attribute tables and their limits, the horizon, the line surfaces, the styles and the colours —
+   and requires both to agree on all 64 KB, the pointers and the exit.  mem[] is restored after. */
+static void edge_fuzz(uint16_t l, uint16_t r)
+{
+    uint32_t x = 0x3C6EF372u;
+    unsigned n, i;
+    const uint16_t p0 = plot_ptr_v, q0 = plot_ptr2_v;
+#define EDGE_RND() (x ^= x << 13, x ^= x >> 17, x ^= x << 5, (unsigned)x)
+    memcpy(s_edgeFuzzSave, (const void*)mem, sizeof s_edgeFuzzSave);
+    for (n = 0; n < 300u; n++) {    /* ~0.7 s of target time a case: 5 KB of sources re-rolled */
+        const unsigned k = EDGE_RND();
+        for (i = 0x3000u; i < 0x4400u; i++) {
+            const unsigned v = EDGE_RND();
+            mem[i] = (uint8_t)(((v & 7u) < 5u) ? 0u : ((v & 7u) == 5u) ? 0x55u : (v >> 8));
+        }
+        for (i = 0; i < 0x29u; i++)                      /* block starts: mostly below the first line */
+            mem[MEM_dash_block_starts + i] = (uint8_t)((k & 0x100u) ? (EDGE_RND() & 0x3Fu)
+                                                                   : (EDGE_RND() & 0x1Fu));
+        for (i = 0; i < 0x50u; i++) {
+            const unsigned v = EDGE_RND(), w = EDGE_RND();
+            mem[MEM_surface_edge_0 + i] = (uint8_t)(v & 0x3Fu);
+            mem[MEM_surface_edge_1 + i] = (uint8_t)((v >> 8) & 0x3Fu);
+            mem[MEM_surface_edge_2 + i] = (uint8_t)((v >> 16) & 0x3Fu);
+            mem[MEM_surface_edge_3 + i] = (uint8_t)((v >> 24) & 0x3Fu);
+            mem[MEM_line_attr_0 + i]    = (uint8_t)w;
+            mem[MEM_line_attr_1 + i]    = (uint8_t)(w >> 8);
+            mem[MEM_view_line_surface + i] = (uint8_t)(w >> 16);
+        }
+        for (i = 0; i < 0x80u; i++) mem[MEM_edge_style + i] = (uint8_t)EDGE_RND();
+        for (i = 0; i < 4u; i++)    mem[MEM_surface_colours + i] = (uint8_t)((k >> (8 * i)) & ((k & 0x200u) ? 0xFFu : 0x03u));
+        horizon_extent    = (uint8_t)((k >> 4) & 0x3Fu);
+        line_attr_0_limit = (uint8_t)((k >> 12) & 0x3Fu);
+        line_attr_1_limit = (uint8_t)((k >> 20) & 0x3Fu);
+        (void)edge_compare(l, r, &g_edgeFuzzMismatch);
+        if (line_attr_0_limit > 8u || line_attr_1_limit > 8u) g_edgeFuzzAttr++;
+        g_edgeFuzzCases++;
+        memcpy((void*)mem, s_edgeFuzzSave, sizeof s_edgeFuzzSave);
+    }
+#undef EDGE_RND
+    plot_ptr_v = p0;  plot_ptr2_v = q0;
+}
+
+static SlotExit edge_runs_asm(uint16_t leftStartSrc, uint16_t rightStartSrc)
+{
+    static int fuzzed;
+    if (!fuzzed) { fuzzed = 1; edge_fuzz(leftStartSrc, rightStartSrc); }
+    g_edgeChecks++;
+    return edge_compare(leftStartSrc, rightStartSrc, &g_edgeMismatch);
+}
+#endif
+#endif
+
 
 /* TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
    The first group of apply_driving_model's callee tree, and the one place in this project

@@ -26,7 +26,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 95.46 ms bracketed** (149.18 at the plan's start, which also carried
+**Where the frame stands:** **Σ(1..39) − ph28 = 94.85 ms bracketed** (after `fill_dash_edge_columns` in asm, ph18 5.88 → 5.13) (149.18 at the plan's start, which also carried
 ~3-4 ms of crash reset — see below) — **0.98× the real BBC's 97.0 (1.05× its comparable 91.0), and 0.98× real-time game speed**.
 ⚠⚠ 2026-09-25: the crash/session RESET now has its own phase (63) and is excluded like phase 0 — it had been billed to
 the drain (ph26) since the hold ends inside a drained tick; the same binary read 99.10 before the split and 95.46 after
