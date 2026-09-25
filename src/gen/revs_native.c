@@ -4244,10 +4244,19 @@ static unsigned s_simStepTenths;       /* 0 = legacy */
 volatile unsigned long g_simSteps, g_simSlowTicks;
 static unsigned s_simBacklog;          /* game time owed, not yet stepped */
 static unsigned s_simTickAcc;          /* game time since the last slow tick */
+/* What each scaled accumulator has owed below its least unit (sim_scale). */
+static uint16_t s_rateRem[3];          /* integrate_state_rates, per element */
+static uint16_t s_posRem[2];           /* integrate_car_position, per component */
+static uint16_t s_headingRem;          /* ...and the heading */
 
 static void sim_clock_session_start(void)
 {
     s_simStepTenths = platform_sim_step_tenths();
+    sim_h_q16 = (s_simStepTenths == 0u || s_simStepTenths >= SIM_BBC_FRAME_TENTHS)
+              ? 0u : revs_divu16((uint32_t)s_simStepTenths << 16, (uint16_t)SIM_BBC_FRAME_TENTHS);
+    memset(s_rateRem, 0, sizeof s_rateRem);
+    memset(s_posRem, 0, sizeof s_posRem);
+    s_headingRem = 0u;
     (void)platform_sim_fields();       /* the fields the reset took are not game time */
     /* The session's first painted frame runs one step, and it is a slow tick — as the BBC's
        first frame is. */
@@ -4279,6 +4288,33 @@ static int sim_slow_tick_due(void)
     if (s_simTickAcc < SIM_BBC_FRAME_TENTHS) return 0;
     s_simTickAcc -= SIM_BBC_FRAME_TENTHS;
     return 1;
+}
+
+/* ⭐⭐ h — THE STEP AS A FRACTION OF THE ENGINE'S OWN FRAME, and the one number the scaled
+   sites read.  Speeds, forces, the yaw rate and grip keep the engine's units (per 93.6 ms
+   frame); only what ACCUMULATES over time is multiplied by h — the velocity and position
+   integrators, the heading, gravity, the engine's coasting, the keyboard steering ramp, the
+   other cars' moves, the camera's smoothing (docs/open-work.md §FRAME-RATE-INDEPENDENT
+   SIMULATION has the verified list and the NOT-a-timestep list beside it).
+   Q16, and 0 means EXACTLY 1: legacy mode and the h = 1 decoupled mode then run the engine's
+   own arithmetic at every scaled site, which is what keeps every determinism gate byte-exact.
+   sim_tick_step says whether the current step carries the slow tick; it is 1 outside the frame
+   driver, so a validate fixture runs a legacy step. */
+uint16_t sim_h_q16;
+uint8_t  sim_tick_step = 1u;
+
+/* rate x h x 2^shift, in the accumulator's own least unit, with what falls below that unit
+   carried in *rem — so over any number of steps the sum is exact, and a slow rate still moves
+   (a plain truncating `* h` would stop a creeping car, the reason the engine carries a fraction
+   byte in the first place).  mulu.w on the magnitude: the 68000 has no 32-bit multiply. */
+static inline int32_t sim_scale(int16_t rate, unsigned shift, uint16_t* rem)
+{
+    const unsigned drop = 16u - shift;
+    int32_t p = (rate < 0) ? -(int32_t)revs_mulu16((uint16_t)(0u - (uint16_t)rate), sim_h_q16)
+                           :  (int32_t)revs_mulu16((uint16_t)rate, sim_h_q16);
+    p += *rem;
+    *rem = (uint16_t)((uint32_t)p & ((1u << drop) - 1u));
+    return p >> drop;                                  /* arithmetic: floor, so *rem >= 0 */
 }
 
 /* ⭐ WHAT THE GEOMETRY PASS'S RE-BASE IS OWED — the camera motion since the last pass.
@@ -4359,8 +4395,10 @@ uint8_t race_main_loop_core(RestartDepth depth)
                after it happens once per painted frame. */
             const unsigned steps = sim_steps_due();
             for (unsigned step = 0; step < steps; step++) {
+                const uint16_t headingBefore = car_heading_v;
                 g_simSteps++;
-                if (sim_slow_tick_due()) {
+                sim_tick_step = (uint8_t)sim_slow_tick_due();
+                if (sim_tick_step) {
                     g_simSlowTicks++;
                     PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
                     PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
@@ -4377,9 +4415,15 @@ uint8_t race_main_loop_core(RestartDepth depth)
                    validate, determinism, -drive and -crash alike. */
                 PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
                 PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
-                s_rebaseHeadingSum = (uint16_t)(s_rebaseHeadingSum + model_state_16[MS_HEADING_STEP]);
+                /* At h = 1 the re-base owes element 2 as the step left it (the BBC's value, its
+                   quirk included); at h < 1 the heading moved by element 2 x h, and that — the
+                   change it actually made — is what the near points must be turned by. */
+                s_rebaseHeadingSum = (uint16_t)(s_rebaseHeadingSum + (sim_h_q16
+                                     ? (uint16_t)(car_heading_v - headingBefore)
+                                     : model_state_16[MS_HEADING_STEP]));
                 s_rebasePitchSum   = (uint8_t)(s_rebasePitchSum + view_pitch_delta);
             }
+            sim_tick_step = 1u;                            /* outside the steps, a legacy step */
             rebase_heading_delta_v = s_rebaseHeadingSum;   /* the motion since the last pass */
             view_pitch_delta       = s_rebasePitchSum;
             s_rebaseHeadingSum = 0u;
@@ -12333,6 +12377,10 @@ AddFlags integrate_car_position_core(void)
 
         /* $490A-$491F — add it into the 24-bit view component (FRAC:LO:HI); the top carry-out is
            dead (the loop's exit flags are overwritten by the heading add below). */
+        /* ⭐ x h: 2V a step becomes 2V x h (sim_scale).  The 6502's missing CLC — negative
+           velocities gain one fraction unit a frame — is not carried into the scaled arm: it is
+           1/256 of a unit per 93.6 ms, and h of it has no meaning. */
+        if (sim_h_q16) doubled = (uint32_t)sim_scale((int16_t)elem, 1u, &s_posRem[slot]) - (ext >> 7);
         sum = (((uint32_t)view_origin_16[comp] << 8) | mem[MEM_view_origin_frac + comp])
             + doubled + (ext >> 7);
         mem[MEM_view_origin_frac + comp] = (uint8_t)sum;        /* the fraction stays in mem[] */
@@ -12343,7 +12391,11 @@ AddFlags integrate_car_position_core(void)
     /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The HIGH
        add's A / N / V / Z / C are this routine's exit flags, returned for the shim to replay. */
     { uint8_t  hc = (uint8_t)(car_heading_v >> 8), hm = ms_hi(MS_HEADING_STEP);
-      unsigned h  = (unsigned)car_heading_v + (unsigned)model_state_16[MS_HEADING_STEP];
+      /* ⭐ x h, with a remainder: a gentle turn is a small step, and truncating it every step
+         would bias every bend (sim_scale). */
+      unsigned h  = (unsigned)car_heading_v + (sim_h_q16
+                  ? (unsigned)(uint16_t)sim_scale((int16_t)model_state_16[MS_HEADING_STEP], 0u, &s_headingRem)
+                  : (unsigned)model_state_16[MS_HEADING_STEP]);
       car_heading_v = (uint16_t)h;                  /* relocated out of mem[$0A/$0B] */
       return add16_flags(hc, hm, h);
     }
@@ -12369,7 +12421,9 @@ AddFlags integrate_state_rates_core(void)
         uint8_t  hi    = (uint8_t)(rate >> 8);
         uint8_t  ext   = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $4945-$4947 */
         unsigned shift = (slot == 2u) ? 5u : 3u;                /* $4949-$494F */
-        unsigned wide  = (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
+        /* ⭐ x h: the rate is per engine frame, the step is h of one (sim_scale). */
+        unsigned wide  = sim_h_q16 ? (unsigned)sim_scale((int16_t)rate, shift, &s_rateRem[slot])
+                                   : (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
         uint8_t  ah = (uint8_t)(model_state_16[slot] >> 8), mh, hr;
         uint32_t sum;
 
