@@ -26,8 +26,11 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 92.46 ms bracketed** (after the object plotter's C was cleaned, ph15 3.11 → 2.47, and `build_sign_origin`'s, ph14 1.56 → 1.39) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.95× the real BBC's 97.0 (1.02× its comparable 91.0), and ~1.01× real-time game speed**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 87.92 ms bracketed** (after `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.91× the real BBC's 97.0 (0.97× its comparable 91.0), and ~1.06× real-time game speed**.
+⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
+billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
+figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
 ⚠⚠ 2026-09-25: the crash/session RESET now has its own phase (63) and is excluded like phase 0 — it had been billed to
 the drain (ph26) since the hold ends inside a drained tick; the same binary read 99.10 before the split and 95.46 after
 (ph26 6.86 → 3.21, ph63 3.66 amortised = 90 fields over two resets). Every earlier frame figure includes it (the sim is framerate-locked; `docs/perf-method.md` §GAME SPEED IS THE
@@ -164,11 +167,16 @@ by certainty × size:
      six circuits pass, six sabotages caught. ⇒ What is left in ph5 (~10.8 ms against the BBC's
      21.7) is `road_edge_start`, the subdivide and the tail — re-step before going further; the
      row is now well under the 6502's.
-  2. **The port-only rows:** `prepareFrame` ~6.4. ⛔ **The drain is NOT a lever**: its "excess" was
+  2. **The port-only rows:** `prepareFrame` **3.09** (was 6.30, of which 1.71 was the front-end artefact above).
+     Re-stepped at **1099 instructions a call**: the exact per-frame gap test 327, `snapshotBands`' copy
+     and change detect 275, the two tyre outlines 220, the memoised `buildLineModes` 74, the needle
+     paint 72 — five pieces of ~0.1-0.2 ms each, so it is closed until a coarser lever reaches it.
+     ⛔ **The drain is NOT a lever**: its "excess" was
      the crash reset billed to it (now phase 63). A band cycle single-steps at 119 instructions
      (~170 µs; 236-434 on the rare cycles that run the game's IRQ chain), so the shipping drain is
      ~1.2 ms a frame; ph26 still reads 3.21 in a PROBES build because each tick crosses two brackets.
-  3. ✅ **The tail** is at parity (3.49 vs 3.4) — the needle DDA was 2.7k instructions of it, now asm.
+  3. ✅ **The tail** BEATS the BBC (2.18 vs 3.4) — the needle DDA was 2.7k instructions of it, now asm,
+     and it does not run at all on a sprite-cache hit (the image is keyed on the DDA's entry state).
      **Sign/object** 3.86 vs 2.9 after its C was cleaned (4.66 before: the tree replayed the 6502's
      exit registers on every return and re-read its fill drivers per cell). ⛔ Not worth asm now:
      re-stepped at 1254 instructions an object, and what is left is `plot_view_src_line`'s per-call

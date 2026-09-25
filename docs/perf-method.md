@@ -2836,6 +2836,36 @@ mismatches. ⇒ **Fuzz inside the INVARIANTS the producer maintains, and bound t
 ⚠ Circuit-independent code (the same dials on every track), so it was not re-run per circuit.
 
 
+⭐⭐⭐ **`prepareFrame` WAS HALF WORK NOBODY NEEDED AND A THIRD A POPULATION ARTEFACT — ph27 6.30 →
+3.09, ph32 3.52 → 2.18, frame 92.46 → 87.92** (2026-09-25; `a5ba6bc`, `ffe602f`, `b02201d`). Three
+findings, each transferable:
+(1) ⭐⭐ **A BRACKET'S `calls` ABOVE ITS FRAME COUNT IS A SECOND POPULATION, AND IT CAN BE IN THE
+PUBLISHED FRAME.** `DECODESPLIT`'s "phase 27 remainder" (1.88 ms) was not code at all: the ~12
+front-end frames at the top of a STRAIGHT_TO_RACE window each billed a whole `decodeTeletext()` to
+27 before its entry bracket (calls = 2 × frames + 12), averaged over the race frames. The 2026-09-21
+note had already named it "the boot artefact" and left it in the headline figure. Moving the opener
+to phase 0 for a MODE 7 page was a pure transfer (ph27 −3473982 ticks, ph0 +3475081) and restated
+the baseline 1.71 ms lower. ⇒ **When a split's residual row holds no code, find what else opens
+the phase — and then fix the instrument, not the note.**
+(2) ⭐⭐ **MEMOISE A PURE FUNCTION OF A RECORD THAT MOVES ON 9% OF FRAMES.** `buildLineModes`
+single-stepped at 1385 instructions a call — nothing pathological per instruction, it simply
+re-filled 208 mode bytes and re-tested 144 lines of ownership from a band snapshot that had not
+changed. Change detection costs ~0.2 ms inside the copy that already happens; the table, plan and
+painter record rebuild only on change or after another writer of `m_lineMode`, while the part that
+is NOT a function of the snapshot (ownership, re-claimed every sweep) keeps its exact per-frame
+test — now one `and.l` per four lines (every writer stores 0 or 1). −1.22 ms.
+(3) ⭐⭐⭐ **KEY A CACHE ON THE PRODUCER'S INPUT, NOT ITS OUTPUT — THEN THE PRODUCER NEED NOT RUN.**
+The needle sprite cache hashed each ~36-pixel list every frame to find an image it almost always
+had, and the DDA walked every pixel to build that list. The list is a pure function of nine bytes
+the DDA reads before its loop; keyed on those, a hit skips the walk and replays its five exit
+cells, so no reader of zero page can tell. −1.64 ms, and the tail now beats the BBC (2.18 vs 3.4).
+⚠⚠ **Two sabotage lessons from the same change.** A sabotage in the helper that builds BOTH sides
+of a compare is vacuous — my first "replay" sabotage corrupted the recorded exit and the fresh
+exit alike and passed; worse, the shipping replay lines were compiled out of the check build, so
+the oracle did not cover them at all until a hit was made to run the SHIPPING replay, save it,
+restore the entry cells and walk anyway. And dropping ONE key field survived because every DDA
+parameter derives from one needle angle — a no-change sabotage, settled by collapsing the key.
+
 ⭐⭐ **THE OBJECT PLOTTER'S C, CLEANED BEFORE ANY ASM, IS −0.64 ms OF ph15 AND −0.17 OF ph14** (road
 sign + corner markers; frame 93.29 → 92.46). User rule: clean the C first. Single-stepped at 1566
 instructions per drawn object, 53% memory operands, and none of the fat was algorithm: (1) **the
