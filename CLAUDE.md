@@ -118,6 +118,8 @@ make determinism-steer     #   ...and the same 300 frames with the WHEEL TURNED 
                            #   trajectory, the gate on the steering/response path
 make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
                            #   the only gate that sees the light column; -race cannot
+python3 tools/sim_equiv.py [--steer[=l|r]] [--modes=legacy,h400,h200]   # ⭐ DECOUPLED physics vs
+                           #   legacy in GAME time (build STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 first)
 make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80), the ONLY target
                            #   that reaches any `& $80` arm — every other determinism run is a
                            #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of
@@ -394,19 +396,26 @@ advantage — a 68000's bus cycle is 564 ns against the 6502's 500 — which win
 and the BBC's 8-byte-apart destination cells and 128-byte-apart sources forbid it by construction.
 ⇒ **no code shape reaches these numbers; only changing the layouts on both producer and consumer
 sides does.** `docs/perf-method.md` §what the original hardware achieves.
-⚠⚠ **GAME SPEED IS THE FRAMERATE — the engine has no fixed-rate sim.** Every sim step runs once per
-main-loop frame and the race clock adds 9.36 cs a frame (calibrated to a 93.6 ms frame), so a
-faster frame is a FASTER GAME: real time at 93.6 ms, 1.95× at the 48 ms target. Decoupling the
-simulation from painting is **in progress** (user decision: 25 Hz steps on a 68000, 50 Hz on a
-68020 or better, exact h, lap times comparable with the original's) — `docs/open-work.md`
-§FRAME-RATE-INDEPENDENT SIMULATION holds the verified design and its stages; today's loop survives
-as the byte-exact legacy mode that the determinism family gates.
+⚠⚠ **THE ENGINE HAS NO FIXED-RATE SIM, AND THE PORT GIVES IT ONE.** On the BBC every sim step runs
+once per painted frame (race clock +9.36 cs a frame), so game speed = framerate. The default Amiga
+build steps at **25 Hz on a 68000 and 50 Hz on a 68020+** (user decision), with game time = real time
+and a slow tick every 93.6 ms carrying the clock, so lap times are the original's. What is scaled,
+held or ticked, and why, is `docs/faithfulness-seam.md` §THE FRAME-RATE-INDEPENDENT SIMULATION.
+⭐ **Legacy mode is the gate**: the host default and `make SIMLEGACY=1` run the engine's own loop
+byte-exact, so every determinism target still means what it did. A decoupled mode is gated by
+**`tools/sim_equiv.py`** (physics in game time against legacy) and **`amiga/sim_clock.gdb`**.
+⚠ **A new per-frame quantity must be classified** as scaled (it accumulates), slow-tick (it counts
+engine frames) or per-render-held — an unclassified one runs 2–4× fast or slow. An event between
+two ticks must be latched for the tick code that samples it.
+⚠ **Price render work with `SIMLEGACY=1`** (a decoupled window is a different stretch of game time),
+and quote the decoupled cost from `fps_series.gdb`: 25 Hz steps cost the A500 ~16% of its displayed
+rate today (`docs/open-work.md`).
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
 **Baseline: the bracketed FRAME in `docs/open-work.md`'s header** (`PROBES=1 FIXED_RNG=1
-STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000 SIMLEGACY=1` + `phase4_prof.gdb` — ⚠ SIMLEGACY
-until the decoupled baseline is defined, see docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION, warp, driving, priced with
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000 SIMLEGACY=1` + `phase4_prof.gdb` — ⚠ SIMLEGACY:
+a decoupled window is a different stretch of game time, see docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION, warp, driving, priced with
 `diag_run.sh 45`). **This is the number a change is sized against**, and it is both the
 bracketed total (`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to
 0.02 ms, so the brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` is NOT

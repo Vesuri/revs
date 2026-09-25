@@ -161,11 +161,15 @@ per painted frame) — the user's stated future goal, deliberately deferred (`do
 §The rest of the port). Until it lands, every frame-time win below ~93.6 ms speeds the game up,
 and `determinism` still holds because the sim is framerate-locked, not wall-clock-locked.
 
-⭐ **In progress (2026-09-25): the default Amiga build is DECOUPLED** — game time is owed against real
-VERTB fields and the slow tick is the 93.6 ms frame, so the table above describes `make SIMLEGACY=1`
-only. Measured on the target (`amiga/sim_clock.gdb`): 10.67 steps/s, race clock 0.999× real time.
-The host gates stay in legacy mode, which is byte-exact. `docs/open-work.md` §FRAME-RATE-INDEPENDENT
-SIMULATION.
+⭐ **Since 2026-09-25 the default Amiga build is DECOUPLED.** Game time is owed against real VERTB
+fields in 25 Hz (68000) / 50 Hz (68020+) steps, and the slow tick is the 93.6 ms frame, so the table
+above describes `make SIMLEGACY=1` only. Measured on the target (`amiga/sim_clock.gdb`): A500
+24.93 steps/s, A1200 50.03, race clock 1.000× / 1.003× real time.
+⚠⚠ **The price is a tax on wall time, and the phase table cannot see it.** 25 steps/s × ~5.2 ms
+(controls ~1.7 + driving model ~3.5) ≈ 13% of a 68000, and the displayed rate went ~12.5 → ~10.5 fps.
+Yet the bracketed frame moved only 84.80 → 85.39, because the decoupled window is 60 s of game time
+against legacy's ~66 and its render phases measured a different workload. ⇒ **quote a decoupled
+cost from `fps_series.gdb`, and price render work in `SIMLEGACY=1`.**
 
 ## ⭐⭐ THE CURRENT NUMBERS
 

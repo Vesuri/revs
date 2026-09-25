@@ -635,3 +635,80 @@ just to make a test pass.
 
 See `docs/validation-harness.md` for what the harness guarantees, and `CLAUDE.md` §Transpiler
 for the mechanical steps of making a function native.
+
+## ⭐⭐ THE FRAME-RATE-INDEPENDENT SIMULATION — a written departure from the BBC (2026-09-25)
+
+The engine steps its whole simulation once per painted frame, and its race clock adds 9.36 cs a
+frame, so on the BBC **game speed is the framerate**. The port decouples them: game time is owed
+against real display fields and paid in steps of `h` engine frames. The user chose 25 Hz steps on a
+68000 and 50 Hz on a 68020 or better, with lap times comparable to the original's
+(`docs/open-work.md` §FRAME-RATE-INDEPENDENT SIMULATION has the stages and the measurements). This
+is a departure, so here is the argument, piece by piece. Each piece says what a player sees.
+
+**What stays byte-exact.** Legacy mode (`Platform::simStepTenths() == 0`, the host default, `make
+SIMLEGACY=1` on the Amiga) IS the engine's loop: one step per painted frame, every step a slow tick,
+h = 1, and every scaled site runs the 6502's own arithmetic when `sim_h_q16 == 0`. The whole
+determinism family, including `determinism-lights` (the only gate that sees the light column),
+gates every change to the split. **Nothing in a decoupled mode can be byte-exact**: finer steps
+recompute the tyre forces at intermediate states, so they are gated by physics instead
+(`tools/sim_equiv.py`, below).
+
+**What is scaled by h: what accumulates over time, and nothing else.** Speeds, forces, the yaw
+rate, grip and every threshold keep the engine's units (per 93.6 ms). The code proves which
+multiplications are timesteps:
+- `integrate_state_rates` and `integrate_car_position` are the integrators;
+- `stage_lateral_speed_delta`'s x − s / x + 1.5s are rear and front LEVER ARMS, not a midpoint
+  integration;
+- elements 8..13 are rebuilt every frame, so the steer rotations and `derive_axle_loads`' `>>2`
+  are geometry and a force scale;
+- the `>>2` is a genuine decay only while airborne, where its consumers are zeroed.
+
+Scaled, each with a remainder so no creeping quantity stalls:
+
+| what | scaled as |
+|---|---|
+| velocities, position, heading | the integrators × h |
+| gravity and height | −4h and v·h |
+| jump pitch shake | −2h |
+| camera low-pass | keeps 2^−h of itself |
+| engine coast | creep and fall × h |
+| gear-change drop | × h |
+| steering demand | × h, at each producer and before any clamp |
+| other cars | speed, distance, across-track moves × h |
+
+**What runs on the slow tick: what counts ENGINE frames.** It keeps its original constants: the race
+clock and the lap timer (so a lap time is the original's), `loop_counter`, the lights' walk, the
+countdowns, starter luck, the slip history, the grass bump and the pitch-bias counter.
+⭐ **An event between two ticks must be LATCHED for the tick code that samples it.** An engine that
+catches and stalls within one tick left the race lights waiting for ever (`sim_engine_caught`), and
+the slip history ORs the steps between its rolls.
+
+**What stays once per painted frame, holding its value between steps.** The physics reads the
+DRAWING:
+- grip comes from two painted pixels (the surface probe);
+- the player's track placement and the section walk come out of `build_track_geometry` (10.7 ms,
+  never per step);
+- CAS reads the geometry's edges.
+
+Holding those values is **faithful or better while a painted frame is shorter than ~94 ms**, because
+the BBC's own sample is one frame old. In a scene that renders slower than the BBC it is worse than
+the BBC by the difference. Two per-frame measurements were really per-ENGINE-frame and are
+converted:
+- the section-jump threshold scales with the game time the frame covered;
+- the engine note's slew draws a budget of four steps per tick.
+
+**The original's discretization, where a player can see it.** The engine's semi-implicit Euler flies
+a jump as if launched g/2 slower: a severity-$30 jump peaks at 61 where exact physics gives 72. Finer
+steps converge on the exact arc (71/73), so each launch owes 2(1 − h). With that the arc peaks at 64,
+with the same airtime. Elsewhere the difference is below what a player sees:
+- a standing start matches to 0.5%;
+- steering responds ~0.1 s later early in a ramp — the same half-step lead, left alone.
+
+**How it is gated.**
+- **`tools/sim_equiv.py`** runs a scripted drive in legacy and decoupled modes on the host and
+  compares them in GAME time. ⚠ Use it with `REVS_T2_ZERO` (automatic in the tool): T2 is sampled at
+  different wall times per mode, so without it a standing start lands on a different rev jitter and
+  the launch diverges for a reason that is not physics.
+- **`amiga/sim_clock.gdb` + `tools/sim_clock_report.py`** on the target: steps/s, slow ticks/s and the
+  race clock against real time.
+- **The legacy determinism family** gates the split itself.

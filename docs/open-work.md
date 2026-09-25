@@ -27,7 +27,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
 **Where the frame stands:** **Σ(1..39) − ph28 = 84.44 ms bracketed** (after the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.87× the real BBC's 97.0 (0.93× its comparable 91.0), and ~1.11× real-time game speed**.
+~3-4 ms of crash reset — see below) — **0.87× the real BBC's 97.0 (0.93× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -922,14 +922,32 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
   determinism family and remains the gate for every refactor. The new modes are gated by a host
   physical-equivalence suite against h = 1 in game time.
 
-**Status:** stages 1 and 2 are **done**. The default Amiga build is decoupled at h = 1 (one BBC
-step per 93.6 ms of real time, the physics unchanged): `amiga/sim_clock.gdb` +
-`tools/sim_clock_report.py` read **10.67 steps/s and the race clock at 0.999× real time** over
-reset-free intervals. The `SIMLEGACY=1` control reads 10.0–11.0, following the painted rate.
-The host reproduces it with a scripted field pattern (`REVS_SIM_STEP=936 REVS_SIM_FIELDS=4,5`:
-clock/wall 1.003). ⚠ **Until stage 5 redefines the baseline, price with `SIMLEGACY=1`**: a
-decoupled painted frame covers a render-speed-dependent number of steps, so its phase table is
-not comparable with 84.44. **Next: stage 3.**
+**Status: stages 1–6 are DONE (2026-09-25); stage 7 (the user plays it) is open, and so is the price.**
+The default Amiga build steps at **25 Hz on a 68000 and 50 Hz on a 68020+**, measured at 24.93 and
+50.03 steps/s, with the race clock 1.000× / 1.003× real time. The written argument is
+`docs/faithfulness-seam.md` §THE FRAME-RATE-INDEPENDENT SIMULATION.
+
+Host physics against legacy, in game time (`tools/sim_equiv.py`, T2 pinned):
+- **throttle:** 0.5% (h = 0.43) and 0.7% (h = 0.21);
+- **AI:** all 20 cars within 1 speed unit and on the same segment for 20 s;
+- **steering:** tracks up to the spin, which happens at the same moment in every mode;
+- **jump:** peak 64 against 61, same airtime (with the launch-bias compensation);
+- **lap timer:** 0.9965–1.005× real time.
+
+⚠⚠ **THE PRICE ON THE A500 — displayed framerate ~12.5 → ~10.5 fps** (`fps_series.gdb`,
+reset-free rows, `SIMLEGACY=1` against the default build). ph3 + ph4 go 5.73 → 14.30 ms a painted
+frame: ~2.8 steps of ~3.1 ms (controls ~1.7 ms a step, driving model ~3.5). It is a tax on WALL
+time (25 steps/s ≈ 13% of the CPU), so it costs about the same fraction at any render speed.
+⇒ At today's ~10 fps render, 25 Hz steps buy physics accuracy, not visible smoothness: a step
+finer than the display frame is not seen. Levers, cheapest first:
+- **the controls' key polling per step** (~1.7 ms a step for a keyboard that changes at the render
+  rate at most);
+- a slower 68000 step until the render is near 40 ms (a user decision);
+- the driving model itself.
+
+⚠ **Price render work with `SIMLEGACY=1`**: a decoupled window covers a different stretch of game
+time (60 s, where legacy's 1.1× speed covers ~66 s), so its phase table measures a different
+workload (84.80 → 85.39 bracketed, while the displayed rate fell 16%).
 
 **Stages** (each gated before the next):
 1. Byte-exact split into `sim_step` / `legacy_tick` / `render_frame`, scheduler at 1:1:1.
