@@ -180,7 +180,7 @@ void draw_car_field_core(void);
 static void read_driving_controls_core(void);
 CameraExit apply_driving_model_core(uint16_t heading, int entryC);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
-SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
 
 /* One palette table → the ULA, last entry first.  The order is observable: entries share
@@ -4744,9 +4744,9 @@ static uint16_t model_mul_1_5(uint16_t value);
 
 /* draw_road's three producers (twins #26/#28/#29), defined much further down — the road pass
    reaches them through the cores, not the 6502-ABI shims. */
-SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
+MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
-SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
+uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
                                     int entryC, int entryV);
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
                                           uint8_t firstLine, uint8_t entryV);
@@ -7290,7 +7290,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
 /* $1A98 twice — the third stage, whose return value is the scan line at which that side's
    line_attr buffer stops being valid.  surface_colour_at reads exactly that: at or past
    the limit, the line is sky. */
-static SlotExit mark_side_surfaces(uint8_t surfaceClass, int entryV)
+static MarkExit mark_side_surfaces(uint8_t surfaceClass, int entryV)
 {
     return mark_line_surfaces_core(surfaceClass, road_split_index, entryV);
 }
@@ -7307,7 +7307,7 @@ static void surface_pass(uint8_t pass, uint8_t firstPoint)
    The cursors are written only by build_track_geometry and its walk, so they cannot change under
    this routine — but road_split_index is written by two of the callees below and horizon_index is
    read four separate times by the 6502, so both are read from mem[] at every use. */
-SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
+MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 {
     ROAD_COUNT(g_roadFrames);
     /* The reference differential's sample point: build_track_geometry has just finished, so
@@ -7331,10 +7331,11 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        entry flag for fill_line_attr below, so it is computed correctly regardless. */
     unsigned sum      = (unsigned)horizon_index + 0x28u;
     unsigned farBase  = sum & 0xFFu;
-    /* ⭐ The four passes below are a 6502 FLAG CHAIN: each stage's exit C/V is the next
-       stage's entry.  Both callees return their exit state, so the chain is two locals —
-       only the LAST mark's state is draw_road's own exit ABI and reaches cpu. */
-    int chainC = (int)(sum > 0xFFu);
+    /* ⭐ The four passes below thread the 6502's V from stage to stage (the span passes are
+       V-transparent), so it is one local; only the LAST mark's is draw_road's own exit.  Each
+       fill's ENTRY carry is the clamp's CMP just before it ($1A2A CMP #$31, $1A63 CMP #9 —
+       a CMP rewrites C, so the ADC's own carry never reaches it), and it matters only at the
+       fill's circuit-hook seam, which hands it to the hook. */
     int chainV = (int)((~((unsigned)horizon_index ^ 0x28u)
                         & ((unsigned)horizon_index ^ farBase) & 0x80u) != 0u);
     road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
@@ -7352,8 +7353,8 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        walk is skipped (see the farBase comment above).  Pass them live so the trap path echoes
        them back faithfully. */
     {
-        SlotExit f = fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase, chainC, chainV);
-        chainC = f.c; chainV = f.v;             /* A/X/Y are discarded: the pass talks in mem[] */
+        chainV = fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase,
+                                     farBase >= 0x31u, chainV);   /* the pass talks in mem[] */
     }
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
@@ -7372,9 +7373,9 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        the near half (the span passes between are V-transparent). */
     ROAD_PHASE(ROAD_PHASE_MARK);
     {
-        SlotExit m = mark_side_surfaces(0x04, chainV);
+        MarkExit m = mark_side_surfaces(0x04, chainV);
         line_attr_0_limit = m.y;
-        chainC = m.c; chainV = m.v;
+        chainV = m.v;
     }
 
     /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
@@ -7388,8 +7389,8 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        C/V passed live for the same trap-path reason as the far half above. */
     ROAD_PHASE(ROAD_PHASE_FILL);
     {
-        SlotExit f = fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase, chainC, chainV);
-        chainC = f.c; chainV = f.v;
+        chainV = fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase,
+                                     nearBase >= 0x09u, chainV);
     }
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
@@ -7403,7 +7404,7 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* The near mark's exit IS draw_road's exit — nothing after it touches A/X/Y/flags — so it
        is handed straight back for the shim to publish. */
     ROAD_PHASE(ROAD_PHASE_MARK);
-    SlotExit m = mark_side_surfaces(0x14, chainV);
+    MarkExit m = mark_side_surfaces(0x14, chainV);
     line_attr_1_limit = m.y;
     ROAD_PHASE(11);                  /* reopen the enclosing phase: its remainder is the return */
     return m;
@@ -9967,21 +9968,13 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
     return e;
 }
 
-/* Idiomatic C: the walk runs on local variables and plain math.  The routine's flags DO leave
-   it (the differential checks A/X/Y and every flag), but they are all recovered at the end from
-   the walk's final state — no cpu.h operation drives the body.  The two genuine flag PRODUCERS
-   it leans on stay as helpers: edge_x_offscreen_core (its V escapes) and the roll it performs.
-
-   Two escaping flags need explaining:
-     · V — set only by edge_x_offscreen_core and by the "previous point off axis?" BIT test, both
-       reads of shared_temp_76's bit 6/7.  We mirror BIT's V by hand and take the ADD's V from
-       the helper, tracking the last one in `vFlag`.
-     · C — the tail leaves it set (its CPX) unless it returns on the very first LDA, in which case
-       C is whatever the WALK left.  Every completed iteration ends on a fill or a skip, and both
-       leave carry set, so the walk's exit carry is 1 whenever any iteration ran; only a walk that
-       breaks on its first step (a start index already at/over $80, which draw_road never passes)
-       carries the SMC helper's carry through.  `completedAny` distinguishes the two. */
-SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
+/* Idiomatic C: the walk runs on local variables and plain math.  ONE flag leaves it: V, which
+   draw_road threads through the V-transparent span passes into the mark.  It is set only by
+   edge_x_offscreen_core and by the "previous point off axis?" BIT test, both reads of
+   shared_temp_76's bit 6/7 — BIT's V is mirrored by hand, the ADD's V taken from the helper, and
+   the last one tracked in `vFlag`.  A/X/Y/N/Z/C are dead at both 6502 callers (the fixture's
+   reader audit), so the walk no longer reconstructs them. */
+uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
                                     int entryC, int entryV)
 {
     mem[MEM_line_attr_store_operand] = bufferLow;      /* $0400 or $0450 — the store's own operand */
@@ -9990,11 +9983,8 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
     uint8_t onePastLast = (uint8_t)(endCursor - 1);   /* $1943 DEY — one past this half's last point */
     math_hi = onePastLast;
 
-    /* Exit ABI for the SMC-trap early return below: the $1943 DEY leaves Y and its N/Z, X keeps
-       the start index, and A/C/V are untouched (A = the entry buffer-low, C/V the caller's). */
-    SlotExit trapExit = { bufferLow, firstPoint, onePastLast,
-                          (uint8_t)((onePastLast >> 7) & 1u), (uint8_t)(onePastLast == 0),
-                          (uint8_t)entryV, (uint8_t)entryC };
+    /* The exit for the SMC-trap early return below: V untouched, the caller's. */
+    const uint8_t trapExit = (uint8_t)entryV;
 
     /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place.  These
        are 6502-ABI shims, so the seam must hand over EVERY register the 6502 has live at $1946,
@@ -10043,8 +10033,6 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
     span_line_cursor = y;
 
     int vFlag = hr.v;                        /* last V produced by the SMC helper (edge_x_offscreen) */
-    int smcCarry = hr.c;                     /* ...and its carry, the walk's exit carry if nothing runs */
-    int completedAny = 0;
 
     for (;;) {
         int clamped;
@@ -10067,11 +10055,11 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
                 vFlag = (shared_temp_76 >> 6) & 1u;
                 if (prevOffAxis && ptLine == mem[MEM_edge_y + x + 1]) {
                     /* previous point off axis + this one on the SAME line ⇒ nothing to add */
-                    mem[MEM_edge_style + x] |= 0x80u; completedAny = 1; continue;
+                    mem[MEM_edge_style + x] |= 0x80u; continue;
                 }
                 if (ptLine >= span_line_cursor) {
                     /* a point that would fill UPWARD from the cursor adds nothing either */
-                    mem[MEM_edge_style + x] |= 0x80u; completedAny = 1; continue;
+                    mem[MEM_edge_style + x] |= 0x80u; continue;
                 }
                 fillDownTo = ptLine;                  /* $1969 — fill down to this point's line */
             }
@@ -10114,46 +10102,19 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
             }
         }
         span_line_cursor = y;
-        completedAny = 1;
     }
-
-    int walkCarry = completedAny ? 1 : smcCarry;   /* the walk's exit carry (see the header) */
 
     /* $1996 — leave road_split_index past any point the walk had to mark. */
     uint8_t sx = road_split_index;
-    uint8_t tailStyle;
-    int exitViaCpx = 0;
-    int tailLooped = 0;                             /* a CPX left carry clear and we continued */
-    for (;;) {
-        tailStyle = mem[MEM_edge_style + sx];       /* $1998 LDA */
-        if (!(tailStyle & 0x80u)) { exitViaCpx = 0; break; }
-        sx = (uint8_t)(sx + 1);                     /* $199D INX */
-        if (sx >= (uint8_t)math_hi) { exitViaCpx = 1; break; }   /* $199E CPX, carry set */
-        tailLooped = 1;                             /* $19A0 BCC — that CPX's carry (0) is now live */
-    }
+    while ((mem[MEM_edge_style + sx] & 0x80u)       /* $1998 LDA — a marked point: step past it */
+           && (sx = (uint8_t)(sx + 1)) < (uint8_t)math_hi)   /* $199D INX / $199E CPX */
+        ;
     road_split_index = sx;
 
-    /* Exit ABI — the differential compares A/X/Y and every flag, so hand back exactly what the
-       6502 leaves at $19A4: X and A from the tail, Y from the walk's final cursor, V carried
-       from the last BIT / edge_x_offscreen, and N/Z/C from whichever tail op ended it. */
-    SlotExit e;
-    e.a = tailStyle;
-    e.x = sx;
-    e.y = y;
-    e.v = (uint8_t)vFlag;
-    if (exitViaCpx) {
-        uint8_t diff = (uint8_t)(sx - (uint8_t)math_hi);
-        e.n = (uint8_t)((diff >> 7) & 1u);
-        e.z = (uint8_t)(sx == (uint8_t)math_hi);
-        e.c = 1;                                     /* CPX carry set (sx >= math_hi) */
-    } else {
-        e.n = 0;                                     /* the tail exits with bit 7 of A clear */
-        e.z = (uint8_t)(tailStyle == 0);
-        /* the tail's LDA leaves carry untouched: it is the last CPX's (0) if the loop ran,
-           else the carry the walk itself left. */
-        e.c = (uint8_t)(tailLooped ? 0 : walkCarry);
-    }
-    return e;
+    /* The exit: V is the only register a caller reads — draw_road threads it through the
+       V-transparent span passes into the mark; everything else, C included, is dead at both 6502
+       callers (the fixture's reader audit).  It is the last BIT's / edge_x_offscreen's. */
+    return (uint8_t)vFlag;
 }
 
 /* $19AF  draw_surface_spans  (twin #38)
@@ -10502,7 +10463,7 @@ void draw_surface_spans_loop(uint8_t styleLo)
    ⚠ And the whole walk is SKIPPED once view_yaw_offset reaches $28 — 45 degrees off the
    section — with only that limit computed. */
 
-SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV)
+MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV)
 {
     /* Live A: every arm leaves a different byte in it, so it is threaded and returned.  The
        pre-loop LDA seeds it, so a walk that never runs a body leaves view_yaw_offset in A. */
@@ -10589,20 +10550,13 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
         math_hi++;                            /* $1B03 */
     }
 
-    /* $1B0B — the limit, and the routine's real return value.  A stays live (last byte above),
-       X ends at road_split_index, and Y — the scan-line limit — is what siblings want.  C is
-       set on every exit (the CPX/CMP that got us here); INY sets N/Z from the incremented Y. */
+    /* $1B0B — the limit, and the routine's real return value: Y, the scan line at which this
+       side's line_attr buffer stops being valid.  V is the chain draw_road threads on; C is set
+       on every exit.  A/X/N/Z are dead at both 6502 callers (the fixture's reader audit). */
     {
-        uint8_t x = road_split_index;
-        uint8_t y = (uint8_t)(mem[MEM_edge_y + x] + 1u);
-        SlotExit e;
-        e.a = a;
-        e.x = x;
-        e.y = y;
-        e.n = (uint8_t)((y >> 7) & 1u);
-        e.z = (uint8_t)(y == 0);
+        MarkExit e;
+        e.y = (uint8_t)(mem[MEM_edge_y + road_split_index] + 1u);
         e.v = (uint8_t)(v & 1);
-        e.c = 1;
         return e;
     }
 }

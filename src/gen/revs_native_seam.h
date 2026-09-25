@@ -130,6 +130,8 @@
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
 /* build_track_geometry's exit ABI: live=AXY, flags a byproduct. */
 typedef struct { uint8_t a, x, y; } GeoExit;
+typedef struct { uint8_t c, v; } BlockCV;        /* a routine whose only live exit is C and V */
+typedef struct { uint8_t y, v; } MarkExit;       /* mark_line_surfaces / draw_road: Y and V (C is always set) */
 typedef struct { uint8_t val, carry; } Adc;
 /* The three values the chain and its drivers thread through each other — the 6502's A, X
    and Y under the names of what they actually hold.  Everything else is a plain local. */
@@ -590,7 +592,7 @@ void copy_dash_data_core(uint8_t dirFlag);
 uint8_t derive_car_section_cursor_core(uint8_t cursor);
 SlipRef derive_slip_reference_core(uint8_t axle);
 uint8_t draw_gear_indicator_core(void);
-SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 void draw_track_object_core(uint8_t slot);
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX);
@@ -600,7 +602,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
 SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t fallback, uint8_t entryV);
 SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc);
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine, uint8_t entryV);
-SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC, int entryV);
+uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC, int entryV);   /* exit V */
 void fill_object_gap_core(uint8_t width);
 /* ⭐ hypot_max ($7A/$7B) is a mechanism-(B) relocated wide value (see revs_native.c).  A shim
    whose core CONSUMES it marshals the cells in; one whose core PRODUCES it marshals them out —
@@ -764,7 +766,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, i
 int kbd_test_key_core(uint8_t keyCode);
 uint8_t limit_steer_demand_core(uint8_t a, int carryIn);
 void load_section_triple_core(uint8_t destSection, uint8_t segmentByte);
-SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
+MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
 Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y);
 Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
 void model_integrate_element_core(uint8_t slot);
@@ -834,7 +836,6 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
    these out as their exit C/V and `sound_queue_exit_abi` (revs_native_seam.c) replays them into
    cpu.  `static inline` rather than a cross-TU call: the slot is a literal at every call site,
    so both sides fold it to two constants. */
-typedef struct { uint8_t c, v; } BlockCV;
 static inline BlockCV sound_queue_block_cv(uint8_t slot)
 {
     unsigned s   = (uint8_t)(slot << 3);

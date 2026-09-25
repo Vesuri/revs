@@ -286,12 +286,10 @@ void draw_road(void)
 {
     /* The road pass owns all three screen pointers from its first seed to its last span. */
     plot_ptrs_marshal_in();
-    SlotExit e = draw_road_core(edge_cursor, edge_end_side0);
-    /* draw_road leaves A, X, Y and the flags wherever its last callee (the near mark) left
-       them — the frame's geometry reaches it entirely through the edge lists and the three
-       cursor cells, so this exit is the whole 6502 ABI. */
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    MarkExit e = draw_road_core(edge_cursor, edge_end_side0);
+    /* draw_road's exit is its last callee's (the near mark's): Y, V and C = 1 are live; A/X/N/Z
+       are not (the fixture's reader audit), so they are left as they were. */
+    cpu.Y = e.y; cpu.V = e.v; cpu.C = 1u;
     plot_ptrs_marshal_out();
 }
 
@@ -448,9 +446,9 @@ void edge_x_offscreen(void)
    the walk starts from; entry C/V are echoed on the SMC-trap path. */
 void fill_line_attr(void)
 {
-    SlotExit e = fill_line_attr_core(cpu.A, cpu.Y, cpu.X, cpu.C, cpu.V);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    /* only V is live at the exit: A/X/Y/N/Z/C are dead at both 6502 callers ($1A3A/$1A71 —
+       the fixture's reader audit), so they are left as they were */
+    cpu.V = fill_line_attr_core(cpu.A, cpu.Y, cpu.X, cpu.C, cpu.V);
 }
 
 /* The 6502-ABI shim.  Y is the pass number, A the first edge index of the pass. */
@@ -463,9 +461,8 @@ void draw_surface_spans(void)
    as the scan line at which this side's line_attr buffer stops being valid. */
 void mark_line_surfaces(void)
 {
-    SlotExit e = mark_line_surfaces_core(cpu.X, cpu.A, cpu.V);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    MarkExit e = mark_line_surfaces_core(cpu.X, cpu.A, cpu.V);
+    cpu.Y = e.y; cpu.V = e.v; cpu.C = 1u;     /* A/X/N/Z: dead at both callers (the fixture) */
 }
 
 /* The 6502-ABI shim.  Y is the scan line and EDGE_COLUMN the position; A comes back as the

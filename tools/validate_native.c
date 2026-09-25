@@ -5962,11 +5962,18 @@ static int test_view_producers(void)
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;
+            /* ⭐ draw_road's live exit is Y, V and C (plus S) — the near mark's, which it returns.
+               READER AUDIT: its one 6502 caller is race_main_loop at $171F, whose native twin
+               calls draw_road_core and drops the exit.  On the BBC $1722 JSR engine_sound_update
+               comes next, and it computes its own A (and N/Z) from memory and takes X only into
+               sound_saved_x — sound_queue's saved X, which $0E92 LDX engine_note overwrites before
+               any use.  Y (the OSBYTE's ambient Y) and V/C (echoed on its idle exit) are read. */
+            const unsigned liveRoad = LIVE_S | LIVE_Y | LIVE_V | LIVE_C;
             roadFail += diff_run("draw_road", pre, c, draw_road, draw_road__t6502,
-                                 liveMask, t, &printed);
+                                 liveRoad, t, &printed);
         }
         fail += roadFail;
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=Y,V,C\n",
                "draw_road", road, roadFail);
     }
 
@@ -8330,6 +8337,19 @@ static int test_road_pass(void)
        caller's own far/near indices, restored so the transliterated caller can step them.  A
        is validated as dead, the flags too; the RESULT is mem[] + the hw/mos traces. */
     const unsigned liveEdge = LIVE_X | LIVE_Y;
+    /* ⭐ fill_line_attr's live exit is V only (plus S).  READER AUDIT — both 6502 callers
+       overwrite the rest before reading it: $1A3A is followed by $1A3D LDY #0 / $1A41 LDA $50
+       (Y, A, N, Z), $1A71 by $1A74 LDA #$1C / $1A7C LDY #2 (the same four); the JSR $19AF both
+       reach next reads A and Y only (draw_surface_spans' shim) and passes C/V through; the mark
+       after it ($1A98) reads V and not C, and the next CMP ($1A63, or draw_road's exit via the
+       mark's own CPX/CMP) rewrites C.  So A/X/Y/N/Z/C were never results. */
+    const unsigned liveAttr = LIVE_S | LIVE_V;
+    /* ⭐ mark_line_surfaces' live exit is Y, V and C (always set), plus S.  READER AUDIT: $1A5B
+       is followed by $1A5E STY (Y, the side's line_attr limit) and $1A60 LDA / $1A62 TAX /
+       $1A63 CMP, which rewrite A, X, N, Z and C before anything reads them; V goes on into the
+       near fill's hook seam.  $1A92 is followed by STY / RTS, so its exit is draw_road's — see
+       liveRoad in test_draw_road for that caller's audit.  A/X/N/Z were never results. */
+    const unsigned liveMark = LIVE_S | LIVE_Y | LIVE_V | LIVE_C;
     /* ⭐ draw_surface_spans returns NOTHING: its caller (draw_road) never reads its exit
        A/X/Y/flags, so the whole exit register state is an implementation detail. */
     const unsigned liveNone = LIVE_NONE;
@@ -8462,7 +8482,7 @@ static int test_road_pass(void)
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;
             subFail += diff_run("fill_line_attr", pre, c, fill_line_attr,
-                                fill_line_attr__t6502, liveMask, t, &printed);
+                                fill_line_attr__t6502, liveAttr, t, &printed);
             if (mem[0x007F] == 0) clamped++;
             { int i, m = 0;
               for (i = 0; i < 0x50; i++) if (mem[0x5EE0 + i] & 0x80) m++;
@@ -8474,7 +8494,7 @@ static int test_road_pass(void)
                    clamped, marked, attrCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=V  "
                "(%d filled to line 0, %d marked at least one point)\n",
                "fill_line_attr", attrCases, subFail, clamped, marked);
     }
@@ -8540,7 +8560,7 @@ static int test_road_pass(void)
             c.D = 0;
             if (pre[0x62F2] < 0x28) walked++;
             subFail += diff_run("mark_line_surfaces", pre, c, mark_line_surfaces,
-                                mark_line_surfaces__t6502, liveMask, t, &printed);
+                                mark_line_surfaces__t6502, liveMark, t, &printed);
             { int i, n = 0;
               for (i = 0; i < 0x50; i++) if (mem[0x5F60 + i]) n++;
               if (n) stamped++; }
@@ -8551,7 +8571,7 @@ static int test_road_pass(void)
                    "and the walk must both run\n", walked, stamped, markCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=Y,V,C  "
                "(%d below 45 degrees, %d left a class behind)\n",
                "mark_line_surfaces", markCases, subFail, walked, stamped);
     }

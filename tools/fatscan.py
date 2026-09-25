@@ -841,7 +841,11 @@ def oracle_uses(shims, abi={}):
     # the port could still execute (`make transtrap` says none does on its nine scenarios, but a
     # body no scenario drives is unproven, not dead).
     def caller_class(fn):
-        if fn['start'] in tp.NATIVE_FUNCS: return 'unrun'
+        # ⚠ NOT "moot": race_main_loop's transliteration never runs, but race_main_loop_core calls
+        # the SAME shims in the SAME order and threads cpu between them, so a register the 6502
+        # loop reads after a JSR is a LIVE hand-off in the port whenever the native loop enters
+        # that routine through its shim (and dead when it calls the core and drops the exit).
+        if fn['start'] in tp.NATIVE_FUNCS: return 'main loop'
         if fn['start'] in tp.VALIDATE_FUNCS: return 'oracle'
         return 'LIVE'
     for fn in funcs:
@@ -1087,8 +1091,9 @@ def main():
         print('\n⚠ ORACLE-BRANCH SHORTLIST — shim-only exit fields, and what each 6502 caller does '
               'with the register next\n  (read = an instruction reads it before writing it; call = '
               'passed into another JSR; exit = carried out of the routine).  A HUMAN CONFIRMS each.\n'
-              '  A 6502 caller is an oracle unless tagged: (unrun) = a NATIVE_FUNCS driver whose '
-              'transliteration never runs, (LIVE) = a transliteration the port could execute.')
+              '  A 6502 caller is an oracle unless tagged: (main loop) = race_main_loop, whose native twin\n'
+              '  replays its shim calls in order — LIVE if the port enters the routine through its shim '
+              '(the "runs N/frame" ones), dead if it calls the core; (LIVE) = a transliteration the port could run.')
         routines = set(load_syms().values())
         for s in sorted(live_shims):
             regs = defaultdict(set)
