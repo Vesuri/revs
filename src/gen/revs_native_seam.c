@@ -125,9 +125,9 @@ void emit_edge_bearing_at_cursor(void)
 
 void emit_edge_width_offset(void)
 {
-    WidthExit e = emit_edge_width_offset_core(cpu.X, 0x03, cpu.V);
+    WidthExit e = emit_edge_width_offset_core(cpu.X, 0x03);
     cpu.A = e.a; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;   /* X passes through */
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;   /* X and V pass through (V: the fixture's audit) */
 }
 
 void road_edge_side(void)
@@ -286,10 +286,9 @@ void draw_road(void)
 {
     /* The road pass owns all three screen pointers from its first seed to its last span. */
     plot_ptrs_marshal_in();
-    MarkExit e = draw_road_core(edge_cursor, edge_end_side0);
-    /* draw_road's exit is its last callee's (the near mark's): Y, V and C = 1 are live; A/X/N/Z
+    /* draw_road's exit is its last callee's (the near mark's): Y and C = 1 are live; A/X/N/Z/V
        are not (the fixture's reader audit), so they are left as they were. */
-    cpu.Y = e.y; cpu.V = e.v; cpu.C = 1u;
+    cpu.Y = draw_road_core(edge_cursor, edge_end_side0); cpu.C = 1u;
     plot_ptrs_marshal_out();
 }
 
@@ -446,9 +445,8 @@ void edge_x_offscreen(void)
    the walk starts from; entry C/V are echoed on the SMC-trap path. */
 void fill_line_attr(void)
 {
-    /* only V is live at the exit: A/X/Y/N/Z/C are dead at both 6502 callers ($1A3A/$1A71 —
-       the fixture's reader audit), so they are left as they were */
-    cpu.V = fill_line_attr_core(cpu.A, cpu.Y, cpu.X, cpu.C, cpu.V);
+    /* no register is live at the exit ($1A3A/$1A71 — the fixture's reader audit) */
+    fill_line_attr_core(cpu.A, cpu.Y, cpu.X, cpu.C);
 }
 
 /* The 6502-ABI shim.  Y is the pass number, A the first edge index of the pass. */
@@ -461,8 +459,7 @@ void draw_surface_spans(void)
    as the scan line at which this side's line_attr buffer stops being valid. */
 void mark_line_surfaces(void)
 {
-    MarkExit e = mark_line_surfaces_core(cpu.X, cpu.A, cpu.V);
-    cpu.Y = e.y; cpu.V = e.v; cpu.C = 1u;     /* A/X/N/Z: dead at both callers (the fixture) */
+    cpu.Y = mark_line_surfaces_core(cpu.X, cpu.A); cpu.C = 1u;   /* A/X/N/Z/V: dead (the fixture) */
 }
 
 /* The 6502-ABI shim.  Y is the scan line and EDGE_COLUMN the position; A comes back as the

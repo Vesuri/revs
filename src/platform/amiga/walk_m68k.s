@@ -22,7 +22,7 @@
 |
 | unsigned road_edge_walk_m68k(unsigned section, unsigned pointCap, unsigned offAxis, unsigned resume)
 |   -> bits 0-7 the section byte (the 6502's exit X), bits 8-9 the exit (0 done, 1 subdivide, 2 the
-|      off-axis seam), bit 10 the emitter's exit V (the seam hands it to a circuit's hook)
+|      off-axis seam)
 | Registers for the whole walk (all survive emit_width_core and its C callouts):
 |   a0 = mem, a2 = view_origin_16[2] (a word), a3 = mem+$0900 (the section planes: lo +0, hi +$100),
 |   a4 = mem+$5E40 (edge_x: lo +0, hi +$50), a5 = mem+$6100 (arctan_table), a6 = car_heading_v,
@@ -260,8 +260,7 @@ wk_dist:
 	jbmi	wk_subdiv                   | behind the camera: subdivide
 
 	| ---- $246A EMIT: the far kerb, the style, the horizon and any corner marker
-	jsr	emit_width_core             | a0 = mem, d1 = section -> d0 = V
-	move.b	d0,d6                       | the V, for the seam
+	jsr	emit_width_core             | a0 = mem, d1 = section
 
 	| ---- $246D past the subdivision floor, has the road swung off the view axis in this step?
 	move.b	Z_COUNT42(a0),d2
@@ -310,11 +309,7 @@ wk_subdiv:
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts
 wk_seam:
-	moveq	#0,d0
-	move.b	d6,d0
-	lsl.w	#2,d0
-	addq.w	#2,d0
-	lsl.w	#8,d0
+	move.w	#0x200,d0
 	move.b	d1,d0
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts

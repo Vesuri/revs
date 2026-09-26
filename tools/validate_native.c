@@ -5969,13 +5969,15 @@ static int test_view_producers(void)
                calls draw_road_core and drops the exit.  On the BBC $1722 JSR engine_sound_update
                comes next, and it computes its own A (and N/Z) from memory and takes X only into
                sound_saved_x — sound_queue's saved X, which $0E92 LDX engine_note overwrites before
-               any use.  Y (the OSBYTE's ambient Y) and V/C (echoed on its idle exit) are read. */
-            const unsigned liveRoad = LIVE_S | LIVE_Y | LIVE_V | LIVE_C;
+               any use.  Y (the OSBYTE's ambient Y) and C are read; V it only echoes on its
+               idle exit, and the listing walk from $1722 finds no register read after that
+               routine returns, so V was never a result either. */
+            const unsigned liveRoad = LIVE_S | LIVE_Y | LIVE_C;
             roadFail += diff_run("draw_road", pre, c, draw_road, draw_road__t6502,
                                  liveRoad, t, &printed);
         }
         fail += roadFail;
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=Y,V,C\n",
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=Y,C\n",
                "draw_road", road, roadFail);
     }
 
@@ -7760,8 +7762,15 @@ static int test_geometry_leaves(void)
               g_widthCold   = !(k <= 15u && dist > (64u >> k));
               g_widthT      = g_widthCold ? 0u : (0x400000u >> k) / dist;
               if (g_widthScored && g_widthCold) g_widthColdCases++; }
+            /* ⭐ V is not compared.  READER AUDIT: the 6502's exit V here is the width ADC's
+               overflow, and its callers — road_edge_walk's $2460 (the subdivide's midpoint) and
+               $246A (the point) — hand it on only to the $248B circuit-hook seam and to the walk's
+               own exit, whose next reader is the $2538 seam, which takes V = 0 already.  No hook
+               a road-pass seam can reach reads V (the five circuits' hooks contain no BVC/BVS,
+               and their six PHPs are the camera/steering tail entries): the note at the $248B
+               seam in revs_native.c.  So the twin no longer produces it. */
             subFail += diff_run("emit_edge_width_offset", pre, c, emit_edge_width_offset,
-                                emit_edge_width_offset__t6502, liveMask, t, &printed);
+                                emit_edge_width_offset__t6502, liveMask & ~LIVE_V, t, &printed);
             if (mem[0x5E50 + pre[0x0012]] != pre[0x5E50 + pre[0x0012]] ||
                 mem[0x0074] != pre[0x0074]) scored++;
             if (mem[0x0057] != pre[0x0057]) marked++;
@@ -7784,7 +7793,7 @@ static int test_geometry_leaves(void)
                    scored, marked, horizon, cases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC  "
                "(%d computed a width, %d appended a marker, %d moved the horizon)\n",
                "emit_edge_width_offset", cases, subFail, scored, marked, horizon);
     }
@@ -8339,19 +8348,21 @@ static int test_road_pass(void)
        caller's own far/near indices, restored so the transliterated caller can step them.  A
        is validated as dead, the flags too; the RESULT is mem[] + the hw/mos traces. */
     const unsigned liveEdge = LIVE_X | LIVE_Y;
-    /* ⭐ fill_line_attr's live exit is V only (plus S).  READER AUDIT — both 6502 callers
-       overwrite the rest before reading it: $1A3A is followed by $1A3D LDY #0 / $1A41 LDA $50
-       (Y, A, N, Z), $1A71 by $1A74 LDA #$1C / $1A7C LDY #2 (the same four); the JSR $19AF both
-       reach next reads A and Y only (draw_surface_spans' shim) and passes C/V through; the mark
-       after it ($1A98) reads V and not C, and the next CMP ($1A63, or draw_road's exit via the
-       mark's own CPX/CMP) rewrites C.  So A/X/Y/N/Z/C were never results. */
-    const unsigned liveAttr = LIVE_S | LIVE_V;
-    /* ⭐ mark_line_surfaces' live exit is Y, V and C (always set), plus S.  READER AUDIT: $1A5B
+    /* ⭐ fill_line_attr has NO live exit register (S aside) — its result is mem[].  READER AUDIT
+       — both 6502 callers overwrite A/Y/N/Z before reading them: $1A3A is followed by $1A3D
+       LDY #0 / $1A41 LDA $50, $1A71 by $1A74 LDA #$1C / $1A7C LDY #2; the JSR $19AF both reach
+       next reads A and Y only (draw_surface_spans' shim) and passes X/C/V through; the mark after
+       it ($1A98) reads neither C nor X, and the next CMP ($1A63, or the mark's own CPX/CMP)
+       rewrites C.  V: the mark takes it as its entry V and hands it only to its own exit and on
+       down the chain to the circuit-hook seams, where no hook reads V (the V note at
+       road_edge_walk's $248B seam), and draw_road's exit V is dead (liveRoad's audit). */
+    const unsigned liveAttr = LIVE_S;
+    /* ⭐ mark_line_surfaces' live exit is Y and C (always set), plus S.  READER AUDIT: $1A5B
        is followed by $1A5E STY (Y, the side's line_attr limit) and $1A60 LDA / $1A62 TAX /
-       $1A63 CMP, which rewrite A, X, N, Z and C before anything reads them; V goes on into the
-       near fill's hook seam.  $1A92 is followed by STY / RTS, so its exit is draw_road's — see
-       liveRoad in test_draw_road for that caller's audit.  A/X/N/Z were never results. */
-    const unsigned liveMark = LIVE_S | LIVE_Y | LIVE_V | LIVE_C;
+       $1A63 CMP, which rewrite A, X, N, Z and C before anything reads them; V goes on only into
+       the near fill's entry V, i.e. to the hook seam, where no hook reads it (liveAttr's audit).
+       $1A92 is followed by STY / RTS, so its exit is draw_road's — see liveRoad. */
+    const unsigned liveMark = LIVE_S | LIVE_Y | LIVE_C;
     /* ⭐ draw_surface_spans returns NOTHING: its caller (draw_road) never reads its exit
        A/X/Y/flags, so the whole exit register state is an implementation detail. */
     const unsigned liveNone = LIVE_NONE;
@@ -8496,7 +8507,7 @@ static int test_road_pass(void)
                    clamped, marked, attrCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=V  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
                "(%d filled to line 0, %d marked at least one point)\n",
                "fill_line_attr", attrCases, subFail, clamped, marked);
     }
@@ -8573,7 +8584,7 @@ static int test_road_pass(void)
                    "and the walk must both run\n", walked, stamped, markCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=Y,V,C  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=Y,C  "
                "(%d below 45 degrees, %d left a class behind)\n",
                "mark_line_surfaces", markCases, subFail, walked, stamped);
     }

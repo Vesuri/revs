@@ -180,7 +180,7 @@ void draw_car_field_core(void);
 static void read_driving_controls_core(void);
 CameraExit apply_driving_model_core(uint16_t heading, int entryC);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
-MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
 
 /* One palette table → the ULA, last entry first.  The order is observable: entries share
@@ -4744,10 +4744,9 @@ static uint16_t model_mul_1_5(uint16_t value);
 
 /* draw_road's three producers (twins #26/#28/#29), defined much further down — the road pass
    reaches them through the cores, not the 6502-ABI shims. */
-MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
+uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
-uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
-                                    int entryC, int entryV);
+void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC);
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
                                           uint8_t firstLine, uint8_t entryV);
 void plot_object_core(uint8_t slot);
@@ -6120,15 +6119,14 @@ uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo
    `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed. */
 
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
-   (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
-   scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */
+   (the CMP at each exit sets A to it); Y = edge_cursor; N/Z/C are the last CMP's on that exit
+   path.  V is not produced: the 6502 left the width ADC's overflow there, and its one consumer is
+   road_edge_walk's $248B hook seam, where no hook reads V (the note at that seam). */
 
-WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint,
-                                             uint8_t entryV)
+WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint)
 {
     unsigned feature, offset = 0, line;
     uint8_t  flags, style;
-    uint8_t  vOut = entryV;              /* V survives from entry unless the width ADC rewrites it */
 
     /* $2565-$257E — the point's feature bits, masked down to this road side's, and the two
        table entries they select.  The section-flags array is addressed twice over: $0702 for a
@@ -6173,12 +6171,6 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
             unsigned slot = edge_cursor;
             uint16_t base = edge_x_word(slot);
             edge_opp_x_word_set(slot, (uint16_t)(base + offset));
-            /* ⚠ V escapes: the HIGH half's ADC is the last thing in the routine to write V —
-               everything after it is CMP/CPY, which do not — so the caller gets its overflow.
-               Replayed from the two high bytes and the low half's carry (565 of 2000 cases
-               differ on V alone otherwise). */
-            unsigned carryLo = ((base & 0xFFu) + (offset & 0xFFu)) > 0xFFu;
-            vOut = adc_overflow((uint8_t)(base >> 8), (uint8_t)(offset >> 8), carryLo);
         }
 
         /* $25D3-$25FB — and a corner marker, if the point carries one. */
@@ -6193,14 +6185,14 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
 
     /* $260D-$261D — the point's scan line, and the frame's horizon if it reaches further than
        anything before it.  $50 is the top of the 80-line space: a point at or past it is sky.
-       Each exit is a CMP, so A = line and N/Z/C are that CMP's (V untouched — still vOut). */
+       Each exit is a CMP, so A = line and N/Z/C are that CMP's. */
     line = projected_line;
     mem[MEM_edge_y + edge_cursor] = (uint8_t)line;
     {
         uint8_t d = (uint8_t)(line - 0x50u);          /* CMP #$50 */
         if (line >= 0x50u) {
             WidthExit e = { (uint8_t)line, edge_cursor,
-                            (uint8_t)((d >> 7) & 1u), (uint8_t)(line == 0x50u), vOut, 1u };
+                            (uint8_t)((d >> 7) & 1u), (uint8_t)(line == 0x50u), 1u };
             return e;
         }
     }
@@ -6208,7 +6200,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         uint8_t d = (uint8_t)(line - horizon_extent); /* CMP horizon_extent */
         if (line < horizon_extent) {
             WidthExit e = { (uint8_t)line, edge_cursor,
-                            (uint8_t)((d >> 7) & 1u), 0u, vOut, 0u };
+                            (uint8_t)((d >> 7) & 1u), 0u, 0u };
             return e;
         }
         /* line >= horizon_extent: this point IS the new horizon (or a circuit hook owns it). */
@@ -6217,7 +6209,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
             horizon_extent = (uint8_t)line;
             horizon_index  = edge_cursor;
             {   WidthExit e = { (uint8_t)line, edge_cursor,
-                                (uint8_t)((d >> 7) & 1u), z, vOut, 1u };
+                                (uint8_t)((d >> 7) & 1u), z, 1u };
                 return e;
             }
         }
@@ -6235,7 +6227,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         hr.n = (uint8_t)((d >> 7) & 1u);
         hr.z = (uint8_t)(d == 0u);
         hr.c = 1u;
-        hr.v = vOut;
+        hr.v = 0u;                                    /* unobservable: the note at $248B's seam */
         if (mem[MEM_smc_edge_width_hook] == 0x4C) {                              /* a circuit's own JMP */
             uint16_t target = (uint16_t)(mem[MEM_smc_edge_width_hook + 1] | (mem[MEM_smc_edge_width_hook + 2] << 8));
             if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
@@ -6243,39 +6235,38 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         } else {
             platform_smc_unhandled(MEM_smc_edge_width_hook, mem[MEM_smc_edge_width_hook]);
         }
-        { WidthExit e = { hr.a, hr.y, hr.n, hr.z, hr.v, hr.c }; return e; }
+        { WidthExit e = { hr.a, hr.y, hr.n, hr.z, hr.c }; return e; }
     }
 }
 
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_GEO_ASM)
 /* ⭐⭐ THE AMIGA RUNS THE WALK'S WIDTH EMITTER IN 68000 ASSEMBLY — src/platform/amiga/emit_width_m68k.s,
-   whose banner has the shape.  Both of road_edge_walk's calls pass firstScoringPoint 3 and entry V 0
-   and read only the exit V, so that is the asm's whole contract; the core above stays the reference
+   whose banner has the shape.  Both of road_edge_walk's calls pass firstScoringPoint 3 and read no
+   exit register, so mem[] is the asm's whole contract; the core above stays the reference
    (the host runs it, `make GEOASM=0` is the control) and `make GEOCHECK=1` runs both on the same
    64 KB every call.  The three wrappers are the asm's callouts for its rare arms. */
-unsigned emit_width_m68k(unsigned sectionByte);
+void emit_width_m68k(unsigned sectionByte);
 unsigned emit_width_far(unsigned dist, unsigned k)
 {   return edge_width_offset_for((uint16_t)dist, (uint8_t)k); }
 void emit_width_marker(unsigned flags, unsigned offset)
 {   append_corner_marker((uint8_t)flags, offset); }
-uint8_t emit_width_c(unsigned sectionByte)
-{   return emit_edge_width_offset_core((uint8_t)sectionByte, 0x03, 0u).v; }
+void emit_width_c(unsigned sectionByte)
+{   (void)emit_edge_width_offset_core((uint8_t)sectionByte, 0x03); }
 
 #ifdef REVS_GEO_CHECK
 volatile unsigned long  g_geoChecks     = 0;
 volatile unsigned long  g_geoMismatch   = 0;   /* ⚠⚠ MUST BE 0 */
-volatile unsigned long  g_geoMismatchAt = 0;   /* the first differing address, $10000 = the V */
+volatile unsigned long  g_geoMismatchAt = 0;   /* the first differing address */
 static uint8_t s_geoBefore[65536] __attribute__((aligned(4))), s_geoAfterC[65536] __attribute__((aligned(4)));
 volatile unsigned long  g_geoFuzzCases    = 0;
 volatile unsigned long  g_geoFuzzMismatch = 0;   /* ⚠⚠ MUST BE 0 */
-volatile unsigned long  g_geoFuzzV        = 0;   /* cases whose exit V was 1 — must be non-zero */
-static uint8_t emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
-                                  volatile unsigned long* badAt);
-/* ⭐ THE FUZZER, once, before the first real call.  Driving data never produces a V of 1 (an edge
-   angle wrapping past $8000 is a point BEHIND the car), rarely reaches the near-point float arm and
-   rarely extends the horizon from here — three sabotages survived the real calls alone — so each
-   case randomises exactly the inputs the routine reads, runs both, and requires all 64 KB and the
-   V to agree.  mem[] is restored afterwards: the game never sees a fuzzed byte. */
+static void emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
+                               volatile unsigned long* badAt);
+/* ⭐ THE FUZZER, once, before the first real call.  Driving data never wraps an edge angle past
+   $8000 (that is a point BEHIND the car), rarely reaches the near-point float arm and rarely
+   extends the horizon from here — three sabotages survived the real calls alone — so each case
+   randomises exactly the inputs the routine reads, runs both, and requires all 64 KB to agree.
+   mem[] is restored afterwards: the game never sees a fuzzed byte. */
 static uint8_t s_geoFuzzSave[65536] __attribute__((aligned(4)));
 static void geo_fuzz(void)
 {
@@ -6305,34 +6296,28 @@ static void geo_fuzz(void)
             horizon_index         = (uint8_t)(m >> 19);
             mem[MEM_marker_count] = (uint8_t)(((m >> 27) & 3u) + ((m >> 29) & 1u));
         }
-        (void)emit_width_compare(sb, &g_geoFuzzMismatch, &g_geoMismatchAt);
+        emit_width_compare(sb, &g_geoFuzzMismatch, &g_geoMismatchAt);
         g_geoFuzzCases++;
     }
 #undef GEO_RND
     memcpy((void*)mem, s_geoFuzzSave, sizeof s_geoFuzzSave);
 }
-static uint8_t emit_width_checked(unsigned sectionByte)
+static void emit_width_checked(unsigned sectionByte)
 {
     static int fuzzed;
     if (!fuzzed) { fuzzed = 1; geo_fuzz(); }
     g_geoChecks++;
-    return emit_width_compare(sectionByte, &g_geoMismatch, &g_geoMismatchAt);
+    emit_width_compare(sectionByte, &g_geoMismatch, &g_geoMismatchAt);
 }
-static uint8_t emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
-                                  volatile unsigned long* badAt)
+static void emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
+                               volatile unsigned long* badAt)
 {
-    uint8_t vC, vA;
     unsigned i;
     memcpy(s_geoBefore, (const void*)mem, sizeof s_geoBefore);
-    vC = emit_width_c(sectionByte);
+    emit_width_c(sectionByte);
     memcpy(s_geoAfterC, (const void*)mem, sizeof s_geoAfterC);
     memcpy((void*)mem, s_geoBefore, sizeof s_geoBefore);     /* the same input for the asm */
-    vA = (uint8_t)emit_width_m68k(sectionByte);
-    if (vC) g_geoFuzzV++;
-    if (vA != vC) {
-        if (!*bad) *badAt = 0x10000u;
-        (*bad)++;
-    }
+    emit_width_m68k(sectionByte);
     /* ENDIAN-OK: an EQUALITY test a longword at a time — byte order cannot change whether two
        copies of the same bytes are equal — and the byte loop narrows the first difference. */
     {
@@ -6347,20 +6332,19 @@ static uint8_t emit_width_compare(unsigned sectionByte, volatile unsigned long* 
                 break;
             }
     }
-    return vA;
 }
 /* The walk comparison below runs the C walk and the asm walk back to back; inside it the emitter
    must be the plain C core (the reference arm, 1) or the plain asm (the asm arm's C subdivide, 2),
    never the emitter's own nested comparison. */
 static int s_walkRef;
 #define EMIT_WIDTH(sb)  (s_walkRef == 1 ? emit_width_c((unsigned)(sb))                 \
-                       : s_walkRef == 2 ? (uint8_t)emit_width_m68k((unsigned)(sb))     \
+                       : s_walkRef == 2 ? emit_width_m68k((unsigned)(sb))              \
                        : emit_width_checked((unsigned)(sb)))
 #else
-#define EMIT_WIDTH(sb)  ((uint8_t)emit_width_m68k((unsigned)(sb)))
+#define EMIT_WIDTH(sb)  emit_width_m68k((unsigned)(sb))
 #endif
 #else
-#define EMIT_WIDTH(sb)  (emit_edge_width_offset_core((uint8_t)(sb), 0x03, 0u).v)
+#define EMIT_WIDTH(sb)  ((void)emit_edge_width_offset_core((uint8_t)(sb), 0x03))
 #endif
 
 /* $3450  abs8 — |A|  (twin #12)
@@ -6660,9 +6644,9 @@ static OffAxis angle_off_axis(unsigned addr, uint8_t threshold)
 
 /* $2479-$248F — THE OFF-AXIS SEAM, reached once the point at edge_cursor has swung past the threshold.
    Shared by the C loop and the asm walk's wrapper (the asm hands this exit back with the cursor
-   untouched and the emitter's V), so the $248B SMC site and a circuit's hook have ONE implementation. */
+   untouched), so the $248B SMC site and a circuit's hook have ONE implementation. */
 static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot);
-static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t offAxis, uint8_t emitV)
+static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t offAxis)
 {
     unsigned here = edge_cursor;                                 /* $2475 LDY $12 */
     OffAxis prev = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
@@ -6687,10 +6671,11 @@ static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t of
        the scale_by_track_gradient tail entries ($54EB/$555C/$57BB/$59D9) that only
        the CAMERA and STEERING seams dispatch to — the seams that keep `cpu`
        deliberately, because that pushed P byte is a real store the differential
-       compares.  Nothing a geometry/horizon/walk seam can reach reads V.  So V is
-       handed over for the rule, not for an observable, and this seam's exit feeds
-       only X.  `make viewdiff` is the gate. */
-    hr.v = emitV;
+       compares.  Nothing a geometry/horizon/walk seam can reach reads V, so this seam
+       — like $2538's — hands over 0 and nothing upstream computes a V for it: the
+       emitter, the fill and the mark stopped replaying theirs.  `make viewdiff` is the
+       gate, and this seam's exit feeds only X. */
+    hr.v = 0u;
     hr.a = prev.magnitude;
     hr.n = prev.neg;  hr.z = prev.zero;  hr.c = prev.carry;
     hr.y = (uint8_t)here;
@@ -6763,7 +6748,7 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
         return midSlot;                              /* $2450 LDX #$FA left the midpoint slot in X */
 
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
-    (void)EMIT_WIDTH(walk_prev_section);                        /* mem-only here; exit V is dead */
+    EMIT_WIDTH(walk_prev_section);                              /* mem[] only: no exit is read */
     marker_count       = marker_count_saved;
     inc_mem(MEM_edge_cursor);                        /* $2467 */
     return (uint8_t)walk_prev_section;               /* $245A LDX $0014 */
@@ -6801,9 +6786,8 @@ static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t p
                     return road_edge_walk_subdivide(section, midSlot);
             }
 
-            /* $246A — EMIT: the point's second angle, and any corner marker it carries.
-               Its exit V is the last thing to touch V before the $248B seam below, so keep it. */
-            uint8_t emitV = EMIT_WIDTH(section);
+            /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
+            EMIT_WIDTH(section);
 
             /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
                view axis in this one step?  If so, subdivide — unless the point BEFORE it was
@@ -6811,7 +6795,7 @@ static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t p
             if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
                 unsigned here = edge_cursor;                             /* $2475 LDY $12 */
                 if (angle_off_axis(MEM_edge_x_hi + here, offAxis).carry)
-                    return road_edge_walk_seam(section, midSlot, offAxis, emitV);
+                    return road_edge_walk_seam(section, midSlot, offAxis);
             }
 
         }
@@ -6868,7 +6852,7 @@ static uint8_t road_edge_walk_run_asm(unsigned section, uint8_t midSlot, uint8_t
     switch ((r >> 8) & 3u) {
     case 0:  return (uint8_t)r;                                       /* 18 points: $24B4 TAX */
     case 1:  return road_edge_walk_subdivide((uint8_t)r, midSlot);   /* clip or behind */
-    default: return road_edge_walk_seam((uint8_t)r, midSlot, offAxis, (uint8_t)((r >> 10) & 1u));
+    default: return road_edge_walk_seam((uint8_t)r, midSlot, offAxis);
     }
 }
 
@@ -7289,9 +7273,9 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
 /* $1A98 twice — the third stage, whose return value is the scan line at which that side's
    line_attr buffer stops being valid.  surface_colour_at reads exactly that: at or past
    the limit, the line is sky. */
-static MarkExit mark_side_surfaces(uint8_t surfaceClass, int entryV)
+static uint8_t mark_side_surfaces(uint8_t surfaceClass)
 {
-    return mark_line_surfaces_core(surfaceClass, road_split_index, entryV);
+    return mark_line_surfaces_core(surfaceClass, road_split_index);
 }
 
 /* $19AF x4 — one span pass.  `firstPoint` is where in the edge list the pass starts; the
@@ -7306,7 +7290,7 @@ static void surface_pass(uint8_t pass, uint8_t firstPoint)
    The cursors are written only by build_track_geometry and its walk, so they cannot change under
    this routine — but road_split_index is written by two of the callees below and horizon_index is
    read four separate times by the 6502, so both are read from mem[] at every use. */
-MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
+uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 {
     ROAD_COUNT(g_roadFrames);
     /* The reference differential's sample point: build_track_geometry has just finished, so
@@ -7319,24 +7303,18 @@ MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        half, but never nearer than point $31: the four passes below all measure "near" and
        "far" against it, and letting it come closer than that inverts them. */
     /* $1A24 — the far half starts 40 points past the horizon.  D = 0 on the road pass
-       (docs/static-map.md §Decimal mode), so this is a plain 8-bit binary add.
-       ⚠ Its C AND V are both LIVE: on the fixture's SMC-early-return path fill_line_attr never
-       reaches edge_x_offscreen and the mark walk is skipped, so this add's flags are draw_road's
-       own exit C/V and the differential compares them (28/200 when the V was dropped).  They are
-       computed here from the operands instead of being read back out of cpu — the sum's carry,
-       and signed overflow when two like-signed operands produce the other sign.
-       ⚠ Only V is harness-policed: forcing it to 0 fails 27/200, forcing the CARRY to 0 passes,
-       because every reachable path writes C again before the exit.  The carry is still a real
-       entry flag for fill_line_attr below, so it is computed correctly regardless. */
+       (docs/static-map.md §Decimal mode), so this is a plain 8-bit binary add.  Its flags are
+       not results: the $1A2A CMP rewrites C, and its V — which on the SMC-trap path survived to
+       draw_road's own exit — is dead there too ($1722 engine_sound_update only echoes it on its
+       idle exit, and nothing after that reads it: the fixture's reader audit). */
     unsigned sum      = (unsigned)horizon_index + 0x28u;
     unsigned farBase  = sum & 0xFFu;
-    /* ⭐ The four passes below thread the 6502's V from stage to stage (the span passes are
-       V-transparent), so it is one local; only the LAST mark's is draw_road's own exit.  Each
-       fill's ENTRY carry is the clamp's CMP just before it ($1A2A CMP #$31, $1A63 CMP #9 —
+    /* ⭐ Each fill's ENTRY carry is the clamp's CMP just before it ($1A2A CMP #$31, $1A63 CMP #9 —
        a CMP rewrites C, so the ADC's own carry never reaches it), and it matters only at the
-       fill's circuit-hook seam, which hands it to the hook. */
-    int chainV = (int)((~((unsigned)horizon_index ^ 0x28u)
-                        & ((unsigned)horizon_index ^ farBase) & 0x80u) != 0u);
+       fill's circuit-hook seam, which hands it to the hook.  The 6502 also threaded V from stage
+       to stage (the span passes are V-transparent), and that chain went nowhere: each stage's
+       entry V reaches only its own exit V and the hook seams, and no hook a road-pass seam can
+       reach reads V (the V note at road_edge_walk's $248B seam).  So it is not computed. */
     road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
 
     PLOT_SET_LO(plot_ptr2, 0);      /* the second pointer, for a span that crosses a page */
@@ -7345,15 +7323,10 @@ MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* Side 1 (the 40..79 half): its line map, then its two span passes.  $00 is the low byte
        of line_attr_0 (it patches the store), endCursorFar the stop cursor, farBase the start. */
     ROAD_PHASE(ROAD_PHASE_FILL);
-    /* draw_road discards fill_line_attr's returned A/X/Y — it consumes road_split_index (a mem
-       cell) via surface_pass/mark below.  But on the SMC-early-return path fill_line_attr leaves
-       C and V UNTOUCHED (only the $1943 DEY runs, touching N/Z/Y), so its exit V/C are the ones
-       it was called with — here farBase's ADC flags, which are draw_road's own exit V/C when the
-       walk is skipped (see the farBase comment above).  Pass them live so the trap path echoes
-       them back faithfully. */
+    /* The fill's result is mem[]: road_split_index, which surface_pass/mark read below, and the
+       line_attr buffer.  Its entry C is the $1A2A clamp's, for the circuit-hook seam. */
     {
-        chainV = fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase,
-                                     farBase >= 0x31u, chainV);   /* the pass talks in mem[] */
+        fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase, farBase >= 0x31u);   /* mem[] only */
     }
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
@@ -7368,13 +7341,10 @@ MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     draw_surface_spans_core(1, (uint8_t)(horizon_index + 0x28));   /* base only; the spans walk
                                                                       overwrites this add's flags */
 
-    /* The far mark's entry V is the fill's exit V; its own exit C/V continue the chain into
-       the near half (the span passes between are V-transparent). */
+    /* The far mark: its result is the side's line_attr limit. */
     ROAD_PHASE(ROAD_PHASE_MARK);
     {
-        MarkExit m = mark_side_surfaces(0x04, chainV);
-        line_attr_0_limit = m.y;
-        chainV = m.v;
+        line_attr_0_limit = mark_side_surfaces(0x04);
     }
 
     /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
@@ -7384,12 +7354,11 @@ MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     unsigned nearBase = horizon_index;
     road_split_index = (uint8_t)clamp_up_to(nearBase, 0x09);
 
-    /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start.
-       C/V passed live for the same trap-path reason as the far half above. */
+    /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start;
+       the entry C is the $1A63 clamp's, for the hook seam. */
     ROAD_PHASE(ROAD_PHASE_FILL);
     {
-        chainV = fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase,
-                                     nearBase >= 0x09u, chainV);
+        fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase, nearBase >= 0x09u);
     }
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
@@ -7403,10 +7372,10 @@ MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* The near mark's exit IS draw_road's exit — nothing after it touches A/X/Y/flags — so it
        is handed straight back for the shim to publish. */
     ROAD_PHASE(ROAD_PHASE_MARK);
-    MarkExit m = mark_side_surfaces(0x14, chainV);
-    line_attr_1_limit = m.y;
+    uint8_t nearLimit = mark_side_surfaces(0x14);
+    line_attr_1_limit = nearLimit;
     ROAD_PHASE(11);                  /* reopen the enclosing phase: its remainder is the return */
-    return m;
+    return nearLimit;
 }
 
 /* ⭐⭐ THE DRIVING MODEL'S STATE VECTOR, relocated out of mem[]
@@ -9979,14 +9948,11 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
     return e;
 }
 
-/* Idiomatic C: the walk runs on local variables and plain math.  ONE flag leaves it: V, which
-   draw_road threads through the V-transparent span passes into the mark.  It is set only by
-   edge_x_offscreen_core and by the "previous point off axis?" BIT test, both reads of
-   shared_temp_76's bit 6/7 — BIT's V is mirrored by hand, the ADD's V taken from the helper, and
-   the last one tracked in `vFlag`.  A/X/Y/N/Z/C are dead at both 6502 callers (the fixture's
-   reader audit), so the walk no longer reconstructs them. */
-uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
-                                    int entryC, int entryV)
+/* Idiomatic C: the walk runs on local variables and plain math, and no register leaves it — its
+   result is mem[] (line_attr, road_split_index, edge_style).  The 6502's exit V was the last BIT's
+   or edge_x_offscreen's, handed down draw_road's stages only to reach the circuit-hook seams, where
+   no hook reads V; everything else is dead at both callers (the fixture's reader audit). */
+void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC)
 {
     mem[MEM_line_attr_store_operand] = bufferLow;      /* $0400 or $0450 — the store's own operand */
     span_end_index = endCursor;
@@ -9994,8 +9960,6 @@ uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstP
     uint8_t onePastLast = (uint8_t)(endCursor - 1);   /* $1943 DEY — one past this half's last point */
     math_hi = onePastLast;
 
-    /* The exit for the SMC-trap early return below: V untouched, the caller's. */
-    const uint8_t trapExit = (uint8_t)entryV;
 
     /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place.  These
        are 6502-ABI shims, so the seam must hand over EVERY register the 6502 has live at $1946,
@@ -10017,33 +9981,33 @@ uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstP
     hr.x = firstPoint;
     hr.y = onePastLast;
     /* The rest of the file, from this routine's own values rather than out of `cpu`: A is the
-       buffer-low byte the $193E `STA $1970` just stored, N/Z are the $1943 `DEY`'s, and C/V are
-       still the caller's — nothing between $193E and $1946 writes either. */
+       buffer-low byte the $193E `STA $1970` just stored, N/Z are the $1943 `DEY`'s, and C is
+       still the caller's (the clamp's CMP just before the JSR).  V is handed over as 0: no hook a
+       road-pass seam can reach reads it (the V note at road_edge_walk's $248B seam), so this
+       seam, like $2538's, takes no V from anywhere. */
     hr.a = bufferLow;
     hr.n = (uint8_t)((onePastLast >> 7) & 1u);
     hr.z = (uint8_t)(onePastLast == 0u);
     hr.c = (uint8_t)entryC;
-    hr.v = (uint8_t)entryV;
+    hr.v = 0u;
     if (mem[MEM_smc_fill_attr_hook] == 0x20) {
         uint16_t target = (uint16_t)(mem[MEM_smc_fill_attr_hook + 1] | (mem[MEM_smc_fill_attr_hook + 2] << 8));
         if (target == 0x1933) {
-            /* Silverstone's own callee, called by value — the four flags it produces are its
-               whole output and they stand as the seam's exit state. */
-            EdgeOffFlags e = edge_x_offscreen_core(firstPoint);
-            hr.a = e.a; hr.v = e.v; hr.c = e.c; hr.n = e.n; hr.z = e.z;
+            /* Silverstone's own callee: what it leaves in shared_temp_76 is its result here
+               (its flags were the seam's exit state, which nothing after the seam reads). */
+            (void)edge_x_offscreen_core(firstPoint);
         }
         else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
-        else { platform_smc_unhandled(MEM_smc_fill_attr_hook, target); return trapExit; }
+        else { platform_smc_unhandled(MEM_smc_fill_attr_hook, target); return; }
     } else {
         platform_smc_unhandled(MEM_smc_fill_attr_hook, mem[MEM_smc_fill_attr_hook]);
-        return trapExit;
+        return;
     }
 
     uint8_t x = hr.x;                        /* a circuit hook may have moved the start index */
     uint8_t y = horizon_extent;              /* $1949/$1977 — the first scan line to fill from */
     span_line_cursor = y;
 
-    int vFlag = hr.v;                        /* last V produced by the SMC helper (edge_x_offscreen) */
 
     for (;;) {
         int clamped;
@@ -10055,15 +10019,14 @@ uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstP
 
         if (!clamped) {
             /* $194E — re-test this point's angle only when the last one was off axis. */
-            if (shared_temp_76 & 0x80u) { vFlag = edge_x_offscreen_core(x).v; }
+            if (shared_temp_76 & 0x80u) (void)edge_x_offscreen_core(x);
 
             uint8_t ptLine = mem[MEM_edge_y + x];     /* the scan line this point projects to */
             if (ptLine >= 0x50u) {
                 clamped = 1;                          /* $195A — off the bottom of the screen */
             } else {
-                /* $195C BIT — its V escapes, so mirror it; bit 7 = "previous point off axis". */
+                /* $195C BIT — bit 7 = "previous point off axis". */
                 int prevOffAxis = (shared_temp_76 & 0x80u) != 0;
-                vFlag = (shared_temp_76 >> 6) & 1u;
                 if (prevOffAxis && ptLine == mem[MEM_edge_y + x + 1]) {
                     /* previous point off axis + this one on the SAME line ⇒ nothing to add */
                     mem[MEM_edge_style + x] |= 0x80u; continue;
@@ -10122,10 +10085,8 @@ uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstP
         ;
     road_split_index = sx;
 
-    /* The exit: V is the only register a caller reads — draw_road threads it through the
-       V-transparent span passes into the mark; everything else, C included, is dead at both 6502
-       callers (the fixture's reader audit).  It is the last BIT's / edge_x_offscreen's. */
-    return (uint8_t)vFlag;
+    /* No register leaves: A/X/Y/N/Z/C are dead at both 6502 callers, and V reached only the next
+       stage's entry V, i.e. the hook seams, where no hook reads it (the fixture's reader audit). */
 }
 
 /* $19AF  draw_surface_spans  (twin #38)
@@ -10474,14 +10435,9 @@ void draw_surface_spans_loop(uint8_t styleLo)
    ⚠ And the whole walk is SKIPPED once view_yaw_offset reaches $28 — 45 degrees off the
    section — with only that limit computed. */
 
-MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV)
+uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 {
-    /* Live A: every arm leaves a different byte in it, so it is threaded and returned.  The
-       pre-loop LDA seeds it, so a walk that never runs a body leaves view_yaw_offset in A. */
-    uint8_t a = view_yaw_offset;
-    /* Live V: the LAST +$14 the walk performs owns the exit V (INY/CPX/LDX/LDY leave V alone);
-       a walk that runs no add leaves the caller's entry V untouched. */
-    int v = entryV;
+    uint8_t a;                                /* the 6502's A as the walk tests it */
 
     mem[SPAN_CLIP] = surfaceClass;            /* ⚠ a THIRD tenant of $88 — docs/rename.md */
     math_hi        = firstPoint;              /* the walk index, and the loop's own cursor */
@@ -10514,11 +10470,10 @@ MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
                     shared_temp_77 = other;       /* a real mem[] store the differential sees */
                     /* Both +$14 are plain binary adds: D=0 on the road pass (docs/static-map.md
                        §Decimal mode — no SED site is on draw_road), so a uint8_t add is exact.
-                       Only the escaping V is replayed, via adc_overflow. */
-                    v = adc_overflow(a, 0x14u, 0);
+                       (Their V was the chain draw_road threaded into the hook seams, where no
+                       hook reads it — see draw_road_core.) */
                     a = (uint8_t)(a + 0x14u);
                     if (!(a & 0x80u)) {
-                        v = adc_overflow(other, 0x14u, 0);
                         a = (uint8_t)(other + 0x14u);
                         if (a & 0x80u) {
                             int stamp;
@@ -10562,14 +10517,9 @@ MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
     }
 
     /* $1B0B — the limit, and the routine's real return value: Y, the scan line at which this
-       side's line_attr buffer stops being valid.  V is the chain draw_road threads on; C is set
-       on every exit.  A/X/N/Z are dead at both 6502 callers (the fixture's reader audit). */
-    {
-        MarkExit e;
-        e.y = (uint8_t)(mem[MEM_edge_y + road_split_index] + 1u);
-        e.v = (uint8_t)(v & 1);
-        return e;
-    }
+       side's line_attr buffer stops being valid.  (C is set on every exit; A/X/N/Z/V are dead at
+       both 6502 callers — the fixture's reader audit.) */
+    return (uint8_t)(mem[MEM_edge_y + road_split_index] + 1u);
 }
 
 /* TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S OWN CALLEES

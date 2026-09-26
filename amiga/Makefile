@@ -1238,7 +1238,7 @@ ASM_SRCS += $(AMIGA_SRC)/walk_m68k.s
 endif
 ifeq ($(GEOCHECK),1)
 EXTRA_DEFINES += -DREVS_GEO_CHECK
-PROBE_SYMS_TERRAIN += g_geoChecks g_geoMismatch g_geoMismatchAt g_geoFuzzCases g_geoFuzzMismatch g_geoFuzzV
+PROBE_SYMS_TERRAIN += g_geoChecks g_geoMismatch g_geoMismatchAt g_geoFuzzCases g_geoFuzzMismatch
 ifeq ($(WALKASM),1)
 PROBE_SYMS_TERRAIN += g_walkChecks g_walkMismatch g_walkMismatchAt g_walkFuzzCases g_walkFuzzMismatch g_walkFuzzDiag g_walkFuzzDeep g_walkFuzzCap g_walkFuzzBad
 endif

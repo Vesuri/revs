@@ -1,14 +1,15 @@
 | emit_width_m68k.s — emit_edge_width_offset IN 68000 REGISTERS (Amiga only; `make GEOASM=0` is the C control)
 |
 | This is emit_edge_width_offset_core (src/gen/revs_native.c) for the two calls road_edge_walk makes,
-| both with firstScoringPoint = 3 and entry V = 0, and both reading only the exit V.  The C core is
-| still the reference: the host runs it (make validate), and `make GEOCHECK=1` runs both on the target
-| on the same 64 KB every call and compares all of it and the V.
+| both with firstScoringPoint = 3, and neither reading any exit register: the routine's result is
+| mem[].  The C core is still the reference: the host runs it (make validate), and `make GEOCHECK=1`
+| runs both on the target on the same 64 KB every call and compares all of it.
+| (It used to hand back the 6502's exit V, for the $248B hook seam; no hook a road-pass seam can reach
+| reads V — the V note at road_edge_walk's seam — so the seam takes 0 and nothing computes it.)
 |
 | ⭐ WHY: single-stepped at ~131 instructions a call, 27 calls a frame — a frame pointer, stack spills,
 | a six-byte struct returned through memory and a byte-by-byte replay of the 6502's V.  Here every
-| value is in a register, the struct is one byte in d0, and V is the `add.w`'s own overflow flag: the
-| 6502's V off its high-byte ADC (carry in from the low byte) IS the signed overflow of the 16-bit add.
+| value is in a register and nothing is returned.
 | ⭐ WHAT IT STORES: every cell the C stores, with the same value — shared_temp_77/76, math_lo/hi,
 | edge_opp_x, edge_style, edge_y, horizon_extent/index — so mem[] is byte-identical after every call.
 | C is called for the three rare arms only: a point beside the car, where the width takes the 6502's
@@ -16,13 +17,13 @@
 | patched the $261A horizon store (emit_width_c runs the whole C core — decided at entry, before any
 | store, so the two can never interleave).
 |
-| unsigned emit_width_m68k(unsigned sectionByte)  -> the exit V, 0 or 1
+| void emit_width_m68k(unsigned sectionByte)
 | emit_width_core — the same routine for road_edge_walk_m68k (walk_m68k.s), entered by `bsr`/`jsr` with
-|   a0 = mem and d1 = the section byte zero-extended to a word; returns V in d0.  It CLOBBERS d0 and
-|   d2-d6 and a1, and PRESERVES d1, d7, a0 and a2-a6 — including across its C callouts, which save
+|   a0 = mem and d1 = the section byte zero-extended to a word.  It CLOBBERS d0 and
+|   d2-d5 and a1, and PRESERVES d1, d6, d7, a0 and a2-a6 — including across its C callouts, which save
 |   d1/a0 themselves (the C ABI keeps d2-d7/a2-a6).  The walk keeps its constants in d7/a2-a6 for that.
 | Registers: a0 = mem, a1 table scratch, d1 = the section byte, d2 = the masked flags, d3 scratch
-|   (the feature, then k, then the edge word), d4 = the style, d5 = the offset, d6 = V out.
+|   (the feature, then k, then the edge word), d4 = the style, d5 = the offset.
 
 	.equ	Z_CURSOR,   0x12            | edge_cursor
 	.equ	Z_HORIZON,  0x1F            | horizon_extent
@@ -73,7 +74,6 @@ emit_width_core:
 	jbne	ew_c                        | a circuit's own horizon hook: the C core, whole
 	cmp.b	#0x84,SMC_HOOK+2(a0)
 	jbne	ew_c
-	moveq	#0,d6                       | V = the entry V unless the width add runs
 
 	| $2565-$257E — the point's feature bits, masked to this side's, and the style they select
 	move.w	d1,d0
@@ -142,7 +142,7 @@ ew_sign:
 	lsr.w	#8,d0
 	move.b	d0,Z_MATHHI(a0)
 
-	| $25C0-$25D2 — the far kerb: this point's angle plus the offset.  V is the 16-bit add's.
+	| $25C0-$25D2 — the far kerb: this point's angle plus the offset.
 	moveq	#0,d0
 	move.b	Z_CURSOR(a0),d0
 	lea	EDGE_XLO(a0),a1
@@ -150,11 +150,6 @@ ew_sign:
 	lsl.w	#8,d3
 	move.b	(a1,d0.w),d3                | edge_x
 	add.w	d5,d3
-	svs	d6
-	.if SABOTAGE == 3
-	moveq	#0,d6                       | SABOTAGE 3: V is dropped
-	.endif
-	neg.b	d6                          | $FF -> 1
 	move.b	d3,0x10(a1,d0.w)            | edge_opp_x_lo
 	lsr.w	#8,d3
 	move.b	d3,0x60(a1,d0.w)            | edge_opp_x_hi
@@ -198,8 +193,6 @@ ew_style:
 	move.b	d0,Z_HORIDX(a0)
 	.endif
 ew_done:
-	moveq	#0,d0
-	move.b	d6,d0
 	rts
 
 ew_c:

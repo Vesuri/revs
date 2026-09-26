@@ -131,7 +131,6 @@ typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
 /* build_track_geometry's exit ABI: live=AXY, flags a byproduct. */
 typedef struct { uint8_t x, y; } GeoExit;      /* build_track_geometry's live exit (A is dead at $4626) */
 typedef struct { uint8_t c, v; } BlockCV;        /* a routine whose only live exit is C and V */
-typedef struct { uint8_t y, v; } MarkExit;       /* mark_line_surfaces / draw_road: Y and V (C is always set) */
 typedef struct { uint8_t val, carry; } Adc;
 /* The three values the chain and its drivers thread through each other — the 6502's A, X
    and Y under the names of what they actually hold.  Everything else is a plain local. */
@@ -175,7 +174,7 @@ typedef struct {
     uint16_t maxEighth;   /* -> math_hi:math_lo (LOW byte in math_hi) — the far arm only */
     int      farArm;
 } PointDist;
-typedef struct { uint8_t a, y, n, z, v, c; } WidthExit;
+typedef struct { uint8_t a, y, n, z, c; } WidthExit;   /* V is not produced (the $248B note) */
 typedef struct {
     uint8_t sectionIndex;   /* the walk's starting byte index into section_coord_lo/hi */
     uint8_t wrapLimit;      /* -> section_wrap_limit */
@@ -591,17 +590,17 @@ void copy_dash_data_core(uint8_t dirFlag);
 uint8_t derive_car_section_cursor_core(uint8_t cursor);
 SlipRef derive_slip_reference_core(uint8_t axle);
 uint8_t draw_gear_indicator_core(void);
-MarkExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);   /* the near line_attr limit */
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 void draw_track_object_core(uint8_t slot);
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX);
 uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte);
 uint8_t emit_edge_bearing_core(uint8_t slot);
-WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint, uint8_t entryV);
+WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint);
 SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t fallback, uint8_t entryV);
 SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc);
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine, uint8_t entryV);
-uint8_t fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC, int entryV);   /* exit V */
+void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC);
 void fill_object_gap_core(uint8_t width);
 /* ⭐ hypot_max ($7A/$7B) is a mechanism-(B) relocated wide value (see revs_native.c).  A shim
    whose core CONSUMES it marshals the cells in; one whose core PRODUCES it marshals them out —
@@ -765,7 +764,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, i
 int kbd_test_key_core(uint8_t keyCode);
 uint8_t limit_steer_demand_core(uint8_t a, int carryIn);
 void load_section_triple_core(uint8_t destSection, uint8_t segmentByte);
-MarkExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
+uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);   /* the line_attr limit */
 Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y);
 Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
 void model_integrate_element_core(uint8_t slot);
