@@ -20754,11 +20754,24 @@ void clear_surface_buffers_core(void)
        line, while $80 writes $80 and then carries on down to 0. */
     uint8_t line = horizon_extent;
     if (line < 0x50u) {
-        unsigned span = (unsigned)line + 1u;
-        memset(&mem[MEM_surface_edge_0], 0x80u, span);
-        memset(&mem[MEM_surface_edge_1], 0x80u, span);
-        memset(&mem[MEM_surface_edge_2], 0x80u, span);
-        memset(&mem[MEM_surface_edge_3], 0x80u, span);
+        /* ⭐ ONE LOOP FOR THE FOUR BUFFERS, not four memset calls: each call paid the wrapper's
+           entry, its alignment tests and its own byte tail for ~80 bytes (phase 10 single-stepped
+           at ~600 instructions for five of them).  All four bases are 4-aligned in an aligned(4)
+           mem[] ($0554/$05A4/$0600/$0650), so the four walks share one count and one tail.
+           ENDIAN-OK: a uniform-byte fill — every byte of the longword is $80. */
+        const unsigned span = (unsigned)line + 1u;
+        uint32_t* p0 = (uint32_t*)(void*)&mem[MEM_surface_edge_0];   /* ENDIAN-OK: uniform $80 */
+        uint32_t* p1 = (uint32_t*)(void*)&mem[MEM_surface_edge_1];   /* ENDIAN-OK: uniform $80 */
+        uint32_t* p2 = (uint32_t*)(void*)&mem[MEM_surface_edge_2];   /* ENDIAN-OK: uniform $80 */
+        uint32_t* p3 = (uint32_t*)(void*)&mem[MEM_surface_edge_3];   /* ENDIAN-OK: uniform $80 */
+        unsigned n;
+        for (n = span >> 2; n; n--) {
+            *p0++ = 0x80808080u; *p1++ = 0x80808080u; *p2++ = 0x80808080u; *p3++ = 0x80808080u;
+        }
+        {
+            uint8_t *b0 = (uint8_t*)p0, *b1 = (uint8_t*)p1, *b2 = (uint8_t*)p2, *b3 = (uint8_t*)p3;
+            for (n = span & 3u; n; n--) { *b0++ = 0x80u; *b1++ = 0x80u; *b2++ = 0x80u; *b3++ = 0x80u; }
+        }
     } else {
         do {
             mem[MEM_surface_edge_1 + line] = 0x80u;          /* in the 6502's own order */
@@ -20767,7 +20780,11 @@ void clear_surface_buffers_core(void)
             mem[MEM_surface_edge_0 + line] = 0x80u;
         } while (!(--line & 0x80u));
     }
-    memset(&mem[MEM_view_line_surface], 0x00u, 0x50u);       /* $66CD — all 80 lines */
+    {   /* $66CD — all 80 lines, twenty aligned longwords.  ENDIAN-OK: zero has no byte order. */
+        uint32_t* q = (uint32_t*)(void*)&mem[MEM_view_line_surface];   /* ENDIAN-OK: zero fill */
+        unsigned n;
+        for (n = 0x50u / 4u; n; n--) *q++ = 0u;
+    }
 }
 
 /* $18BC  fill_line_surface  (twin #214)
