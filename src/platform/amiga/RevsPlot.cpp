@@ -1930,7 +1930,6 @@ extern "C" void revs_plot_own_reset(void)
             for (i = kDeltaBlock[blk][0]; i < kDeltaBlock[blk][1]; i++) s_ownTemplate[i] = 1;
         s_ownTemplateBuilt = 1;
     }
-    __builtin_memset(g_plotOwn, 0, BBC_SCREEN_HEIGHT);
 #endif
 #ifdef REVS_PLOT_DELTA
     /* ⭐ THE CLAIM, and it is asserted HERE rather than in present() for a hard reason: basing 34
@@ -1945,7 +1944,12 @@ extern "C" void revs_plot_own_reset(void)
            not merely the staleness test — so it must not sit behind `||`'s short circuit. */
         const int kindMoved = deltaKindRebuild();
         if (kindMoved || !s_deltaBased) plotDeltaBase();
+        /* The template is the WHOLE 208-byte map, so it replaces the clear rather than following
+           it: a clear here too was a second pass over the same bytes (~300 instructions a sweep,
+           single-stepped).  Nothing between the two reads `g_plotOwn`. */
         __builtin_memcpy(g_plotOwn, s_ownTemplate, BBC_SCREEN_HEIGHT);
+    } else {
+        __builtin_memset(g_plotOwn, 0, BBC_SCREEN_HEIGHT);
     }
 #endif
 }

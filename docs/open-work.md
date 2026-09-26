@@ -26,7 +26,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 78.11 ms bracketed** (after the source scan's hits stopped being calls, ph24 17.69 → 16.11; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+**Where the frame stands:** **Σ(1..39) − ph28 = 77.90 ms bracketed** (after the source scan's hits stopped being calls and the ownership map stopped being cleared before its template overwrote it, ph24 17.69 → 16.11 → 15.87; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
 ~3-4 ms of crash reset — see below) — **0.81× the real BBC's 97.0 (0.86× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
@@ -151,7 +151,8 @@ by certainty × size:
      because phase 1's matching lines are mostly flat and were already cheap. ⛔ The drivers' C
      (2.7k instructions) is NOT a lever — see CLOSED. Re-stepped at 79.92 ms: **15.5k a sweep — the
      scan 6.8k, the painter 5.0k, the drivers 2.7k** — and the scan's hits then stopped being calls
-     (per-group hit blocks, **ph24 17.69 → 16.11**, docs/perf-method.md). What is left in ph24 is the
+     (per-group hit blocks, **ph24 17.69 → 16.11**, docs/perf-method.md), and `revs_plot_own_reset` stopped
+     clearing `g_plotOwn` right before the template copy overwrote all 208 bytes (**−0.23**). What is left in ph24 is the
      scan's walk and record (§1: the price of not touching `draw_road`), the painter's signature
      compare (~196 word iterations a sweep at ~42 cycles — a longword compare is the next candidate)
      and phase 1's changing lines; then STEP 2 below.
