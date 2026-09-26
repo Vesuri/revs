@@ -2625,3 +2625,134 @@ writes `mem[]`, so with the rows owned nobody paints them; its store site alread
 lap reflects nothing, so the cross-build pixel diff above does NOT show those cells: the stale
 content happens to match. That is the trap already written at `mirror_draw_car`, met from the
 other side.
+
+## ⭐⭐⭐ §13 — THE `$3000` SOURCE-BUFFER DESIGN PASS, RE-PRICED AT 75.10 ms (2026-09-26)
+
+**The question:** `docs/open-work.md` STEP 2 names "the `$3000` source-block intermediate between
+`draw_road` and `view_paint_lines`" as the structural lever left in the renderer. Every piece around
+it has since gone to asm (the span pass, the scan, the terrain painter, the seam fill) or grown a
+skip (the painter's unchanged-line test), so every earlier price (§10e's ~34 ms; the 2026-09-24
+"~6-9 ms net") has a stale denominator. This pass re-prices the whole structure, piece by piece,
+from one whole-frame single-step and two host censuses, and ranks what is left.
+
+### 13a. What the structure costs now — one driving frame, single-stepped
+
+`amiga/steptrace.gdb` over one whole frame (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+HOLD_THROTTLE=1`): **43.1k instructions of work** (the vblank spin's ~11.4k excluded), ≈1.6 ms per
+1k on this code (ph18's 5.57 ms over its 3548 instructions; ph24 + ph33 over theirs agree).
+
+| piece | instructions | ≈ ms | what it is |
+|---|---:|---:|---|
+| `edge_run_m68k` — the dashboard SEAM fill (ph18) | 3 548 | 5.6 | 22 column walks, ~130 cells classified |
+| `view_scan_m68k` — the transposed scan (ph24) | 4 779 | 7.6 | ~2.0k the longword walk, ~1.7k the hit lanes, ~1.0k set-up, floor, seeds, sentinels |
+| `terrain_paint_m68k` + `revs_plot_terrain` | 5 238 | 8.4 | ~1.3k the per-line signature compare, ~3k painting the ~26% of lines that changed |
+| the engine-shaped drivers: `step_scanline` 731, `view_own_low` 857, `view_own_full` 664, `view_stops_rescan` 373 | 2 625 | 4.2 | the 6502 sweep's per-line loop — scan-line step, background byte, the SMC terminator, the stop list, the surface probe |
+| **total** | **16.2k** | **~26** | ph18 + ph24 + ph33 = 25.71 ms in the phase table |
+
+### 13b. What the blocks carry — the census (host, two trajectories)
+
+Every live source byte a sweep finds (above `dash_block_starts[cell]`, lines 0..79), attributed to
+the phase in which it became non-zero (a byte diff of `$3000..$43FF` at every phase canary — the
+store-site hooks miss plain `mem[]` writes, the reason the canary exists). Patch:
+`tmp/census/src_census.patch` (host only, not committed).
+
+| writer | practice, driving (596 sweeps) | race proper (10 310 sweeps) | notes |
+|---|---:|---:|---|
+| the road DDA (`span_walk`, inside ph11) | **75.7** | 67.4 | 47% exactly at a `surface_edge_N[line]` cell, **93% within ±1**; 37% mixed bytes |
+| the seam fill (ph18) | **65.5** | 64.5 | **all on the low block**, all solid; 38% equal the byte carried from the left |
+| objects — sign (ph15) / cars (ph17) | 11.9 / — | 0.4 / 5.7 | smaller than every earlier estimate, race included |
+| other (lights, markers, …) | 10.4 | 1.4 | |
+| **total** | **163.5** | **139.5** | |
+
+⚠ **The first run of this census measured a PARKED car, and it looked plausible:** `make
+CFLAGS+=-DX` on the command line REPLACES every `CFLAGS +=` the Makefile makes, so the build lost
+`STRAIGHT_TO_RACE`/`HOLD_THROTTLE`/`RACEPROPER` along with `-O`. The tell was a histogram of
+near-integer per-sweep values (a static scene) and a race run that never left qualifying. It is the
+`EXTRA_DEFINES+=` trap of `docs/perf-method.md` §the blitter, second instance — add a Makefile
+`ifdef` for a temporary define instead.
+
+⭐⭐ **The seam fill is a PER-LINE computation spread over 22 column walks.** Instrumented on the
+host (`tmp/census/fillmap.patch`): on every low-block line, exactly ONE pass-B cell (the run's first
+cell, `b0` on the right, `a0` on the left) and ONE pass-A cell (the next one, `b0+1` / `a0+1`) —
+**66 line-sides a sweep (41 right, 25 left), 0 exceptions over 400 sweeps.** The staircase of
+`dash_block_starts` is what makes a column walk touch each line exactly once. So the fill's whole
+output is, per line and side: `table[L] = src(first) ? src(first) : classify(L, first)` and, if
+`src(first+1)` is empty, `src(first+1) = classify(L, first+1)` — the run-B seed and the colour
+after the composed boundary cell.
+
+### 13c. The designs, priced — every piece is at or near its floor
+
+⚠ **Split each piece by source line before pricing it** — the first draft of this section priced
+the seam fill by its instruction total and called it ~−3 ms; its own trace split says otherwise.
+
+**C — THE SEAM FILL AS A PER-LINE PASS: exact, small, optional (~−1.3 ms).** The fill's 3548
+instructions are **132 classifications at ~15 (1980)**, the per-cell reads and stores (~900) and
+only **~400 of walk bookkeeping** — it is ~85% real work. A per-line rewrite (for each low line and
+side: `table[L]` from `first`, the `first+1` fill if empty) writes the SAME `mem[]` bytes — the
+column steps are disjoint in lines and the classifier reads no block, so the order of the walks is
+unobservable — which makes it a faithful twin change `determinism` gates on the host. It deletes the
+bookkeeping and can reuse `first`'s classification for `first+1` unless a `surface_edge` lands
+exactly on `first+1`: ≈ −0.8k instructions, **≈ −1.3 ms**. Emitting the fill's colours as painter
+seeds instead of block bytes (Amiga-only) buys nothing further: each seed insertion costs what the
+scan hit it replaces does.
+
+**A — FOLD THE ENGINE-SHAPED DRIVERS: price it with an arm before building, and expect little.**
+On the plane arm the painters take whole blocks and prove row contiguity at the two ends, so the
+per-line `step_scanline`, the terminator test on `view_chain_end_slot`, the per-line claim and the
+stop-list rescan are control flow for a chain that no longer runs; one per-sweep pass
+(`g_viewRowBg[]` for 77 lines, the surface probe on its line, a block claim, terminator and stop
+list decided once with the drivers as the precondition's dead arm) would replace them.
+⚠⚠ **But a partial version of exactly this is already ⛔ CLOSED at −0.03 ms** (`docs/open-work.md`
+§CLOSED, "the sweep drivers' C": the scan-line pair in locals, the `$7EEE` terminator hoisted). The
+2.6k instructions are mostly REGISTER code — `step_scanline` is 11% memory operands — so counting
+them at the frame's average ~10 cycles an instruction over-reads (CLAUDE.md §Rule 1b). By cycles
+the whole fold's ceiling is ~1.5-2 ms, less the ~0.6k instructions that must remain. (The
+"~6.0 ms of per-line drivers" noted on 2026-09-25 was ph24 + ph33 minus the carved painters minus
+the scan — a RESIDUAL, CLAUDE.md's rule, not a price.) ⇒ **Build it
+only if a carve arm (the drivers skipped, the rows' background bytes precomputed, the picture
+allowed to be wrong) moves ph24 + ph33 by more than ~1 ms.** Proof obligation if it is built: the
+terminator slot is written only by the chain arms, the chain pages by `view_plant` (chain paths),
+`copy_dash_data` (race bracket only) and — unaudited — any circuit hook; assert per sweep.
+
+**B — PRODUCER-EMITTED EVENTS: ⛔ RE-CLOSED ON THE NEW ARITHMETIC.** The old closure's decisive
+term was the +3.89 ms call barrier in `interp_edge_core`'s C loops, and that term is gone — the
+span pass and walk are asm. But the scan's other half now dominates the comparison: its walk hands
+each hit its ORDER (ascending cells) and its ADDRESS for free, so a hit is ~11 instructions. A
+producer note must decode (cell, line) from its pointer, insert in order (a line's events arrive
+from up to four edges in DDA order), and the consumer must still read the FINAL byte at paint time
+(class B composition — two edges or an object over a road byte), zero it and translate it:
+**~30 instructions an event against the scan's ~29 — its whole cost, walk included, over ~164 events.** No gain at any
+event density this data produces. ⇒ **The fill (design C) is the one producer where direct
+emission pays**: it runs last, composes with nothing and knows its line, cell and order in
+registers. Do not re-open B without a producer that has the same three properties.
+
+**The painter is at its floor** — the signature compare is ~2.5 compares a line and the paint is
+the longword fill plus ~15 instructions an event; the skip already declines 74% of lines.
+
+### 13d. ⇒ What this means for the plan
+
+- **C + A ≈ −1..−3 ms. The `$3000` structure is SPENT as an incremental lever:** the seam fill is
+  classification, the scan is the cheapest way to find ~150 events, the painter is at its store
+  floor and the drivers are cheap register code. "The `$3000` intermediate" was three different
+  things, and each is now near its floor on its own terms.
+- **D — the one design left that deletes work rather than tidying it: THE ANALYTIC LINE RENDERER**
+  (§10's idea, re-priced). Paint each line from its edge record — the four `surface_edge` cells give
+  five intervals whose colours are the classifier's own rules evaluated once per LINE, not per
+  cell — plus the pixel-exact boundary byte gathered from the block at each edge. It deletes the
+  scan (4.8k) and the whole seam fill (3.5k: an entry colour is just the colour of the interval
+  holding `first`), and costs ~60 instructions a line (4.8k) plus object notes. **Ceiling ≈ −3.3k,
+  ≈ −5 ms, with a real exactness risk**, and two measured facts that must be explained first
+  (host census, driving, 596 sweeps):
+  1. the edges are fully nested (`e1 ≤ e3 ≤ e2 ≤ e0`, the classifier's compare order) on **79% of
+     lines** (37 529 of 47 680) — the rest break one of the three orders (63 lines break two); whether those are
+     the `$80` "not on this line" value or real crossings decides whether the intervals are fixed;
+  2. **5.5 road bytes a sweep are solid colour changes ≥ 2 cells from every recorded edge**, all on
+     sweep lines 47..58 — a colour change the edge record does not explain, which a renderer built
+     on that record would drop.
+  ⇒ settle both on the host (a census, no emulator run), then decide. It changes the `mem[]`
+  bytes, so it is gated by `viewdiff` per circuit, not `determinism`.
+- **It does not reach the next visible step.** A frame is displayed every `ceil(ms/20)` fields, so
+  75 ms shows at 12.5 fps and anything from 41 to 60 ms at 16.7 — **−15 ms to the next step**; C + A
+  supply 1-3 of it and D at best 5. The producers are the other mass (ph11 14.49 at BBC parity,
+  ph5 9.94 at 2.2× the BBC), and `docs/perf-method.md` §the producers mapped already says what is
+  left there: fewer edge points, fewer spans — a visual-fidelity trade, which is the user's call.

@@ -195,7 +195,15 @@ by certainty × size:
      (real work) — and STEP 2 retargets this plotter's output anyway. A race draws ~2.3 objects a
      frame, so a race gains ~2.3× what the practice baseline showed.
   4. **Then STEP 2**: the direct span-to-bitplane renderer that deletes the `$3000` intermediate.
-     Re-price it after step 1.
+     ⭐⭐ **RE-PRICED 2026-09-26 (`docs/span-render-plan.md` §13): the structure is SPENT as an
+     incremental lever.** Its ~16.2k instructions a frame (~26 ms: seam fill 3.5k, scan 4.8k,
+     painter 5.2k, drivers 2.6k) are each near their floor — the fill is 85% classification, the
+     scan is the cheapest way to find ~150 events, the painter is at its store floor, the drivers
+     are register code (a partial fold is already ⛔ CLOSED at −0.03). What is left: the seam fill
+     as an exact per-line pass (~−1.3 ms, `determinism`-gated), a driver fold only if a carve arm
+     shows >1 ms, and **one real design — the ANALYTIC LINE RENDERER (§13d, ceiling ≈ −5 ms)** —
+     whose two open facts (edges nested on only 79% of lines; 5.5 road bytes a sweep that no
+     recorded edge explains) are host censuses to settle before deciding.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
   18.83**. `bearing_to_section` and `project_point` each take `(S << 8) / L` in one `DIVU` of the
   real operands where the 6502 divided by a divisor truncated to its top byte (0..+2 above the
@@ -323,6 +331,11 @@ horn (+4.9 ms precedent). There is no third placement.
 ⇒ **the 10 ms is the price of not touching `draw_road`.** Reopen only if a producer is rewritten so
 its note is inline in a loop it owns; the list machinery is proved (0 mismatch, 3584 sweeps) and
 sits behind `SRCEVENTS=1`.
+⛔ **RE-CLOSED 2026-09-26 with the span pass in asm** (the barrier term is gone):
+`docs/span-render-plan.md` §13c-B. The scan is now ~29 instructions an event including its walk,
+because the walk hands each hit its order and address for free, while a producer note plus
+paint-time read-back (class B composition) is ~30. The one producer where direct emission pays
+is the seam fill, and there it is a wash too (§13c-C).
 
 ### 1b. ⭐⭐ The view sweep's DRIVER code — **phases 2+3 are DELETED by §12; this entry is history**
 ⛔⛔⛔ **EVERY CANDIDATE THIS ENTRY EVER NAMED IS NOW CLOSED, AND THE REASON TO STOP IS A

@@ -841,6 +841,9 @@ Rules that must survive without opening `docs/perf-method.md`:
   `probe-audit: clean (N symbols)` count is a function of the flag set. ⭐ A frame total that does
   not resemble the published baseline is the cheapest tell that a flag did not land.
   `docs/perf-method.md` §prove the flags reached the build.
+  ⚠ **And `make CFLAGS+=-DX` / `EXTRA_DEFINES+=…` on the command line REPLACES every `+=` the
+  Makefile makes** — the build silently loses `-O` and every feature define (it turned a driving
+  census into a parked one). Add a Makefile `ifdef` for a temporary define instead.
 - ⭐⭐⭐ **BOUND A PHASE-TABLE A/B IN EMULATED TIME, NOT HOST TIME — `make PROBEFIELDS=N`, and it is
   the protocol for every arm-against-arm comparison.** `diag_run.sh` bounds a run with `sleep`, i.e.
   HOST seconds, and under warp the emulator's throughput moves with the host's load, so two arms
