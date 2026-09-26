@@ -1696,6 +1696,10 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
 #ifdef REVS_LOW_FULL_CHECK
                     s_lowSeedPos[l] = (unsigned char)(q - &g_viewEv[l][0]);
 #endif
+                } else {
+                    /* ⚠⚠ A SOURCE EVENT ON THE ENTRY CELL LOSES, NOT WINS: the chain enters run B
+                       at unit+$05, which consumes that source unread (view_low_run §forced). */
+                    q[-1].colour = mem[MEM_view_right_start_src + l];
                 }
                 l = s_lowSeedNext[l];
             }
@@ -2684,17 +2688,17 @@ static void view_own_full(ViewState* v)
    pokes, the stop list, the two chain entries — has nothing left to do.  What remains is what
    the user asked for: paint the terrain, and do not go near the car.
 
-   ⏳⏳ STATUS — NOT SHIPPING YET, AND THE REMAINING FAULT IS NOT IN THE PIXELS.
-   `make TERRAINLOW=1 TERRAINLOWCHECK=1` runs the CHAIN and then this code over the same data and
-   compares every cell: **0 mismatches in 21 240 cells**, 708 a sweep, which is exactly what
-   `make fbwrites` measured the sweep storing in these rows.  So the clip decode, the two phases'
-   differing shapes and the RLE walk are all correct.
-   ⚠⚠ But the REAL arm — this code REPLACING the chain — hangs a few sweeps into the race, in the
-   crash reset's message printer.  The only differences between the two arms are that the real one
-   CONSUMES the sources and that the chain's own side effects stop happening: the `view_plant`
-   pokes into the $7C/$7E chain pages, the `OP_RTS`/`OP_CPX_IMM` writes to `view_chain_end_slot`,
-   and `paint_lines_short`'s closing restore of the three `view_restore_*` sites.  That is where to
-   look next — a READER AUDIT of the chain page's state, not another look at the bytes.
+   ⚠⚠ THE ORACLE BELOW MISSED A DEFECT FOR THE WHOLE LIFE OF THIS PATH, and the reason is the
+   trajectory, not the check: a run's first cell is entered at unit+$05 and must ignore its own
+   source (view_low_run §forced), which only matters when a road boundary lands EXACTLY there —
+   rare on a straight run, routine under the autopilot, and the grip probe's right-wheel cell is
+   one of them.  Found by the real-BBC lockstep; `TERRAINLOWCHECK` under `make lap`'s autopilot is
+   the gate that sees it (0 over six circuits x 3000 frames once fixed).
+   ✅ STATUS — SHIPPING: `TERRAINLOW ?= 1` in both Makefiles.  `make TERRAINLOW=1
+   TERRAINLOWCHECK=1` runs the CHAIN and then this code over the same data and compares every
+   cell, 708 a sweep (what `make fbwrites` measured the sweep storing in these rows).  The hang the
+   real arm once had in the crash reset's message printer is [INFERRED] gone: the path is default
+   and `make lap` races it through whole laps of six circuits.
 
    ⚠ THIS PATH WRITES `mem[]` AND NOTHING ELSE, which is deliberate.  The car, the tyres and the
    dash sides are furniture that lives in `mem[]` and reaches the screen through the decode; the
@@ -2955,10 +2959,27 @@ static void revs_report_low(void)
 #define LOW_STEP  8u
 #endif
 
+/* ⭐⭐ `forced` — THE CHAIN ENTERED THIS RUN AT unit+$05, and every entry the drivers make is on
+   that lattice except phase 2's run A (which starts at cell 0, a unit START): chain B's entries
+   are 7 mod 17 from $7C00 and phase 3's chain A ($F1 - view_run_right_end) 5 mod 17, the +$05 of
+   units 2 and 0 mod 17 (view_build_tables).  A +$05 entry skips the unit's dirty test: it ZEROES
+   the first cell's source without reading it and stores view_cell_bytes[entry] (view_consume's
+   forced arm).  So a source event ON the first cell is consumed and ignored — it must not replace
+   the composed entry.  ⚠⚠ Treating it as an ordinary event painted the raw source over the
+   dashboard edge whenever a road boundary landed exactly on a run's first cell, and cell 32 of
+   display line 149 is run B's first cell — the grip model's right-wheel surface probe, which then
+   read grass under a wheel on the road (the real-BBC lockstep, docs/validation-harness.md). */
+#ifdef LOW_PLANES
+#define LOW_FORCED(entry)  (entry)          /* raw terrain: PF2 draws the dash pixels (§12f-ii) */
+#else
+#define LOW_FORCED(entry)  mem[MEM_view_cell_bytes + ((entry) & 0xFFu)]
+#endif
+
 static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsigned base,
                                                     unsigned char* plane, const ViewSpan* ev,
                                                     unsigned first, unsigned last, unsigned entry,
-                                                    unsigned mask, unsigned fill, unsigned line)
+                                                    int forced, unsigned mask, unsigned fill,
+                                                    unsigned line)
 {
     /* ⭐⭐ FILL BETWEEN EVENTS, DO NOT ASK AT EVERY CELL.  Written as one loop that tested both
        `ev->start == c` and `c == last` per cell and recomputed `base + c*8` from scratch, this
@@ -2977,6 +2998,10 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
     (void)base; (void)plane;
 
     while (ev->start < first) ev++;
+    if (forced) {                               /* the unit+$05 entry — see above */
+        value = LOW_FORCED(entry);
+        if (ev->start == first) ev++;
+    }
     while (c < last) {
         unsigned end = ev->start;               /* the next event, or the $FF sentinel */
         if (end > last) end = last;             /* `last` is the composed cell, handled below */
@@ -3056,12 +3081,16 @@ unsigned char g_surfacePublished = 0;
    run's: the caller tries the other run, and a cell in neither is dashboard furniture the sweep
    never writes, which the `found` flag reports rather than guessing a colour for. */
 static unsigned char view_low_run_colour_at(const ViewSpan* ev, unsigned first, unsigned last,
-                                            unsigned entry, unsigned mask, unsigned fill,
-                                            unsigned cell, int* found)
+                                            unsigned entry, int forced, unsigned mask,
+                                            unsigned fill, unsigned cell, int* found)
 {
     unsigned value = entry;
     if (cell < first || cell > last) return 0u;
     while (ev->start < first) ev++;
+    if (forced) {                               /* the unit+$05 entry — see view_low_run */
+        value = LOW_FORCED(entry);
+        if (ev->start == first) ev++;
+    }
     for (; ev->start <= cell && ev->start <= last; ev++) value = ev->colour;
     *found = 1;
     return (unsigned char)(cell == last ? ((value & mask) | fill) : value);
@@ -3103,10 +3132,10 @@ static void low_own_check(const unsigned char* plane, const ViewSpan* ev, unsign
     for (cell = 0; cell < 40u; cell++) {
         int found = 0;
         unsigned char c = view_low_run_colour_at(ev, s_lowA0[line], s_lowA1[line],
-                                                 entryA, maskA, fillA, cell, &found);
+                                                 entryA, clip, maskA, fillA, cell, &found);
         if (!found)
             c = view_low_run_colour_at(ev, s_lowB0[line], s_lowB1[line],
-                                       entryB, maskB, fillB, cell, &found);
+                                       entryB, 1, maskB, fillB, cell, &found);
         if (!found) {
 #ifdef REVS_DUAL_PLAYFIELD
             /* ⭐⭐⭐ AND WITH THE CAR ON ITS OWN PLAYFIELD THE FURNITURE IS NOT PF1's ANY MORE —
@@ -3217,10 +3246,10 @@ static void view_own_low(ViewState* v)
                     const unsigned cell = k ? VIEW_LOW_PROBE_CELL1 : VIEW_LOW_PROBE_CELL0;
                     int found = 0;
                     unsigned char c = view_low_run_colour_at(ev, s_lowA0[line], s_lowA1[line],
-                                                             entryA, maskA, fillA, cell, &found);
+                                                             entryA, clip, maskA, fillA, cell, &found);
                     if (!found)
                         c = view_low_run_colour_at(ev, s_lowB0[line], s_lowB1[line],
-                                                   entryB, maskB, fillB, cell, &found);
+                                                   entryB, 1, maskB, fillB, cell, &found);
                     /* ⚠ A cell in NEITHER run is dashboard furniture the sweep never writes, so
                        its byte is whatever the dash laid down and does not change: keep the last
                        published value rather than inventing one. */
@@ -3242,9 +3271,9 @@ static void view_own_low(ViewState* v)
                ⚠ INSTRUMENT ONLY. */
             {   const ViewSpan* evSave = ev;
                 const ViewSpan* e2 = view_low_run(base, lowPlane, ev, s_lowA0[line], s_lowA1[line],
-                          LOW_ENTRY_A, LOW_MASK_A, LOW_FILL_A, line);
+                          LOW_ENTRY_A, clip, LOW_MASK_A, LOW_FILL_A, line);
                 (void)view_low_run(base, lowPlane, e2, s_lowB0[line], s_lowB1[line],
-                          LOW_ENTRY_B, LOW_MASK_B, LOW_FILL_B, line);
+                          LOW_ENTRY_B, 1, LOW_MASK_B, LOW_FILL_B, line);
                 ev = evSave;
             }
 #endif
@@ -3267,16 +3296,26 @@ static void view_own_low(ViewState* v)
                     do { if (i != s_lowSeedPos[line]) ref[k++] = e[i]; }
                     while (e[i++].start != 0xFFu);
                     e = view_low_run(base, lowPlane, ref, s_lowA0[line],
-                                     s_lowA1[line], LOW_ENTRY_A, LOW_MASK_A,
+                                     s_lowA1[line], LOW_ENTRY_A, clip, LOW_MASK_A,
                                      LOW_FILL_A, line);
                     (void)view_low_run(base, lowPlane, e, s_lowB0[line], s_lowB1[line],
-                                       LOW_ENTRY_B, LOW_MASK_B, LOW_FILL_B, line);
+                                       LOW_ENTRY_B, 1, LOW_MASK_B, LOW_FILL_B, line);
                 }
             }
 #endif
             g_viewRowAddr[line] = (unsigned short)base;
             g_viewRowBg[line]   = (unsigned char)LOW_ENTRY_A;
-            (void)ev;
+            /* ⚠⚠ ...and phase 3's run A is entered at unit+$05 too (view_low_run §forced), so a
+               source event on a0 is consumed unread and the entry colour holds there.  O(1): the
+               scan's floor keeps every cell left of a0 out of a clipped line's list (those cells
+               are below their own floor — view_low_build's contiguity assertion), so the line's
+               FIRST event is the only one that can sit on a0.
+               ⚠ Removing this passes `LOWFULLCHECK` in a STRAIGHT_TO_RACE window (the car never
+               steers, so no road boundary reaches cells 3-5 of a clipped line) — a gap, not a
+               dead arm: the `mem[]` arm's twin of it (run A's `forced`) fails TERRAINLOWCHECK on
+               five circuits under the autopilot (28-274 cells), and run B's seed sabotage fires. */
+            if (clip && g_viewEv[line][0].start == s_lowA0[line])
+                g_viewEv[line][0].colour = (unsigned char)LOW_ENTRY_A;
 #else
             if (LOW_PAINTABLE(lowPlane)) {
                 /* ⭐⭐⭐ §12f-ii — NO COMPOSED BOUNDARY CELLS ON THE PLANE ARM.  Each run's first
@@ -3296,9 +3335,9 @@ static void view_own_low(ViewState* v)
                    what a BBC's frame buffer held there is the COMPOSED byte.  That is why
                    `view_low_run_colour_at` still takes mask and fill (see the publish above). */
                 ev = view_low_run(base, lowPlane, ev, s_lowA0[line], s_lowA1[line],
-                          LOW_ENTRY_A, LOW_MASK_A, LOW_FILL_A, line);
+                          LOW_ENTRY_A, clip, LOW_MASK_A, LOW_FILL_A, line);
                 (void)view_low_run(base, lowPlane, ev, s_lowB0[line], s_lowB1[line],
-                          LOW_ENTRY_B, LOW_MASK_B, LOW_FILL_B, line);
+                          LOW_ENTRY_B, 1, LOW_MASK_B, LOW_FILL_B, line);
 
                 LOW_OWN_CHECK(lowPlane, &g_viewEv[line][0], line, edge, clip, base);
             }
@@ -3965,6 +4004,12 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
            leaves is the state the chain left. */
         ViewState      probe = v;
         const uint16_t p1 = plot_ptr_v, p2 = plot_ptr2_v;
+#ifndef REVS_PLATFORM_AMIGA
+        /* ⚠ the verdict is printed at exit — and was defined but never REGISTERED, so the oracle
+           ran and nobody could read it (the target reads g_lowMismatch through gdb instead) */
+        { static int reported; extern int atexit(void (*)(void));
+          if (!reported) { reported = 1; atexit(revs_report_low); } }
+#endif
         paint_lines_clipped(&v);
         if (s_lowBuilt) { plot_ptr_v = p1; plot_ptr2_v = p2; view_own_low(&probe); }
     }

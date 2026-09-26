@@ -163,8 +163,8 @@ sc_seed:
 	add.w	d2,d2                       | its cursor slot
 	move.l	(a2,d2.w),a4
 	cmp.b	-2(a4),d6                   | ⚠ an EMPTY list reads the previous list's last slot, which
-	beq.s	4f                          |   view_low_build guards with $FF — never a cell.  Else a
-	                                    |   real event already starts at this cell: it wins
+	beq.s	5f                          |   view_low_build guards with $FF — never a cell.  Else a
+	                                    |   real event already starts at this cell: it LOSES (5:)
 	move.b	d6,(a4)+
 	move.l	A_RSTART(sp),a0
 	.if SABOTAGE == 4
@@ -191,6 +191,12 @@ sc_seed:
 	move.b	(a0,d1.w),d1
 	cmp.b	#0xFF,d1
 	bne.s	sc_seed
+	bra.s	sc_nextcell
+| ⚠⚠ the chain enters run B at unit+$05, which consumes the entry cell's source UNREAD
+|   (revs_native.c view_low_run §forced): the event there takes the entry byte's colour
+5:	move.l	A_RSTART(sp),a0
+	move.b	(a0,d1.w),-1(a4)
+	bra.s	4b
 
 sc_nextcell:
 	lea	0x80(a1),a1
