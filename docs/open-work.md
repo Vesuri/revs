@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 77.48 ms bracketed** (after the source scan's hits stopped being calls, the ownership map stopped being cleared before its template overwrote it, and a run-B seed stopped computing its list's head, ph24 17.69 → 16.11 → 15.87 → 15.51; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.80× the real BBC's 97.0 (0.85× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 76.77 ms bracketed** (after the rendering-path review's first cuts — the MOS round trip, the edge-buffer clear, the PF2 outline, §9b — and the source scan's hits stopped being calls, the ownership map stopped being cleared before its template overwrote it, and a run-B seed stopped computing its list's head, ph24 17.69 → 16.11 → 15.87 → 15.51; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.79× the real BBC's 97.0 (0.84× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -836,6 +836,39 @@ only route and must not be proposed as one.**
 ✅ **The `move_and_draw_cars` discrepancy is SETTLED** — a PC-range bracket over its practice
 delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
 on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)
+
+### 9b. 🧹 THE RENDERING-PATH REVIEW (user, 2026-09-26: "a full review of all the functions on the in-game rendering path … Implementation details don't need verification, results do")
+Method: one whole loop iteration single-stepped (54.5k instructions, `tmp/price/steptrace_frame.gdb`
+shape — break at `build_track_geometry_native`'s EXACT entry, `break *fn`, and step to its next entry;
+`break fn` stops after the prologue, where `*(sp)` is not the return address), attributed per SOURCE
+function with inlines (`addr2line -f`), plus `make fatscan --profile` for the average over a window,
+priced in two worktrees so the tree stays editable. ⚠ ISR work that lands in the vblank spin is
+invisible to Σ(1..39)−ph28 — read `VERTB ISR … us each` and the painted-frame count instead.
+**Done:** MOS round trip for ADVAL + SOUND/ENVELOPE (−0.36), `buildBands` memo (ISR 1335 → 1002 µs a
+field), the four edge buffers' clear in one loop (−0.33), the PF2 tyre outline gated (−0.20).
+**Open, ranked by what is left:**
+- **The object plotter tree** (ph15+16 ≈ 3 ms practice, ~5 ms more in a race): single-stepped at ~1280
+  instructions a `plot_object_core` call, two calls a frame. Half of `plot_view_src_line_core` is its
+  entry state in zero-page cells (`PVS_*`, `EDGE_COLUMN`, `shared_temp_*`, `span_defer_pending`); the gap
+  fill goes through the generic `column_gap_walk` with `plot_ptr` byte-lane marshals, `zp_pointer`,
+  `walk_stores_are_private` and an `adc_overflow` replay. ⭐ READER AUDIT DONE (`make rangeaudit
+  DEFUSE=1`, five circuits, cells $2A-$2B,$35-$37,$47-$48,$70-$8F,$628F-$6292,$62F3,$62FD, the shape
+  tables): nothing outside the object set reads a value the object path wrote, EXCEPT the colour
+  pattern table $628F-$6292 (`interp_edge+240` reads it next frame — keep) and `$74`, whose only
+  outside reader is the practice busy-delay's `DEC $74` ($262F), which the port does not run. ⇒ the
+  whole tree's zero-page working state may go to locals under a scoped `set_ignore` + a determinism
+  re-record. Gate: `validate` of the tree's twins + the five determinism trajectories + `viewdiff`.
+- **The VERTB ISR** (~1.0 ms a field, 5% of wall clock; `make ISRSPLIT=1`): `snd_tick` ×2 ~400 µs net
+  (a per-channel dirty flag instead of the four-field program memo — `make sound` is the gate),
+  `screen` ~264 µs (`present()`'s pointer writes), `mouse` ~90 µs.
+- `model_state` marshals (~0.35 ms): the `mem[]` mirror's one twin reader is
+  `advance_player_section_core` ($62E2); moving it to `model_state_16` retires the per-step
+  marshal-out, needs a determinism re-record.
+- `view_stops_rescan` (~0.3 ms a sweep): stays — circuits patch the chain page's unit slots.
+- Near their floor, not levers: the terrain painter (its signature compare saves more than it costs),
+  the scan (after 9128841/12b6837), `step_scanline` and the drivers (⛔ CLOSED), `snd_tick`'s body,
+  `band_inputs_unchanged`, the section coordinate planes (a representation change —
+  docs/wide-value-cleanup.md's null result).
 
 ### 9. 🧹 THE 6502 RESIDUE `make fatscan` FINDS — ~960 → 608 target instructions a frame (six batches done)
 `make fatscan` (tools/fatscan.py; method in its docstring) ranks four detectors by target instructions
