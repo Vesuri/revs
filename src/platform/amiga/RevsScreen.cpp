@@ -1837,6 +1837,15 @@ static void revs_cock_line(const uint8_t* base, uint8_t* cock, unsigned char mod
    the expansion moves — the silhouette table (once, when the race view's blocks go live) or the
    band schedule's mode for one of these lines.  Neither is visible to a byte compare, which is
    why they are tested here rather than inferred. */
+/* Set when revs_cockpit_paint re-expands the layer, cleared once the tyre outline has masked the
+   tread back out of it.  The outline is idempotent, and nothing else writes the PF2 tread cells
+   (display lines 130..140, cells 0-1 / 38-39): the mirrors' PF2 bytes land on 154..178 and the
+   layer is its own allocation — so re-masking an unrepainted layer every frame was pure traffic.
+   ⚠ revs_plot_cockpit_byte (RevsPlot.cpp) accepts rows 117..157, so it raises this too for a byte
+   in the tread rows, even though no current writer lands there. */
+extern "C" { unsigned char g_cockOutlineStale = 1u; }
+#define s_cockOutlineStale g_cockOutlineStale
+
 static void revs_cockpit_paint(const uint8_t* base, uint8_t* cock, const unsigned char* lineMode)
 {
     static unsigned char force = 1;
@@ -1862,6 +1871,7 @@ static void revs_cockpit_paint(const uint8_t* base, uint8_t* cock, const unsigne
     s_cockCells = 0;
     if (!force) return;
     force = 0;
+    s_cockOutlineStale = 1u;
     g_cockpitFulls++;
     for (y = COCK_Y0; y <= COCK_Y1; y++) revs_cock_line(base, cock, lineMode[y], y);
 }
@@ -2501,7 +2511,10 @@ void RevsScreen::prepareFrame()
        PF2 drawing it.  Masked on both, a tread pixel is PF2 pen 0 over PF1 pen 0 = COLOR00 —
        the same black the single-playfield build left there — and the sprite supplies the
        pattern. */
-    revs_tyres_outline((uint8_t*)m_cockpit->data);
+    if (s_cockOutlineStale) {                  /* only after the layer was re-expanded */
+        revs_tyres_outline((uint8_t*)m_cockpit->data);
+        s_cockOutlineStale = 0u;
+    }
 #endif
 #endif
 #ifdef REVS_DECODE_SPLIT

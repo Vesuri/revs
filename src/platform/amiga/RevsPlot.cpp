@@ -22,6 +22,7 @@ extern "C" MEM_QUAL uint8_t mem[65536];
    re-derived: two definitions of the same expansion is how a plotter and its oracle agree on a bug
    (the "one definition" rule this project applies to bbc_ula_palette_write). */
 extern "C" uint8_t g_bbcExpandLo[256], g_bbcExpandHi[256];
+extern "C" unsigned char g_cockOutlineStale;   /* RevsScreen.cpp — the PF2 tread needs re-masking */
 extern "C" void revs_screen_convert_reference(uint8_t* dst);
 
 #ifdef REVS_SPAN_STATS
@@ -762,6 +763,10 @@ extern "C" void revs_plot_cockpit_byte(unsigned short addr, unsigned char value)
     po = s_planeOff[off];
     s_cockPlane[po]             = (uint8_t)~g_bbcExpandHi[value];
     s_cockPlane[po + kPlaneGap] = (uint8_t)~g_bbcExpandLo[value];
+#ifdef REVS_TYRE_SPRITES
+    /* the tread must come back out of PF2 (RevsScreen.cpp §g_cockOutlineStale) */
+    if (y >= REVS_TYRE_Y0 && y < REVS_TYRE_Y0 + REVS_TYRE_LINES) g_cockOutlineStale = 1u;
+#endif
     g_cockpitDeltaBytes++;
 }
 #endif /* REVS_DUAL_PLAYFIELD */
