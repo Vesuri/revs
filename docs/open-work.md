@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 80.78 ms bracketed** (after two `draw_road` producer cuts, ph11 16.17 → 13.99: `fill_line_attr`'s walk over locals −1.20 and the span pass's twelve dead scratch stores −1.00; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.83× the real BBC's 97.0 (0.89× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 79.92 ms bracketed** (after the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.82× the real BBC's 97.0 (0.88× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -234,9 +234,21 @@ nothing outside it reads (reader audit on five circuits, SETUPCHECK masks exactl
 Left in the pass: the cross-span cells it does read back (`Z_CLIP`, `Z_X77`/`Z_X7E`, `Z_CURSOR`,
 `Z_LINEEND`, `Z_SWAPPED`, `Z_NEARIDX`/`Z_FARIDX`, `Z_ARM`, `Z_CAPPEND`, `Z_STYLEIDX` — ~10 stores
 and ~10 reloads a span); holding them in registers across spans needs the cap's C to take them as
-arguments. `fill_line_attr`'s per-fill unroll prologue (~15 instructions for runs of ~4 lines) is a
-small `#pragma GCC unroll 1` candidate. Then `build_track_geometry`'s remainder and
-`fill_dash_edge_columns`.
+arguments — ⚠ and a free register: the walk already holds every one, so a cell moved to the stack
+frame costs what the `(d16,a5)` operand did. Only the redundant reload/copy pairs (the publish's two
+mem-to-mem moves, the `Z_CLIP`/`Z_ARM` reloads) are a saving — estimated ~0.2-0.3 ms, below the
+~1 ms bar. ✅ `fill_line_attr` un-unrolled (`optimize("no-unroll-loops")` — the pragma cannot reach
+the loop GCC synthesises from its `continue` arms), 750 → 201 instructions, **−0.15**.
+`build_track_geometry` (ph5 **10.02**, against the BBC's 21.7) single-steps at **6004 instructions a
+frame and is ~88% asm**: the walk 54%, the width emitter (asm) 31%, `road_edge_start` 7%,
+`bearing_to_section` and the core ~4%. ✅ The walk no longer stores eight 6502 working cells a point
+(`$80/$82/$83/$87`, the arctan `$7E`, the far hypot's `math_lo/hi`, the stride) — five-circuit
+reader audit in `walk_m68k.s`'s header, GEOCHECK masks exactly those — **−0.58**. ⚠ The audit found
+five cells the walk leaves that are read one frame on and must stay: `$86`/`$88` become the first
+span's `SPAN_ARM`/`SPAN_CLIP`, `$85` feeds `plot_view_src_line`, `point_dist_hi` feeds
+`note_object_contact`, `$8D` feeds `road_edge_start`. What is left in ph5 is asm doing real work
+plus ~0.7 ms of `road_edge_start`'s C. `fill_dash_edge_columns` carries a written do-not-retry.
+⇒ **the producers are down to real work; the next lever by size is the CONSUMER, ph24 17.69.**
 
 ⇒ **The last 8 ms (48 → 40) is where the `50/N` ladder steps to 25 fps; not planned until 48.**
 
