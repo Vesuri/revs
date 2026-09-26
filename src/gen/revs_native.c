@@ -6786,6 +6786,16 @@ static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t of
     hr.x = (uint8_t)section;
     if (mem[MEM_smc_edge_walk_hook] == 0x4C) {                           /* a circuit's own JMP */
         uint16_t target = (uint16_t)(mem[MEM_smc_edge_walk_hook + 1] | (mem[MEM_smc_edge_walk_hook + 2] << 8));
+        /* ⚠⚠ PUBLISH THE WALK'S LIVE VALUES BEFORE THE HOOK RUNS.  Every circuit's hook here ends
+           in road_edge_walk_resume_from, whose 6502-ABI marshal-INs (load-bearing for the
+           harness, see hook_edge_walk_limit) reload edge_nearest / hypot / bearing from mem[] —
+           where production publishes them only at the END of the walk, so mid-walk they held LAST
+           frame's.  The resumed points then tested the running nearest against a stale floor:
+           edge_nearest, nearest_edge_* and the subdivision floor went wrong, one point fewer was
+           emitted, and the real-BBC lockstep saw the Nurburgring's walk leave the 6502's at frame
+           1309 with every input identical.  On the BBC there is one copy, so this is faithful. */
+        edge_nearest_marshal_out();
+        hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
         if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
         else                                      platform_smc_unhandled(MEM_smc_edge_walk_hook, target);
         return hr.x;                                     /* the hook owns the exit X */
