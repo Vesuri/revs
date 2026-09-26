@@ -703,6 +703,13 @@ converted:
   lands on its own 100 Hz scheduler tick. Accrued, `h200` moves the note at most one unit a
   frame (host trace: 156×+1 and 144×0 over 300 frames, against 20×+2, 13×+3, 17×+4 before) on
   the same slope in game time.
+  ⭐ **The drone LAGS the rev needle on any fast change, and that is the BBC's design, kept (user
+  decision 2026-09-26).** The note moves one quarter-semitone unit per call toward `engine_revs + $19`,
+  four calls an engine frame: ~42 units a second (the BBC at 10.3 fps: 41). In gear under steady
+  acceleration it holds the target exactly (host trace, legacy and h200 alike); a blip in neutral
+  (+7 / −12 revs an engine frame) or a gear change (an instant jump of 50-60) leaves it 1-1.5 s
+  behind the needle, and the same slew is what smooths the idle's 0-7 units of timer jitter. A
+  faster decoupled slew was offered and declined — do not "fix" it.
 
 **The original's discretization, where a player can see it.** The engine's semi-implicit Euler flies
 a jump as if launched g/2 slower: a severity-$30 jump peaks at 61 where exact physics gives 72. Finer

@@ -1026,6 +1026,10 @@ workload (84.80 → 85.39 bracketed, while the displayed rate fell 16%).
 ### 🔧 The sound BY-EAR pass (`docs/phases.md` §5.4)
 Owed since sound landed, and the one thing in the project that **cannot be verified headlessly**.
 `make sound` proves the scheduler tick-for-tick against a real MOS; it cannot prove it sounds right.
+The ENGINE DRONE has had its first listen (2026-09-26, A1200, 50 fps): the per-step slew budget fixed
+its semitone staircase, and the lag behind the needle is the BBC's own slew and stays
+(`docs/faithfulness-seam.md` §THE FRAME-RATE-INDEPENDENT SIMULATION). Still owed: the noise-channel
+idle, the squeal, the impact, and the volume keys.
 
 ### 🔧 The naming pass's residue (`docs/static-map.md` §Open items 5)
 Still unnamed: **the interior of the 3D pipeline below `project_point`, the front end's prompt
