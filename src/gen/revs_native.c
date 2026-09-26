@@ -9985,6 +9985,14 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
    result is mem[] (line_attr, road_split_index, edge_style).  The 6502's exit V was the last BIT's
    or edge_x_offscreen's, handed down draw_road's stages only to reach the circuit-hook seams, where
    no hook reads V; everything else is dead at both callers (the fixture's reader audit). */
+/* ⚠ NO LOOP IN HERE IS UNROLLED — and it takes the function attribute, because `#pragma GCC
+   unroll 1` cannot reach the loop that matters.  The walk's two `continue` arms (mark the point,
+   next point) form a loop GCC synthesises itself, bounded by the `x >= onePastLast` clamp, and
+   -funroll-loops peels it EIGHT ways behind a mod-8 dispatch kept in a stack slot; the
+   road_split_index tail got the same, and each fill (runs of ~4 lines) its own prologue.  750
+   instructions with the pragma on both source loops still left 725; the attribute gives 201,
+   the fill a three-instruction `move.b / cmpa / bne` loop. */
+__attribute__((optimize("no-unroll-loops")))
 void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC)
 {
     mem[MEM_line_attr_store_operand] = bufferLow;      /* $0400 or $0450 — the store's own operand */
@@ -10060,12 +10068,11 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
     uint8_t rolled  = shared_temp_76;
     uint8_t lineEnd = mem[SPAN_LINE_END];
 
-    for (;;) {
+    /* $1979 — the next edge point; a marked index (bit 7) means the side is finished. */
+    while (!((x = (uint8_t)(x + 1)) & 0x80u)) {
         int clamped;
         uint8_t fillDownTo = 0;
 
-        x = (uint8_t)(x + 1);                /* $1979 — the next edge point */
-        if (x & 0x80u) break;                /* a marked index (bit 7): the side is finished */
         clamped = (x >= onePastLast);        /* $197C CPX — walked off the end of the half */
 
         if (!clamped) {
