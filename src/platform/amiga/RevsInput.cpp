@@ -375,6 +375,9 @@ bool RevsInput::initialize()
 {
     m_steer      = 0x80;      /* dead centre */
     m_lastMouseX = (uint8_t)(*joy0datPointer & 0xFFu);
+    /* Built HERE, before the engine runs, so keyDown() — seven polls a race frame — need not ask
+       whether it exists.  pressBbcKey (the autorun harness) keeps the lazy check. */
+    if (!s_rkBuilt) buildReverseMap();
     for (unsigned i = 0; i < 128; i++) { g_keyDown[i] = 0; g_keyLatch[i] = 0; }
 
     /* ⚠ Make the pot pins INPUTS so POTINP reports the right and middle buttons.  Clearing
@@ -430,18 +433,22 @@ void RevsInput::releaseAllKeys()
 
 bool RevsInput::keyDown(uint8_t x) const
 {
-    const uint8_t* r = rawkeysFor(x);
+    /* ⭐ The hot path is one or two table loads and a test: the reverse map is built by
+       initialize(), and the two rawkey slots are tested in line rather than by a bounded loop
+       (a row's second slot is RK_NONE for all but the doubly-mapped keys). */
+    const uint8_t* const r = s_rk[x];
+    const uint8_t k0 = r[0], k1 = r[1];
     if (x == 0x9Du) g_spacePolls++;                     /* SPACE — the instrument above */
-    if (r[0] == RK_NONE) { g_keyUnmappedCode = x; g_keyUnmapped++; return false; }
+    if (k0 == RK_NONE) { g_keyUnmappedCode = x; g_keyUnmapped++; return false; }
 
     /* The live level first: a key that is down now needs no latch, and the answer must not
        consume one (see the tap-latch note above — a held key would otherwise eat its own edge). */
-    for (unsigned k = 0; k < 2u && r[k] != RK_NONE; k++) {
-        if (g_keyDown[r[k]]) {
-            g_keyLatch[r[k]] = 0u;                      /* seen while held — the edge is spent */
-            if (x == 0x9Du) g_spaceAnswered++;
-            return true;
-        }
+    const uint8_t down0 = g_keyDown[k0];                /* ONE read: the CIA-A handler writes it */
+    if (down0 || (k1 != RK_NONE && g_keyDown[k1])) {
+        const uint8_t held = down0 ? k0 : k1;
+        g_keyLatch[held] = 0u;                          /* seen while held — the edge is spent */
+        if (x == 0x9Du) g_spaceAnswered++;
+        return true;
     }
 
     /* ...then the tap this port's slow front-end poll would otherwise have lost.
