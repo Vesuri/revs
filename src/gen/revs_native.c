@@ -9925,6 +9925,15 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
    pinned c.D = 0 on that citation all along; the fixture below now does too, and
    determinism-drive is the backstop that D = 0 really holds on the path. */
 
+/* edge_x_offscreen's one mem[] result as a value: `rolled` with this point's off-axis answer
+   rotated in at bit 7.  fill_line_attr's walk holds the rolled byte in a local and calls this
+   instead, so shared_temp_76 is stored once per road side rather than once per point. */
+static inline uint8_t off_axis_roll(uint8_t rolled, uint8_t pointX)
+{
+    uint8_t sum = (uint8_t)(mem[MEM_edge_x_hi + pointX] + 0x14u);
+    return (uint8_t)(((sum >= 0x28u) << 7) | (rolled >> 1));
+}
+
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
 {
     uint8_t edgeHi = mem[MEM_edge_x_hi + pointX];
@@ -9941,7 +9950,7 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
     /* ROR shared_temp_76: this point's answer enters at bit 7 and the PREVIOUS point's slides
        down to bit 6, which is where fill_line_attr reads it back. */
     uint8_t old  = shared_temp_76;
-    uint8_t newv = (uint8_t)((offAxis << 7) | (old >> 1));
+    uint8_t newv = off_axis_roll(old, pointX);
     shared_temp_76 = newv;
 
     EdgeOffFlags e = { sum, v, (uint8_t)(old & 1u), offAxis, (uint8_t)(newv == 0) };
@@ -10004,14 +10013,32 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
         return;
     }
 
-    uint8_t x = hr.x;                        /* a circuit hook may have moved the start index */
-    uint8_t y = horizon_extent;              /* $1949/$1977 — the first scan line to fill from */
-    span_line_cursor = y;
+    /* $196F's store operand, once: the walk only rewrites its LOW byte ($193E above), and the
+       high byte $1971 is engine code no circuit patches (`make track-patch`: no circuit's
+       ModifyGameCode touches $1970-$1971, and no hook stores there) — so every fill lands in
+       line_attr's $0400-$054F, clear of the zero-page cells and edge tables the walk holds in
+       locals below.  A different page would be an undeclared self-modifying site. */
+    const uint8_t storePage = mem[MEM_line_attr_store_operand + 1];
+    if (storePage != (MEM_line_attr_0 >> 8)) {
+        platform_smc_unhandled(MEM_line_attr_store_operand + 1, storePage);
+        return;
+    }
+    uint8_t* const attr = &mem[(uint16_t)((storePage << 8) | mem[MEM_line_attr_store_operand])];
 
+    /* The walk's state in locals, each written back once at the end — nothing the walk calls
+       reads them (edge_x_offscreen's roll is off_axis_roll here), and the loop can only leave
+       by the break at its top:
+         rolled   = shared_temp_76, the off-axis bits (bit 7 this point, bit 6 the previous);
+         y        = span_line_cursor, the next line to fill;
+         lineEnd  = SPAN_LINE_END ($82), the last fill's bottom line. */
+    uint8_t x       = hr.x;                  /* a circuit hook may have moved the start index */
+    uint8_t y       = horizon_extent;        /* $1949/$1977 — the first scan line to fill from */
+    uint8_t rolled  = shared_temp_76;
+    uint8_t lineEnd = mem[SPAN_LINE_END];
 
     for (;;) {
         int clamped;
-        uint8_t fillDownTo = 0, storeVal;
+        uint8_t fillDownTo = 0;
 
         x = (uint8_t)(x + 1);                /* $1979 — the next edge point */
         if (x & 0x80u) break;                /* a marked index (bit 7): the side is finished */
@@ -10019,19 +10046,18 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
 
         if (!clamped) {
             /* $194E — re-test this point's angle only when the last one was off axis. */
-            if (shared_temp_76 & 0x80u) (void)edge_x_offscreen_core(x);
+            if (rolled & 0x80u) rolled = off_axis_roll(rolled, x);
 
             uint8_t ptLine = mem[MEM_edge_y + x];     /* the scan line this point projects to */
             if (ptLine >= 0x50u) {
                 clamped = 1;                          /* $195A — off the bottom of the screen */
             } else {
                 /* $195C BIT — bit 7 = "previous point off axis". */
-                int prevOffAxis = (shared_temp_76 & 0x80u) != 0;
-                if (prevOffAxis && ptLine == mem[MEM_edge_y + x + 1]) {
+                if ((rolled & 0x80u) && ptLine == mem[MEM_edge_y + x + 1]) {
                     /* previous point off axis + this one on the SAME line ⇒ nothing to add */
                     mem[MEM_edge_style + x] |= 0x80u; continue;
                 }
-                if (ptLine >= span_line_cursor) {
+                if (ptLine >= y) {
                     /* a point that would fill UPWARD from the cursor adds nothing either */
                     mem[MEM_edge_style + x] |= 0x80u; continue;
                 }
@@ -10043,40 +10069,29 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
             /* $1980 — pull the point's line back to the cursor, mark the index, and fill
                everything that is left down to line 0. */
             uint8_t ey = mem[MEM_edge_y + x];
-            if (!(ey & 0x80u) && ey >= span_line_cursor)
-                mem[MEM_edge_y + x] = span_line_cursor;
+            if (!(ey & 0x80u) && ey >= y)
+                mem[MEM_edge_y + x] = y;
             x |= 0x80u;                        /* mark the index; bit 7 ends the walk */
             fillDownTo = 0x00u;
         }
 
-        /* $1969 — every line from the cursor down to fillDownTo names this point (index x). */
-        storeVal = x;
-        mem[SPAN_LINE_END] = fillDownTo;
+        /* $1969 — every line from the cursor down to (not including) fillDownTo names this
+           point.  y >= fillDownTo on both arms (an upward point was skipped above; a clamp fills
+           to 0), so the 6502's `STA $0400,Y / DEY / CPY $82 / BNE` loop — entered at its test by
+           $196C's JMP — never wraps and is a plain descending run. */
+        lineEnd = fillDownTo;
         {
-            /* The store operand cannot move under us: line_attr is $04xx and the operand $1970,
-               so compute the base once. */
-            uint16_t base = (uint16_t)(mem[MEM_line_attr_store_operand]
-                                       | (mem[MEM_line_attr_store_operand + 1] << 8));
-            /* ⭐ One hardware-window test per FILL, not per scan line: `y` only ever indexes
-               $00..$FF off `base`, so proving the whole span is RAM once hoists the range
-               check out of the loop.  The else arm stays for the SMC case where the operand
-               has been pointed somewhere unexpected. */
-            if (page_is_ram(base)) {
-                while (y != fillDownTo) {
-                    ROAD_COUNT(g_roadFillLines);   /* one scan line named in the line->point map */
-                    mem[(uint16_t)(base + y)] = storeVal;
-                    y = (uint8_t)(y - 1);
-                }
-            } else {
-                while (y != fillDownTo) {
-                    ROAD_COUNT(g_roadFillLines);
-                    bus_write((uint16_t)(base + y), storeVal);
-                    y = (uint8_t)(y - 1);
-                }
+            uint8_t* p = attr + y + 1;
+            for (uint8_t n = (uint8_t)(y - fillDownTo); n != 0; n--) {
+                ROAD_COUNT(g_roadFillLines);   /* one scan line named in the line->point map */
+                *--p = x;
             }
         }
-        span_line_cursor = y;
+        y = fillDownTo;
     }
+    shared_temp_76    = rolled;
+    span_line_cursor  = y;
+    mem[SPAN_LINE_END] = lineEnd;
 
     /* $1996 — leave road_split_index past any point the walk had to mark. */
     uint8_t sx = road_split_index;
