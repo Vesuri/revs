@@ -3317,6 +3317,24 @@ instrument: a 0.2 ms change is now quotable.
   confirms the freeze fired on the right field and that the 4006-ticks/ms phase clock is calibrated.
   A value far off `N × 80120` means the field counter and the beam clock disagree; stop.
 
+⚠⚠ **A field cap is NOT a game-frame cap in a `SIMLEGACY=1` build, so a win moves its own
+trajectory tail.** The engine's loop steps the sim once per PAINTED frame, so a faster arm paints —
+and simulates — more frames inside the same N fields, and its per-frame average takes in a
+stretch of lap the slower arm never reached. Measured with ONE binary (2026-09-26, the residue
+cleanup's pair): **84.80 ms over 526 frames at N = 3000, 84.31 over 549 at N = 3100** — 0.49 ms
+from the tail alone, while the change itself moved the frame to 83.26 over 543. So a field-matched
+pair over-reads a 1.5 ms win by ~0.35 ms here. ⇒ **For a change under ~2 ms, add a frame-matched
+control: re-run the SLOWER arm with N scaled by the frame ratio** and quote both, the rows the
+change touched from the frame-matched pair. The rows it did not touch are the check: they should
+agree to ~0.05 ms.
+⚠ **And a row whose compiled code is byte-identical across the arms can still move by a whole
+ISR.** In that pair `place_player_in_section` (ph6) read +0.33 ms with its objdump identical
+(address operands aside) and every callee inlined; the frame-matched control rules out the
+trajectory, which leaves the VERTB ISR being billed to whichever phase it preempts
+[INFERRED — `ISRSPLIT=1` would settle it]: the loop re-synchronises on the vblank spin (ph28), so
+shortening phases 1..5 moves the next VBL's landing point along the phase sequence. Quote the
+neighbouring rows COMBINED (ph5+6) when one of them is untouched code.
+
 ⚠ `g_vbiCount` is a `uint16_t`, so N must stay under 65536 (21.8 minutes).
 
 #### ⚠⚠ THE PARTIAL-FREEZE TRAP — a frozen numerator over a live denominator prints a plausible lie

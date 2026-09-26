@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 84.44 ms bracketed** (after the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.87× the real BBC's 97.0 (0.93× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 83.26 ms bracketed** (after the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.86× the real BBC's 97.0 (0.91× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -858,9 +858,13 @@ those reads `(main loop)`.
   a hook seam itself.
 - **zp 123:** `fill_line_attr_core`'s `shared_temp_76` / `$82` / `span_line_cursor` stores are the
   transliteration's handoff cells: a RESULTS question (the reader audit), not a code-shape one.
-- Not yet PRICED in milliseconds: the six batches are a static ~350 instructions a frame. A
-  `SIMLEGACY=1` phase-table pair (docs/perf-method.md) is what would put a millisecond figure on
-  them.
+- **PRICED (2026-09-26): −1.54 ms bracketed field-matched (84.80 → 83.26, `55926fe` vs `8d8a45b`),
+  −1.15 frame-matched** (the protocol's field cap lets the faster arm reach a cheaper stretch of
+  lap — docs/perf-method.md §bound the window). By row, frame-matched: `draw_road` (ph11) −0.81,
+  `build_track_geometry` + `place_player` (ph5+6, the latter byte-identical code) −0.13,
+  `build_road_sign` (ph14) −0.13, `apply_driving_model` (ph4) −0.10, `read_driving_controls` (ph3)
+  −0.06. The static count said ~350 instructions ≈ 0.5 ms; the phase table paid about twice that —
+  [INFERRED] because the deleted instructions were mostly memory operands (16-20 cycles, not ~10).
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
