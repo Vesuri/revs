@@ -811,40 +811,56 @@ only route and must not be proposed as one.**
 delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
 on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)
 
-### 9. 🧹 THE 6502 RESIDUE `make fatscan` FINDS — ~960 target instructions a frame, ~1.5 ms: CLEANUP, NOT A LEVER
+### 9. 🧹 THE 6502 RESIDUE `make fatscan` FINDS — ~960 → 608 target instructions a frame (six batches done)
 `make fatscan` (tools/fatscan.py; method in its docstring) ranks four detectors by target instructions
 per frame: host `--coverage` executions over frames 20..220 of the driving scene × the plain ELF's own
-instructions. Sabotaged: one planted defect per detector, all four found at the planted line and at
-the expected size, and gone again on revert. Totals: **marshal 591, exit 245, zp 123, flag 3**.
-- **marshal** (a native per-frame path through the 6502 ABI):
-  - `read_driving_controls_frame` (170) re-imports the whole model-state and car-angle vectors every
-    frame;
-  - `build_road_sign` (112) round-trips five bases;
-  - `apply_driving_model_frame_native` (109) publishes five and then stores **seven `cpu` exit
-    registers that nothing reads** (the shortlist says NO READER);
-  - `check_crash_native` (61);
-  - `build_track_geometry_native` (41).
-  A marshal-out may still be a RESULT the next pass reads from `mem[]`, so each needs the reader
-  audit (CLAUDE.md §the results rule) before it goes.
-- **exit**:
-  - `interp_edge_publish` (93): both indices are read only by the `interp_edge` shim;
-  - `emit_edge_width_offset_core` (41);
-  - `integrate_state_rates_core` (24).
-  The shortlist names every oracle consumer: no transliteration the port can run reads any
-  shim-only field; the main loop's "reads" are all `race_main_loop`, whose transliteration never runs.
-- ⭐ **The flag chain (user: "a clear sign of 6502 rot").** There are ten `adc_overflow`/`sbc_overflow`
-  sites, and none computes a V anything tests:
-  - **Five** reach only a shim's `cpu.V`: `edge_run_flat`, `edge_runs_asm_raw`, `column_gap_walk`,
-    `write_object_slot`, `scale_wing_settings`.
-  - **Four** are `draw_road`'s `chainV`, which each core copies from entry to exit untested. Its one
-    consumer is the **circuit-hook seam** (`revs_track_hook_regs`), and no hook reads V:
-    `revs_track_hooks.c` has no `cpu.V` read, and its six `PHP`s save and restore.
-  - **One** is `hook_merge_horizon_edges`.
-  The target already pays ~0 for them (GCC deletes most after inlining), so deleting them is
-  a rot fix, not a speed fix. Gate: `make validate` with the exit masks narrowed under a reader
-  audit, `determinism`, and **`make viewdiff`** for the hook-seam four.
-- **zp**: `fill_line_attr_core`'s `shared_temp_76`/`$82`/`span_line_cursor` stores, ~24/frame each.
-  They are the transliteration's handoff cells, so each is a RESULTS question, not a code-shape one.
+instructions.
+
+**Done**, commits `6d70795..b1200fe`. Totals went **exit 245 → 84, flag 3 → 0, marshal 591 → 401, zp
+123**. The pattern for every item:
+- the core stops computing an exit field no native caller reads;
+- the oracle-facing shim rebuilds it exactly from state (the integrators' `add_flags_between`, the
+  object slot writers, the contact test);
+- or, where no 6502 caller reads it either, the fixture stops comparing it, with the reader audit
+  written at the mask.
+
+Six of the ten `adc_overflow`/`sbc_overflow` replays are gone, including the whole road-pass V chain
+(it reached only hook seams, and no hook reads V). The model-state marshals walk by pointer, which
+removed GCC's SLP packing. `build_road_sign` got a `_native` split below its wipe-only INs. Two
+latent defects surfaced on the way:
+- each road fill's entry carry at the `$1946` hook seam is now the clamp's CMP, as on the 6502;
+- `note_object_contact`'s fixture never reached the threshold == distance boundary.
+
+⚠ **`race_main_loop`'s 6502 reads are LIVE hand-offs, not moot.** Its native twin calls the same
+shims in the same order and threads `cpu` between them. So an exit register may be dropped only
+where the native loop calls the CORE, or where the next shim provably reads nothing: fatscan tags
+those reads `(main loop)`.
+
+**What remains, and why each is not low-hanging:**
+- **marshal 401**, three kinds:
+  - `read_driving_controls_frame`'s model-state IN (141) and `draw_dash_needles`' car-angle IN (28)
+    import what a needle line may have written into `$62A0..$62EE`: that is faithfulness. They go
+    only if the needle plotter updates the arrays itself when a pixel lands there.
+  - The multi-tenant `hypot`/`bearing` round trips in `build_road_sign_native` and
+    `build_track_geometry_native` (96) are load-bearing (docs/wide-value-cleanup.md).
+  - The `_out` publishes are the `mem[]` mirror determinism compares.
+- **exit 84:**
+  - `emit_edge_width_offset_core` (55) is a FATSCAN ARTEFACT: the host runs the C core, the target
+    runs `emit_width_m68k.s` and calls the C core only on its rare arms. ⚠ fatscan prices a line by
+    host executions, so any C the target replaces with asm while keeping the C for a fallback reads
+    as if it ran.
+  - `update_camera_and_height`'s CameraExit (19) also carries the `$45CB` per-circuit hook's
+    register state.
+  - `engine_sound_update`'s exit is a main-loop hand-off.
+- **flag replays left (4):** the `fill_dash_edge_columns` family (`column_gap_walk`, `edge_run_flat`,
+  `edge_runs_asm_raw`): its V leaves through a shim the native loop calls, into
+  `engine_sound_update`'s entry, so it needs a whole-loop audit. `hook_merge_horizon_edges` sits at
+  a hook seam itself.
+- **zp 123:** `fill_line_attr_core`'s `shared_temp_76` / `$82` / `span_line_cursor` stores are the
+  transliteration's handoff cells: a RESULTS question (the reader audit), not a code-shape one.
+- Not yet PRICED in milliseconds: the six batches are a static ~350 instructions a frame. A
+  `SIMLEGACY=1` phase-table pair (docs/perf-method.md) is what would put a millisecond figure on
+  them.
 
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
