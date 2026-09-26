@@ -368,7 +368,7 @@ TARGET   := build/revs
         sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
         determinism-drive determinism-drive-record \
         determinism-crash determinism-crash-record \
-        determinism-steer determinism-steer-record
+        determinism-steer determinism-steer-record lap
 
 all: $(TARGET)
 
@@ -446,6 +446,22 @@ determinism-drive-record:
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
 	@echo "determinism-drive: recorded frame $(DET_DRIVE_FRAME) -> $(DET_DRIVE_REF)"
+
+# ⭐⭐ `make lap` — WHOLE LAPS OF EVERY CIRCUIT, driven by the autopilot, failing on any crash.
+# Every other trajectory drives straight until the car leaves the road; this one STAYS on it:
+# src/platform/autorun.cpp §THE AUTOPILOT steers from the edge points the game draws from and
+# answers the player's keys, and tools/autopilot_laps.py runs all six circuits (20000 frames
+# each, in parallel) and requires zero crashes (a crash resets the car to the grid), zero stalls,
+# zero airborne frames and >= 5 laps.  Sabotaged: doubling the gradient term in the height model
+# fails it on Brands (airborne) and the Nurburgring (jump, crash).  `LAPARGS=--trace` dumps the
+# 40 frames before any crash or jump.  Cleans and rebuilds the default, like determinism-drive.
+lap:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@python3 tools/autopilot_laps.py $(LAPARGS) && r=PASS || r=FAIL; \
+	 $(MAKE) --no-print-directory clean >/dev/null; \
+	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	 test "$$r" = PASS
 
 determinism-drive:
 	@test -f $(DET_DRIVE_REF) || \

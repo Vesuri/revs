@@ -967,6 +967,18 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
+### ▶ THE AUTOPILOT, STEP 2 — racing speed, then the real-BBC lockstep (user, 2026-09-26)
+The user hit a physics jump-and-crash (with rendering artefacts) driving the Nurburgring by hand.
+`make lap` (layer 1, `docs/validation-harness.md` §WHOLE LAPS) laps all six circuits clean in FIRST
+GEAR at ≤30 speed and does not reproduce it. Next, in order:
+1. **Gears and speed** — up/down-shift on `engine_revs`, a speed target per bend, aimed at the
+   Nurburgring; first reproduce the jump on the host (`LAPARGS=--trace` names the frames before it).
+2. **Layer 2, the real-BBC lockstep** — the same controller driving jsbeeb through the refloop
+   machinery (it reads only game state, so identical states give identical keys), comparing the
+   car state frame by frame; the first divergent frame says "port bug" and where, and none says
+   "faithful". Open question: how often the 50 Hz body runs per game frame differs between the two
+   machines, so tick-driven cells may need excluding.
+
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.

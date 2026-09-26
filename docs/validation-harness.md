@@ -1264,3 +1264,45 @@ circuit), then classify every new gated byte by decoding the pixels. For the tru
 all five circuits, the change 1/5/17/0/3 bytes, every one an edge transition displaced along its own
 line — 20 of 26 lines by one pixel, one shallow kerb by one scan line (2..6 px sideways on a ~3:1
 slope). Quote that classification in the commit that re-records `make determinism*`.
+
+## ⭐⭐⭐ WHOLE LAPS — `make lap`, the autopilot that stays on the road (2026-09-26)
+
+**The gap it closes.** Every determinism trajectory is *drive straight until the car leaves the
+road* (or parked, or one held steering key): ~225 frames of one straight, then a crash reset to the
+grid. So no gate had ever seen a corner taken, a hill crested at speed, or a lap completed — and a
+user found a physics jump-and-crash on the Nurburgring that none of them could reach.
+
+**The driver** (`src/platform/autorun.cpp` §THE AUTOPILOT, host, `REVS_AUTOPILOT=1`) reads only the
+game's own state and answers the player's own keys, so it changes no engine code and is
+deterministic under `FIXED_RNG`:
+- *steering* — the aim is the road's centre line (the mean of the two sides' `edge_x` azimuths) at
+  a look-ahead window of edge points; the WHEEL (`car_angle_16[2]`) is steered to a target
+  proportional to the aim plus a damping term, with SPACE (the steering amplifier) held while the
+  wheel lags. ⚠ Bang-bang on the aim itself oscillates to a crash: a held key winds the wheel ~64
+  units a frame and the car then integrates the heading — a rate-limited double integrator;
+- *speed* — a target from how far the road bends at a far window, so braking starts before the
+  bend; throttle / coast / brake towards it, first gear, top speed 30;
+- *engine* — a stalled engine will not catch in gear, so drop to neutral first; a gear key counts
+  only on a PRESS, so shifts are taps on alternate frames (a held TAB then a held Q never shifted).
+- ⚠ The game's own Computer Assisted Steering was tried as the steering and does NOT do this: it
+  shapes a demand only while a key is held and only for `track_direction` positive; with direction
+  chosen by the aim it held Silverstone and failed on every expansion circuit.
+
+**Tuning was a sweep, not a guess** (every knob is a `REVS_AP_<NAME>` variable; a host run is ~0.35 s per 2000 frames, so hundreds of settings × six circuits take a minute): look-ahead
+4, Kp 0.45, Kd 0.5, top speed 30. At top speed 40 five circuits still pass and the Nurburgring fails
+at a hairpin whose azimuths swing ~2000 a frame, faster than the wheel can follow — the car ends up
+facing backwards and `track_direction` flips. That is the DRIVER's limit, not an engine defect.
+
+**The checks** (`tools/autopilot_laps.py`, one `[autopilot]` summary line per run): per circuit,
+20000 frames, **zero crashes** (a crash resets the car to the grid — detected as a distance jump
+that is not a lap wrap — so one crash voids the run), **zero stalls**, **zero airborne frames**
+(`car_height >= 2`; a clean lap has none on any circuit, hilly ones included) and at least 5 laps.
+Baseline: 8-12 laps on every circuit, all zeros. `LAPARGS=--trace` prints the 40 frames before any
+crash or jump (distance, speed/target, gear, revs, wheel, aim, height, direction).
+
+**Sabotaged, and the result is the point:** doubling the gradient term in the height model
+(`scale_by_track_gradient_core` at `$457F`) FAILS Brands (42 airborne frames, height 13) and the
+Nurburgring (a jump to height 11, then a crash) while flat Silverstone passes — the user's reported
+symptom class, which no other gate can see. Lowering the touchdown-rebound threshold fails all six.
+⚠ Scope: first gear, ≤30 speed. A defect that only shows at racing speed needs the autopilot to
+change gear (`docs/open-work.md`).

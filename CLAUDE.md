@@ -116,6 +116,9 @@ make determinism-crash     #   ...and the RESET LADDER (car off the track, full_
                            #   runs 7x) — the gate on reset_driving_variables' practice arm
 make determinism-steer     #   ...and the same 300 frames with the WHEEL TURNED — a third
                            #   trajectory, the gate on the steering/response path
+make lap                   # ⭐⭐ WHOLE LAPS of all six circuits, driven by the AUTOPILOT (autorun.cpp):
+                           #   fails on any crash (the car is reset to the grid), stall or airborne
+                           #   frame — the only gate that ever takes a corner or crests a hill
 make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
                            #   the only gate that sees the light column; -race cannot
 python3 tools/sim_equiv.py [--steer[=l|r]] [--modes=legacy,h400,h200]   # ⭐ DECOUPLED physics vs
