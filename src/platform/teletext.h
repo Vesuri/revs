@@ -110,8 +110,11 @@ void tt_mark_all_dirty(void);
 /* Feed it one OSWRCH byte.  Writes screen RAM through mem[] exactly where the MOS would. */
 void tt_vdu(unsigned char c);
 /* Non-zero while the machine is in MODE 7, i.e. while $7C00-$7FFF is a teletext page and not
-   the dashboard code overlay.  Set by VDU 22,7; cleared when hw_init programs the 6845. */
-int  tt_active(void);
+   the dashboard code overlay.  Set by VDU 22,7; cleared when hw_init programs the 6845.
+   ⭐ INLINE, because the VERTB ISR asks it on every field (applyMode, vbiUpdate) and a cross-TU
+   call there is a permanent wall-clock tax (docs/perf-method.md §The VERTB ISR). */
+extern int g_ttActive;
+static inline int tt_active(void) { return g_ttActive; }
 void tt_set_active(int on);
 /* Reset the VDU driver's own state (cursor, pending command, flash phase).  Needed by
  * `make validate`: it is pre-state for a differential and it does not live in mem[]. */

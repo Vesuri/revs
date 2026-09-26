@@ -467,11 +467,13 @@ void revs_needle_paint(void);
 #define REVS_NEEDLE_PAINT()  revs_needle_paint()
 /* The screen's side: the chip pool the images live in (allocated once, at start-up — never inside
    a frame), the image each of the four needle channels shows (0 = none), and the BBC pen each
-   mark is drawn in, which `buildBands` turns into the sprite pair's colour per raster band. */
+   mark is drawn in, which `buildBands` turns into the sprite pair's colour per raster band.
+   ⚠ g_needleShow is written only at the decode tail (main loop, `m_ready` clear) and read only by
+   present() in the VERTB ISR (`m_ready` set), the same single-slot pairing as the band record. */
 #define REVS_NEEDLE_CHANNEL0  2u        /* channels 2..5: two marks, a sprite pair each */
 #define REVS_NEEDLE_CHANNELS  4u
 void revs_needle_pool(unsigned short* pool, unsigned long words);
-const unsigned short* revs_needle_sprite(unsigned k);
+extern const unsigned short* g_needleShow[REVS_NEEDLE_CHANNELS];
 extern unsigned char g_needlePen[2];
 #else
 #define REVS_NEEDLE_PIXEL(a, m)  ((void)0)

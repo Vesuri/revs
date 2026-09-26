@@ -1296,9 +1296,9 @@ void RevsScreen::present()
      * unless `m_ready`, and only decode() sets it.  Exactly one present runs per painted frame,
      * here, before any phase the sweep belongs to.
      * ⚠ MODE 7 has no race buffer, so the front end clears the target rather than aiming at a
-     * teletext page. */
-    REVS_PLOT_TARGET(tt_active() || !m_bitmap[m_back] ? (uint8_t*)0
-                                                      : (uint8_t*)m_bitmap[m_back]->data);
+     * teletext page — and it never reaches here: vbiUpdate(), the only caller, returns first
+     * while tt_active(), so every MODE 7 test in this function would be a constant false. */
+    REVS_PLOT_TARGET(!m_bitmap[m_back] ? (uint8_t*)0 : (uint8_t*)m_bitmap[m_back]->data);
 
 #ifdef REVS_TYRE_SPRITES
     /* ⭐⭐ THE WHOLE ANIMATION: TWO POINTER WRITES.  No CPU touches a tyre pixel after the build —
@@ -1307,7 +1307,7 @@ void RevsScreen::present()
        the bitplane pointers: Agnus fetches a channel's control words in the sprite DMA slots near
        the START of a line, so SPRxPT has the tightest deadline in the list (docs/amiga-lessons.md).
        ⚠ MODE 7 has no tyres — leave the null sprites in place there. */
-    if (m_tyreReady && !tt_active()) {
+    if (m_tyreReady) {
         const unsigned ph = g_tyrePhase & 1u;
         m_copper->showSprite(IDX_SPRITES + 0, 0, *m_tyre[0][ph]);
         m_copper->showSprite(IDX_SPRITES + 2, 1, *m_tyre[1][ph]);
@@ -1319,14 +1319,18 @@ void RevsScreen::present()
        and its terrain were one frame buffer, and here they are one flip.  A channel with no
        image shows the empty sprite.  ⚠ MODE 7 has no needles (revs_plot_target(0) clears them). */
     {
+        /* ⭐ ONLY THE DATA WORDS.  The MOVE's register words (SPRxPTH/L) were written once by
+           initialize()'s showSprite and never change, so a present writes half the words it used
+           to — and reads the image table directly rather than through a cross-TU accessor, which
+           cost ~100 instructions a present in the VERTB ISR (a permanent wall-clock tax). */
+        uint16_t* const w = (uint16_t*)(m_copper->data() + IDX_SPRITES + REVS_NEEDLE_CHANNEL0 * 2u);
+        const uint32_t nul = (uint32_t)m_nullSprite->data();
         unsigned k;
         for (k = 0; k < REVS_NEEDLE_CHANNELS; k++) {
-            const unsigned short* img = tt_active() ? 0 : revs_needle_sprite(k);
-            const uint32_t a  = (uint32_t)(img ? img : m_nullSprite->data());
-            const unsigned ch = REVS_NEEDLE_CHANNEL0 + k;
-            uint32_t* const d = m_copper->data();
-            d[IDX_SPRITES + ch * 2u]      = copperMove(0x120u + (ch << 2), (uint16_t)(a >> 16));
-            d[IDX_SPRITES + ch * 2u + 1u] = copperMove(0x122u + (ch << 2), (uint16_t)a);
+            const unsigned short* const img = g_needleShow[k];
+            const uint32_t a = img ? (uint32_t)img : nul;
+            w[4u * k + 1u] = (uint16_t)(a >> 16);
+            w[4u * k + 3u] = (uint16_t)a;
         }
     }
 #endif

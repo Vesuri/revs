@@ -24,7 +24,7 @@ void tt_mark_all_dirty(void) { g_ttRowDirty = (1UL << TT_ROWS) - 1UL; }
    ═══════════════════════════════════════════════════════════════════════════════════════════ */
 
 static unsigned s_cx = 0, s_cy = 0;
-static int      s_active = 1;   /* a BBC boots in MODE 7, and so does the port's front end */
+int             g_ttActive = 1;   /* a BBC boots in MODE 7, and so does the port's front end */
 
 /* VDU parameter counts, MOS 1.20.  ⚠ This table is why the driver can be trusted on a stream it
    has never seen: an unhandled command still consumes exactly the right number of following
@@ -90,7 +90,7 @@ static void tt_command(unsigned char cmd, const unsigned char* p)
        the dashboard code overlay), so the renderer must stop reading it. */
     case 22:
         g_ttModeSwitches++;
-        s_active = (p[0] == 7);
+        g_ttActive = (p[0] == 7);
         tt_cls();
         break;
 
@@ -180,8 +180,7 @@ void tt_vdu(unsigned char c)
     tt_advance();
 }
 
-int  tt_active(void)      { return s_active; }
-void tt_set_active(int on){ s_active = on ? 1 : 0; }
+void tt_set_active(int on){ g_ttActive = on ? 1 : 0; }
 unsigned tt_cursor_x(void){ return s_cx; }
 unsigned tt_cursor_y(void){ return s_cy; }
 
@@ -310,7 +309,7 @@ int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
    (docs/validation-harness.md).  Reset it and the two models see the same driver. */
 void tt_reset_state(void)
 {
-    s_cx = 0; s_cy = 0; s_active = 1;
+    s_cx = 0; s_cy = 0; g_ttActive = 1;
     s_pendCmd = 0; s_pendLeft = 0; s_pendGot = 0;
     for (unsigned i = 0; i < sizeof s_param; i++) s_param[i] = 0;
     s_flashCount = 0; g_ttFlashPhase = 0;

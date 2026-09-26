@@ -1660,22 +1660,17 @@ struct NdlImg {
 static NdlImg          s_ndlImg[2][NDL_SLOTS];
 static uint16_t*       s_ndlPool;
 static uint32_t        s_ndlPoolWords, s_ndlPoolUsed;
-static const uint16_t* s_ndlShow[REVS_NEEDLE_CHANNELS];
+extern "C" { const unsigned short* g_needleShow[REVS_NEEDLE_CHANNELS]; }
 
 extern "C" void revs_needle_pool(unsigned short* pool, unsigned long words)
 {
     s_ndlPool = pool; s_ndlPoolWords = words; s_ndlPoolUsed = 0;
 }
 
-extern "C" const unsigned short* revs_needle_sprite(unsigned k)
-{
-    return k < REVS_NEEDLE_CHANNELS ? s_ndlShow[k] : 0;
-}
-
 static void ndlTargetLost(void)
 {
     unsigned k;
-    for (k = 0; k < REVS_NEEDLE_CHANNELS; k++) s_ndlShow[k] = 0;
+    for (k = 0; k < REVS_NEEDLE_CHANNELS; k++) g_needleShow[k] = 0;
     g_needleCount = 0;
     g_needleMarks = 0;
 }
@@ -1922,8 +1917,8 @@ extern "C" void revs_needle_paint(void)
             if (e && i1 > i0) ndlSpriteCheck(e, i0, i1 - i0);
 #endif
         }
-        s_ndlShow[2u * m]      = e ? e->ch[0] : 0;
-        s_ndlShow[2u * m + 1u] = e ? e->ch[1] : 0;
+        g_needleShow[2u * m]      = e ? e->ch[0] : 0;
+        g_needleShow[2u * m + 1u] = e ? e->ch[1] : 0;
     }
 }
 #endif /* REVS_NEEDLE_PLANES */
