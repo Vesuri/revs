@@ -343,6 +343,10 @@ static const unsigned S_SCRIPT_LEN = sizeof(s_script) / sizeof(s_script[0]);
                comes before the bend; throttle / coast / brake towards it.
      ENGINE    stalled -> down to neutral, starter; neutral -> up to first.  A gear key counts
                only on a PRESS, so a shift is a tap on alternate frames.
+     ⚠ RACING SPEED IS NOT SOLVED: REVS_AP_TOPGEAR > 2 shifts on revs and REVS_AP_GAINREF scales
+               the steering gain down above that speed, but no setting above a 40 cap is
+               crash-free yet (braking distance grows with speed², and the far window is a fixed
+               number of edge points) — docs/open-work.md §THE AUTOPILOT, STEP 2.
    Defaults are tuned (a sweep over all six circuits, 20000 frames each: 0 crashes, 0 stalls,
    0 airborne frames); every one can be overridden by REVS_AP_<NAME>.
    THE CHECKS, printed at exit as one `[autopilot]` line that `make lap` parses:
@@ -355,7 +359,9 @@ extern "C" uint16_t car_distance_16[];
 extern "C" uint16_t car_angle_16[];
 
 static int s_apOn = -1, s_apTrace, s_apLook = 4, s_apWin = 2, s_apDead = 32, s_apKp = 45,
-           s_apKd = 50, s_apAmpAt = 600, s_apFar = 9, s_apVmax = 30, s_apVk = 5, s_apVmin = 20;
+           s_apKd = 50, s_apAmpAt = 600, s_apFar = 9, s_apVmax = 30, s_apVk = 5, s_apVmin = 20,
+           s_apTopGear = 2, s_apUpRevs = 150, s_apDownRevs = 70,
+           s_apGainRef = 30, s_apFarMax = 9;
 static uint8_t s_apSteer, s_apPedal = KEY_S, s_apAmp;   /* the frame's decision */
 static int s_apPrevMid, s_apTspeed;
 static unsigned long s_apFrames, s_apLaps, s_apCrashes, s_apStalls, s_apAir, s_apMaxH, s_apRun;
@@ -428,17 +434,26 @@ static void apDecide(void)
 {
     const int mid    = apCentre(6u + (unsigned)s_apLook, (unsigned)s_apWin,
                                 apCentre(6u, 1u, 0));
-    const int target = (mid * s_apKp + (mid - s_apPrevMid) * s_apKd) / 100;
+    /* the car's yaw per unit of wheel grows with speed, so the gains fall with it above
+       REVS_AP_GAINREF (the speed they were tuned at) */
+    const int speed  = mem[MEM_road_speed];
+    const int sched  = speed > s_apGainRef ? speed : s_apGainRef;
+    const int target = (mid * s_apKp + (mid - s_apPrevMid) * s_apKd) / 100 * s_apGainRef / sched;
     const int wheel  = apWheel();
     s_apPrevMid = mid;
     s_apSteer = wheel < target - s_apDead ? KEY_SEMI : wheel > target + s_apDead ? KEY_L : KEY_NONE;
     s_apAmp   = (target - wheel > s_apAmpAt || wheel - target > s_apAmpAt) ? 1 : 0;
 
-    const int far   = apCentre(6u + (unsigned)s_apFar, 3u, mid);
-    const int bend  = far < 0 ? -far : far, nearBend = mid < 0 ? -mid : mid;
-    int tspeed = s_apVmax - (bend > nearBend ? bend : nearBend) * s_apVk / 1000;
+    /* the worst bend over the whole far range, window by window, so braking for a bend starts
+       as soon as any part of it is visible */
+    int worst = mid < 0 ? -mid : mid;
+    for (unsigned w = (unsigned)s_apFar; w <= (unsigned)s_apFarMax; w += 2u) {
+        const int far = apCentre(6u + w, 2u, 0);
+        const int bend = far < 0 ? -far : far;
+        if (bend > worst) worst = bend;
+    }
+    int tspeed = s_apVmax - worst * s_apVk / 1000;
     if (tspeed < s_apVmin) tspeed = s_apVmin;
-    const int speed = mem[MEM_road_speed];
     s_apPedal  = speed < tspeed ? KEY_S : speed > tspeed + 4 ? KEY_A : KEY_NONE;
     s_apTspeed = tspeed;
 
@@ -462,6 +477,9 @@ static void apInit(void)
         {"REVS_AP_DEAD", &s_apDead},   {"REVS_AP_KP", &s_apKp},     {"REVS_AP_KD", &s_apKd},
         {"REVS_AP_AMP", &s_apAmpAt},   {"REVS_AP_FAR", &s_apFar},   {"REVS_AP_VMAX", &s_apVmax},
         {"REVS_AP_VK", &s_apVk},       {"REVS_AP_VMIN", &s_apVmin},
+        {"REVS_AP_TOPGEAR", &s_apTopGear}, {"REVS_AP_UPREVS", &s_apUpRevs},
+        {"REVS_AP_DOWNREVS", &s_apDownRevs}, {"REVS_AP_GAINREF", &s_apGainRef},
+        {"REVS_AP_FARMAX", &s_apFarMax},
     };
     for (const auto& k : knobs)
         if ((e = std::getenv(k.name))) *k.v = std::atoi(e);
@@ -474,6 +492,15 @@ static bool apKey(uint8_t x)
     if (mem[MEM_engine_running] == 0)
         return mem[MEM_gear_index] > 1 ? (tap && x == KEY_TAB) : x == KEY_T;
     if (mem[MEM_gear_index] < 2)      return tap && x == KEY_Q;
+    /* racing: up on high revs, down on low (gear_index 2 = first; REVS_AP_TOPGEAR caps it, and
+       the default 2 keeps the baseline in first gear) */
+    {
+        const unsigned g = mem[MEM_gear_index], revs = mem[MEM_engine_revs];
+        if (g < (unsigned)s_apTopGear && revs > (unsigned)s_apUpRevs && s_apPedal == KEY_S)
+            return tap && x == KEY_Q;
+        if (g > 2u && revs < (unsigned)s_apDownRevs)
+            return tap && x == KEY_TAB;
+    }
     if (x == KEY_L || x == KEY_SEMI)  return x == s_apSteer;
     if (x == KEY_SPACE)               return s_apAmp != 0;
     return x == s_apPedal;
