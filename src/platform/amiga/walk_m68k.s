@@ -12,10 +12,21 @@
 | returned through a stack struct, and a movem + argument push around each call.  Here the four bases
 | and the three constant words live in registers for the whole walk, every mem[] cell is a (d16,a0)
 | operand, and the emitter is entered below its prologue.
-| ⭐ WHAT IT STORES: every cell and word the C stores, with the same value.  One deliberate reordering,
-| provably invisible: bearing_to_section's store of hypot_min_v is folded into point_distance_hypot's,
-| which always overwrites it before anything reads it (the hypot is the pair's only reader and runs in
-| the same point).
+| ⭐ WHAT IT STORES: every cell and word the C stores that anything outside the walk READS, with the
+| same value.  One deliberate reordering, provably invisible: bearing_to_section's store of
+| hypot_min_v is folded into point_distance_hypot's, which always overwrites it before anything reads
+| it (the hypot is the pair's only reader and runs in the same point).
+| ⭐ EIGHT 6502 WORKING STORES A POINT ARE NOT MADE (THE RESULTS RULE, docs/validation-harness.md):
+| point_delta_lo[0]/[2] $80/$82, point_delta_hi[0] $83, point_delta_sign[1] $87, the raw arctan
+| shared_temp_7e $7E (three arms), the far hypot arm's math_lo/math_hi and the step's stride in
+| math_lo.  READER AUDIT: `make rangeaudit RANGE=0074-0075,007C-0088,008D DEFUSE=1` on all five
+| circuits (2026-09-26) — every read of a value bearing_to_section / point_distance_hypot /
+| project_point / road_edge_walk_resume left in those cells is made by those same routines, by
+| div16by8 inside them, or (the stride) by nothing at all; no circuit hook reads one.  What IS read
+| outside, and stays stored: $85 (plot_view_src_line+14), $86 and $88 (interp_edge+172/+26 — the
+| first span of the frame inherits the walk's last signs as SPAN_ARM/SPAN_CLIP), $7C/$7D
+| (note_object_contact+3 reads the high byte) and $8D (road_edge_start+133, the emitter).
+| `make GEOCHECK=1` masks exactly these cells (walk_dead_cells in revs_native.c).
 | ⭐ WHAT IT HANDS BACK TO C: the three exits that are not "18 points kept" — a subdivide (clip or
 | behind), and the off-axis seam, whose SMC site ($248B) a circuit rewrites into its own hook.  The C
 | wrapper (road_edge_walk_run_asm) does those, exactly as the C loop would from the same state.
@@ -107,10 +118,7 @@ wk_point:
 1:	move.w	d4,d5
 	bpl.s	1f
 	neg.w	d5                          | |delta 2|
-1:	move.b	d3,Z_DELTALO+0(a0)
-	STHI	d3,Z_DELTAHI+0(a0)
-	STHI	d2,Z_DELTASG+0(a0)
-	move.b	d5,Z_DELTALO+2(a0)
+1:	STHI	d2,Z_DELTASG+0(a0)          | (delta_lo[0]/[2] and delta_hi[0]: dead — the header)
 	STHI	d5,Z_DELTAHI+2(a0)
 	STHI	d4,Z_DELTASG+2(a0)
 
@@ -125,8 +133,7 @@ wk_point:
 	lsl.l	#8,d0
 	divu.w	d5,d0                       | the TRUE ratio, 0..255 (smaller < larger)
 	moveq	#0,d6
-	move.b	(a5,d0.w),d6                | the raw arctan
-	move.b	d6,Z_ARCTAN(a0)
+	move.b	(a5,d0.w),d6                | the raw arctan (in d6 only: $7E is dead — the header)
 	move.w	d6,d0
 	lsl.w	#5,d0                       | * 32 — a 16-bit angle
 	eor.w	d4,d2                       | the two signs differ?
@@ -146,7 +153,6 @@ wk_arm0:
 	divu.w	d5,d0
 	moveq	#0,d6
 	move.b	(a5,d0.w),d6
-	move.b	d6,Z_ARCTAN(a0)
 	move.w	d6,d0
 	lsl.w	#5,d0
 	eor.w	d2,d4                       | the two signs agree?
@@ -164,7 +170,6 @@ wk_arm0:
 
 	| $220D — the four diagonals on the two signs; $FF says "maximally oblique" to the hypot
 wk_diag:
-	st	Z_ARCTAN(a0)
 	moveq	#-1,d6
 	move.w	#0x2000,d0
 	tst.w	d4
@@ -208,9 +213,7 @@ wk_far:
 	lsr.w	#3,d4                       | max/8
 	move.w	d3,d0
 	add.w	d5,d0
-	sub.w	d4,d0                       | the distance
-	move.b	d4,Z_MATHHI(a0)             | ⚠ the LOW byte in math_hi...
-	STHI	d4,Z_MATHLO(a0)             | ...and the high byte in math_lo, as the 6502 left them
+	sub.w	d4,d0                       | the distance (the 6502's math_lo/hi max/8 here: dead)
 wk_dist:
 	move.b	d0,Z_DISTLO(a0)
 	STHI	d0,Z_DISTHI(a0)
@@ -231,8 +234,7 @@ wk_dist:
 	move.b	1(a1),d4
 	move.l	d7,d3
 	swap	d3
-	sub.w	d3,d4                       | delta 1 = section - view_origin[1]
-	STHI	d4,Z_DELTASG+1(a0)
+	sub.w	d3,d4                       | delta 1 = section - view_origin[1] (its sign cell: dead)
 	move.w	d4,d3
 	bpl.s	1f
 	neg.w	d3
@@ -286,8 +288,7 @@ wk_step:
 	moveq	#0,d3
 	move.b	d2,d3
 	lea	STEP_TBL(a0),a1
-	move.b	(a1,d3.w),d3                | this point's stride along the section list
-	move.b	d3,Z_MATHLO(a0)
+	move.b	(a1,d3.w),d3                | this point's stride along the section list (never read back)
 	move.b	d1,d4
 	sub.b	Z_WRAP(a0),d4
 	cmp.b	d3,d4

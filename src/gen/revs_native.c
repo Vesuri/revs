@@ -6898,6 +6898,12 @@ static void walk_words_set(WalkWords w)
 {   edge_nearest_v = w.nearest; bearing_v = w.bearing; hypot_min_v = w.hmin; hypot_max_v = w.hmax; }
 void view_origin_marshal_out(void);
 
+/* ⭐ The 6502 working cells walk_m68k.s deliberately does not store (THE RESULTS RULE — its header
+   carries the five-circuit reader audit): math_lo/math_hi, the raw arctan $7E, point_delta_lo[0]/[2],
+   point_delta_hi[0] and point_delta_sign[1].  The compare takes the asm's bytes for these into the C
+   snapshot, so it checks everything else and never touches the game's mem[]. */
+static const uint8_t walk_dead_cells[] = { 0x74, 0x75, 0x7E, 0x80, 0x82, 0x83, 0x87 };
+
 /* Both walks from the same 64 KB and the same four words; the asm's result is what the game keeps. */
 static uint8_t walk_compare(unsigned section, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis,
                             int resume, volatile unsigned long* bad, uint8_t* countOut)
@@ -6940,6 +6946,8 @@ static uint8_t walk_compare(unsigned section, uint8_t midSlot, uint8_t pointCap,
             if (!*bad) g_walkMismatchAt = 0x10001u;
             (*bad)++;
         } else {
+            for (i = 0; i < sizeof walk_dead_cells; i++)
+                s_geoAfterC[walk_dead_cells[i]] = mem[walk_dead_cells[i]];
             /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
             const uint32_t* a = (const uint32_t*)(const void*)mem;
             const uint32_t* c = (const uint32_t*)(const void*)s_geoAfterC;
