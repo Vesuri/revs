@@ -1213,6 +1213,13 @@ below):
    all five circuits every `$7C` actually consumed came from the routine's own `$1C55`; the copies
    of the bearing's byte are always overwritten first (mode 1 returns at `$1CA6` without reading
    `$7C`). **When a def-use pair lands on a COPY, follow the copy one hop before believing it.**
+3. ⭐ **It now also lists DEAD STORES** — per writer PC, the stores overwritten before any read
+   ("DEAD STORES" for a writer none of whose resolved stores was read, "PARTLY dead" beside it). A
+   store still pending when the window closes counts neither way, so a writer that runs once at
+   the end of the window can hide; a deletion still wants all five circuits. Checked against a
+   known answer: the geometry walk's cells, whose eight stores were deleted on the def-use audit,
+   show as live-within-the-routine (their consumers were inside the walk, which is why the asm
+   could hold them in registers), and none of the five cells read a frame later shows as dead.
 2. **Run it on all five circuits, and expect them to disagree.** Silverstone showed the unshifted
    store reaching that copy; Brands Hatch, Oulton Park and Snetterton showed the SHIFTED one.
 

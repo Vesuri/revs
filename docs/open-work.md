@@ -858,6 +858,12 @@ field), the four edge buffers' clear in one loop (−0.33), the PF2 tyre outline
   outside reader is the practice busy-delay's `DEC $74` ($262F), which the port does not run. ⇒ the
   whole tree's zero-page working state may go to locals under a scoped `set_ignore` + a determinism
   re-record. Gate: `validate` of the tree's twins + the five determinism trajectories + `viewdiff`.
+  ⚠ SIZED FIRST, AND IT IS SMALLER THAN THE CELL LIST LOOKS: `plot_view_src_line_core` holds only ~75
+  zero-page operands in 851 instructions — most of its memory traffic is the inlined surface
+  classifier's six tables (seven copies) and the fills, i.e. real work — so taking the state out of
+  mem[] is worth ~10-20% of the ~2.8 ms, against six fixtures and a re-record. Wholly dead 6502
+  stores on the path (`DEFUSE=1`'s new DEAD STORES list, Silverstone): `$1D31` ($48), `$1FE0` ($2B),
+  `$202C`/`$2040` (scale entries 2/7), `$20A5` ($8C), `$2AF6` ($74).
 - **The VERTB ISR** (~1.0 ms a field, 5% of wall clock; `make ISRSPLIT=1`): `snd_tick` ×2 ~400 µs net
   (a per-channel dirty flag instead of the four-field program memo — `make sound` is the gate),
   `screen` ~264 µs (`present()`'s pointer writes), `mouse` ~90 µs.

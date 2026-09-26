@@ -760,6 +760,13 @@ function rangeArm() {
 const defuse = argv.includes("--defuse");
 const lastWriter = new Int32Array(0x10000).fill(-1);
 const defusePairs = new Map();
+/* ⭐ ...and the other half of the question: a store OVERWRITTEN before anything read it is DEAD.
+   Per writer PC: stores RESOLVED (followed by a read, or by another write) and how many of those
+   were dead.  A writer whose every resolved store was dead is a store nothing reads — on this
+   circuit, in this window; run all five before deleting one.  A store still pending when the
+   window closes is not counted either way. */
+const readSince = new Uint8Array(0x10000);
+const deadW = new Map();
 
 function srcArm() {
     if (rangeAuditArg) return rangeArm();
@@ -802,6 +809,7 @@ if (srcAuditArg || rangeAuditArg) {
         if (e.sample.length < 6) e.sample.push(addr);
         srcReads++;
         if (defuse) {
+            readSince[addr] = 1;
             const key = `${lastWriter[addr]}:${pc}`;
             let d = defusePairs.get(key);
             if (!d) defusePairs.set(key, (d = { w: lastWriter[addr], r: pc, n: 0, cells: new Set() }));
@@ -818,6 +826,16 @@ if (srcAuditArg || rangeAuditArg) {
         e.n++; e.cells.add(srcCellOf[addr]); e.lines.add(srcLineOf[addr]);
         if (b === 0) e.zero++;
         srcWrites++;
+        if (defuse) {
+            const w = lastWriter[addr];
+            if (w >= 0) {
+                let dw = deadW.get(w);
+                if (!dw) deadW.set(w, (dw = { resolved: 0, dead: 0, cells: new Set() }));
+                dw.resolved++;
+                if (!readSince[addr]) { dw.dead++; dw.cells.add(addr); }
+            }
+            readSince[addr] = 0;
+        }
         lastWriter[addr] = pc;
     });
 }
@@ -1567,6 +1585,17 @@ if (srcAuditArg || rangeAuditArg) {
                             `${String(Math.round(d.n / nWin)).padStart(5)}/frame (${d.n})  ` +
                             `cells ${[...d.cells].sort((a, b) => a - b).map(hex).join(",")}`);
         }
+        /* The dead stores: a writer PC none of whose resolved stores was ever read. */
+        console.log(`\n   ⭐⭐ DEAD STORES — writer PCs whose every resolved store was overwritten unread:`);
+        const rows = [...deadW.entries()].filter(([, d]) => d.resolved > 0 && d.dead === d.resolved)
+                                          .sort((a, b) => a[0] - b[0]);
+        for (const [w, d] of rows)
+            console.log(`      ${hex(w)} ${nameOf(w).padEnd(34)} ${String(Math.round(d.resolved / nWin)).padStart(5)}/frame ` +
+                        `(${d.resolved})  cells ${[...d.cells].sort((a, b) => a - b).map(hex).join(",")}`);
+        console.log(`   ...and PARTLY dead (some stores read, some not):`);
+        for (const [w, d] of [...deadW.entries()].filter(([, d]) => d.dead > 0 && d.dead < d.resolved)
+                                                 .sort((a, b) => a[0] - b[0]))
+            console.log(`      ${hex(w)} ${nameOf(w).padEnd(34)} dead ${d.dead} of ${d.resolved}`);
     }
 }
 
