@@ -5244,10 +5244,15 @@ static uint8_t float_width_6502(uint16_t dist, uint8_t* exponent)
    table byte an expansion circuit could rewrite, so anything past 15 also takes the old path. */
 static unsigned edge_width_offset_for(uint16_t dist, uint8_t k)
 {
-#ifndef REVS_EXACT_RATIO
+#ifdef REVS_EXACT_RATIO
+    /* `make EXACTRATIO=1` — the 6502's own operands: project_point left the float of 1/D in
+       proj_width / proj_width_shift and shifted point_dist_lo IN PLACE, so `dist` is not D here
+       (dividing by it drew every road boundary and sign at the wrong width). */
+    (void)dist;
+    return width_shifted(proj_width, (uint8_t)(proj_width_shift - k - 1u));
+#endif
     if (k <= 15u && dist > (64u >> k))
         return revs_divu16(0x400000u >> k, dist);
-#endif
     if (dist == 0u)
         return 0u;                                    /* unreachable — see float_width_6502 */
     {
@@ -5264,13 +5269,14 @@ static unsigned edge_width_offset_for(uint16_t dist, uint8_t k)
 static uint8_t object_width_for(uint16_t dist)
 {
 #ifdef REVS_EXACT_RATIO
-    /* `make EXACTRATIO=1` — the 6502's float at every distance: its two loops shift the mantissa
-       by exponent - 10 places, LEFT or RIGHT, and eight or more either way walks it to 0. */
-    if (dist == 0u) return 0u;
+    /* `make EXACTRATIO=1` — the 6502's float at every distance, read where it left it
+       (proj_width / proj_width_shift — point_dist_lo is shifted in place, so `dist` is not D):
+       its two loops shift the mantissa by exponent - 10 places, LEFT or RIGHT, and eight or more
+       either way walks it to 0. */
+    (void)dist;
     {
-        uint8_t  exponent;
-        unsigned width  = float_width_6502(dist, &exponent);
-        int      places = (int)exponent - 10;
+        unsigned width  = proj_width;
+        int      places = (int)proj_width_shift - 10;
         if (places >= 8 || places <= -8) return 0u;
         return places >= 0 ? (uint8_t)(width << places) : (uint8_t)(width >> -places);
     }
