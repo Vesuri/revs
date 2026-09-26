@@ -14,8 +14,13 @@
 |   * the floor group's lanes BELOW the floor (the car's interior, which the sweep never consumes and
 |     which therefore test non-zero every frame) are masked out of the zero test in a register, so a
 |     cell whose only non-zero bytes are the car's costs no call at all;
-|   * everything a hit needs is in registers: the block base (a1), the cursors (a2), the translation
-|     table (a3), the floor (d5), the cell (d6) — the lane's line is derived from a0 only on a hit.
+|   * a hit is not a call: each group has its own out-of-line HIT BLOCK (sc_h<g>_<lane>) in which the
+|     lane's line — and so its cursor slot, L*4(a2) — is an assemble-time constant, and which branches
+|     straight back to the next group's entry.  The floor group enters its block at the floor's LANE
+|     (sc_entry, one word a line), so the lanes below the floor are never looked at and no lane tests
+|     the floor.  A zero lane is two instructions.  (Measured before: a `bsr` to one shared routine
+|     that saved d1, derived the line from a0 and bumped a line and a slot counter every lane, ~110
+|     cycles a hit at ~109 hits a sweep.)
 | ⚠ THE FLOOR IS A CORRECTNESS BOUNDARY (s_lowConsume's banner): below it the bytes are live producer
 |   state, never consumed and never recorded.  A floor >= 80 ($FF until view_low_build has run) scans
 |   nothing, exactly as the C's `q < qe` loop does.
@@ -31,7 +36,8 @@
 | Registers:
 |   a0 source cursor (the seed loop's scratch)   a1 this cell's block   a2 evEnd   a3 xlat
 |   a4 an event cursor    a5 floor cursor    a6 seedHead cursor
-|   d0 the longword / scratch   d1-d4 scratch   d5.w this cell's floor   d6.b the cell   d7.w found
+|   d0 the longword / scratch   d1 d2 d4 scratch   d3.w a hit's source byte (high byte kept 0)
+|   d5.w this cell's floor   d6.b the cell   d7.w found
 
 	.equ	EVSTRIDE, 96                | sizeof g_viewEv[0]
 	.equ	LINES,    80
@@ -53,33 +59,23 @@
 	.equ	SABOTAGE, 0
 	.endif
 
-| One lane of a hit: byte J of the longword a0 has just passed, line d1 (bumped after), cursor
-| slot d2 (bumped after).
-.macro LANE j
-	moveq	#0,d3
+| One lane of a hit block: byte J of the longword a0 has just passed, line L.  d3's high byte is 0.
+.macro LANE l, j
 	move.b	-4+\j(a0),d3
 	beq.s	8f
-	cmp.w	d5,d1
-	.if SABOTAGE == 1
-	bls.s	8f                          | SABOTAGE 1: the floor line itself is not consumed
-	.else
-	bcs.s	8f                          | below the floor: the car's, not ours
-	.endif
 	.if SABOTAGE != 2
 	clr.b	-4+\j(a0)                   | consume (SABOTAGE 2: the source survives)
 	.endif
-	move.l	(a2,d2.w),a4
+	move.l	\l*4(a2),a4
 	move.b	d6,(a4)+
 	.if SABOTAGE == 3
 	move.b	d3,(a4)+                    | SABOTAGE 3: the raw source, untranslated
 	.else
 	move.b	(a3,d3.w),(a4)+
 	.endif
-	move.l	a4,(a2,d2.w)
+	move.l	a4,\l*4(a2)
 	addq.w	#1,d7
 8:
-	addq.w	#1,d1
-	addq.w	#4,d2
 .endm
 
 	.section .text.view_scan_m68k,"ax",@progbits
@@ -106,6 +102,7 @@ view_scan_m68k:
 	moveq	#0,d7
 
 sc_cell:
+	moveq	#0,d3                       | a hit block's byte index (the seeds dirty it)
 	moveq	#0,d5
 	move.b	(a5)+,d5                    | the cell's floor: its first consumable line
 	moveq	#LINES,d0
@@ -119,10 +116,16 @@ sc_cell:
 	and.w	d5,d2
 	add.w	d2,d2
 	add.w	d2,d2
-	and.l	sc_floormask(pc,d2.w),d0    | ⚠ a SPEED mask only: sc_hit tests the floor per lane,
-	                                    |   so a wrong mask changes no output (not a sabotage)
+	and.l	sc_floormask(pc,d2.w),d0    | ⚠ a SPEED mask only: the block is entered AT the floor's
+	                                    |   lane, so a wrong mask changes no output (not a sabotage)
 	beq.s	1f
-	bsr.w	sc_hit
+	lea	sc_entry(pc),a4
+	add.w	d5,d5
+	.if SABOTAGE == 1
+	and.w	#-8,d5                      | SABOTAGE 1: entered at lane 0 — the car's lanes are consumed
+	.endif
+	move.w	(a4,d5.w),d5
+	jmp	(a4,d5.w)                   | the floor's lane of the floor group's hit block
 1:	add.w	d1,d1                       | the next group's entry: 8 bytes of code a group
 	.if SABOTAGE == 5
 	jmp	sc_groups+16(pc,d1.w)       | SABOTAGE 5: the group after the floor's is skipped
@@ -133,18 +136,18 @@ sc_cell:
 sc_floormask:
 	.long	0xFFFFFFFF, 0x00FFFFFF, 0x0000FFFF, 0x000000FF
 
+| ⚠ exactly 8 bytes a group and sc_seeds straight after: the floor path's computed jump and every hit
+|   block's return (sc_groups + 8*(g+1)) both count on it.
 sc_groups:
-	.set	grp, 0
-	.rept	LINES/4
+	.irp	g,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
 	move.l	(a0)+,d0
-	.if SABOTAGE == 6 && grp == 15
+	.if SABOTAGE == 6 && \g == 15
 	bra.s	2f                          | SABOTAGE 6: lines 60..63 are never looked at
 	.else
 	beq.s	2f
 	.endif
-	bsr.w	sc_hit
+	bra.w	sc_h\g\()_0
 2:
-	.set	grp, grp+1
 	.endr
 	| (the entry for a floor in the last group lands here, past the table)
 
@@ -206,19 +209,21 @@ sc_nextcell:
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts
 
-| A longword with a consumable non-zero lane: a0 is just past it.  Clobbers d1-d4, a4.
-sc_hit:
-	move.l	d1,-(sp)
-	move.l	a0,d1
-	sub.l	a1,d1
-	subq.w	#4,d1                       | lane 0's line
-	move.w	d1,d2
-	add.w	d2,d2
-	add.w	d2,d2                       | ...and its cursor slot
-	LANE	0
-	LANE	1
-	LANE	2
-	LANE	3
-	move.l	(sp)+,d1
-	rts
+| The hit blocks: group g's four lanes, then back to group g+1's entry (g = 19: sc_seeds).  a0 is
+| just past the group's longword.  Clobbers d3 (low byte), a4.
+	.irp	g,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+	.irp	j,0,1,2,3
+sc_h\g\()_\j:
+	LANE	(\g*4+\j),\j
+	.endr
+	bra.w	sc_groups+8*(\g+1)
+	.endr
+
+| sc_entry[line]: the offset of that line's lane in its group's hit block — the floor group's way in.
+sc_entry:
+	.irp	g,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+	.irp	j,0,1,2,3
+	.word	sc_h\g\()_\j - sc_entry
+	.endr
+	.endr
 	.size	view_scan_m68k, .-view_scan_m68k

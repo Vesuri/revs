@@ -2816,6 +2816,21 @@ case showing the oracle does see a skipped group.
 byte-identical by SCANCHECK), and phase 0 grew 201 → 220 fields. So the scan is quoted by the one row
 it lives in. (The terrain painter's pair above had `ONE BODY TICK` 1008/1000 — a clean pricing.)
 
+⭐⭐ **AND A HIT IS NO LONGER A CALL — −1.58 ms MORE OF ph24** (17.69 → 16.11, frame 80.00 → 78.11,
+phase 0 within one field and phase 63 equal). Re-stepped at 15.5k instructions a sweep, the scan was
+still 6.8k of them, and the zero walk (504 longwords, ~1k instructions) was not where they went: every
+one of ~109 hits a sweep was a `bsr` to one shared routine that saved `d1`, derived the line from
+`a0`, and then ran four lanes each bumping a line and a cursor-slot counter and testing the floor —
+~110 cycles of bookkeeping a hit before a single event was recorded. Now each of the twenty groups has
+its own out-of-line hit block whose lines, and so cursor slots (`L*4(a2)`), are assemble-time
+constants and which branches straight back to the next group's entry; the floor group enters its
+block AT the floor's lane through an 80-word table, so no lane tests the floor and a zero lane is two
+instructions. Code grew 0x2a0 → 0xaa0 bytes. Gate: `SCANCHECK` 207 sweeps / 34 069 events, 0
+mismatches; sabotages 1 (floor group entered at lane 0), 3 and 6 caught. ⭐ **"At its floor" was a
+claim about the WALK and the RECORD's stores, and it was true of both; the call and counter shape
+AROUND the record was never priced** — the lesson is the familiar one, a floor argument covers only the
+operations it names.
+
 ⭐⭐ **`emit_edge_width_offset` IN 68000 ASM IS −2.78 ms OF ph5** (18.91 → 16.13, frame 108.39 →
 104.83; `src/platform/amiga/emit_width_m68k.s`, `make GEOASM=0` the control). Single-stepped it was
 ~131 instructions a call, 27 calls a frame: a frame pointer, stack spills, a six-byte struct returned
