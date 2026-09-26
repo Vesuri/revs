@@ -10000,7 +10000,9 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
    road_split_index tail got the same, and each fill (runs of ~4 lines) its own prologue.  750
    instructions with the pragma on both source loops still left 725; the attribute gives 201,
    the fill a three-instruction `move.b / cmpa / bne` loop. */
+#if defined(__GNUC__) && !defined(__clang__)     /* GCC's attribute; the host's clang has none */
 __attribute__((optimize("no-unroll-loops")))
+#endif
 void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC)
 {
     mem[MEM_line_attr_store_operand] = bufferLow;      /* $0400 or $0450 — the store's own operand */
