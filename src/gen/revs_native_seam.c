@@ -1675,7 +1675,13 @@ void check_crash_native(void)
            and N is always set; X, Y and V pass through. */
         cpu.A = (uint8_t)(edge_nearest_v >> 8);
         cpu.C = 0; cpu.N = 1; cpu.Z = 0;
-        break;
+        /* ⭐ NO PUBLISH on this arm: it writes no model-state element, and the mirror already
+           holds the array — apply_driving_model_frame_native (phase 4) published it last, and
+           every writer between there and here publishes on its own (process_car_contact's contact
+           arm, phase 22).  The needles, the one other writer of $62D0..$62EE, plot after this
+           phase and are re-imported by next frame's read_driving_controls_frame.  So the 6502's
+           behaviour — this arm leaves the vector's memory alone — is now the port's too. */
+        return;
     case CRASH_ARM_SCRAPE:
         sound_queue_exit_abi(SOUND_SLOT_IMPACT); /* the JMP to begin_scrape is a tail call */
         break;
@@ -1689,7 +1695,7 @@ void check_crash_native(void)
         break;
     }
     (void)entryA;
-    model_state_marshal_out();    /* ...and publish it back to mem[] */
+    model_state_marshal_out();    /* the scrape's heading kick / the crash's zeroing, to mem[] */
 }
 
 /* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
