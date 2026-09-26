@@ -912,6 +912,15 @@ void RevsScreen::decodeTeletext()
  * so a single glitched field at the transition is acceptable — a real BBC's mode change is far
  * more violent than that.  Returns non-zero when it switched, so the caller does not then go on
  * to rebuild bands into a list that is no longer the active one. */
+/* ⭐ THE COPPER'S BAND WORDS ARE MEMOISED TOO (buildBands).  They are a pure function of the band
+   snapshot, the plan built from it and the needle pens, and the list keeps its words between
+   frames — so the ~60 colour conversions and word stores a presented frame were rebuilding the
+   same list (1.5k instructions a frame single-stepped, in the VERTB ISR: wall clock).  Set by
+   whatever changes an input: a plan rebuild (buildLineModes — which every snapshot change forces)
+   and a switch back to the race list.  prepareFrame writes it only while `m_ready` is clear and
+   buildBands reads it only while it is set, so the two never overlap. */
+static unsigned char s_copperBandsStale = 1u;
+
 int RevsScreen::applyMode()
 {
     const unsigned char want = tt_active() ? 1u : 0u;
@@ -946,6 +955,7 @@ int RevsScreen::applyMode()
         g_screenMode7       = 1;
         AmigaHardware::setCopperList(*m_ttCopper, /*immediate*/true);
     } else {
+        s_copperBandsStale  = 1u;                 /* back on the race list: rebuild its bands */
         g_screenCopperAddr  = (uint32_t)m_copper->data();
         g_screenCopperWords = LIST_LENGTH;
         g_screenFrontAddr   = (uint32_t)m_bitmap[m_back ^ 1u]->data;
@@ -1155,6 +1165,7 @@ void RevsScreen::buildLineModes()
     s_frameHasGap     = gap;
     s_gapRanges       = ranges;
     s_modesBuilt      = 1u;
+    s_copperBandsStale = 1u;                      /* a new plan: the copper's bands follow it */
     if (gap) { g_decodeGapFrames++; g_decodeGapLastAt = g_decodeFrames; }
     g_decodeFrames++;
 }
@@ -1162,6 +1173,16 @@ void RevsScreen::buildLineModes()
 void RevsScreen::buildBands()
 {
     if (!m_plan.valid) return;
+#ifdef REVS_NEEDLE_PLANES
+    static unsigned char s_builtPen[2] = { 0xFFu, 0xFFu };
+    if (g_needlePen[0] != s_builtPen[0] || g_needlePen[1] != s_builtPen[1]) {
+        s_builtPen[0] = g_needlePen[0];
+        s_builtPen[1] = g_needlePen[1];
+        s_copperBandsStale = 1u;
+    }
+#endif
+    if (!s_copperBandsStale) return;              /* the list already holds exactly these words */
+    s_copperBandsStale = 0u;
     const BandSnapshot& s = m_bandSnap;
     uint32_t* d = m_copper->data();
     unsigned emitted = 0;
