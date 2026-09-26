@@ -1338,10 +1338,10 @@ Replaying recorded answers needs no second copy of the controller. ~30 BBC frame
    edge shift is a different grip and a different trajectory within a few frames. ⇒ `make
    EXACTRATIO=1` (host only) computes the 6502's own ratio in `bearing_to_section`, `project_point`
    and the two width routines — and `make validate EXACTRATIO=1` switches the tolerance OFF, so those
-   twins must match their oracles EXACTLY (they do; `bearing_to_section` differs only in the shifted
-   `point_delta` scratch lanes).
-5. The port keeps several values outside `mem[]`, so the host snapshot saves `mem[]`, runs every
-   marshal-out, copies, restores — true values without perturbing the run.
+   twins must match their oracles EXACTLY (they do; `bearing_to_section`'s shifted `point_delta`
+   scratch lanes are out of its compare in that build, by the same reader audit).
+5. The port keeps several values outside `mem[]`, so every host snapshot and dump comes from
+   `ls_true_mem` (every marshal-out, on a scratch copy) — true values without perturbing the run.
 
 **What is not compared, and why** (`tools/lockstep_diff.py`, each set named at the code): the 6502's
 scratch cells the port does not reproduce (the RESULTS rule), the MOS/BASIC workspace, the 50 Hz
@@ -1349,15 +1349,36 @@ counters (`field_countdown`, `wheel_spin_accum` — how often the interrupt runs
 between the machines), the span/object plotters' per-draw state, the other car slots' seeds in
 practice, and edge-array slots past the live end cursors (stale).
 
-**Results (practice, first gear, the autopilot's line):**
-- **Silverstone: the PHYSICS is identical to a real BBC for all 595 frames.** The picture differs by
-  ~34 bytes a frame — the road sign at a different scale (the object plotter's `proj_width` and
-  `shape_scale_tbl` differ from frame 0) — nowhere under the car.
-- **Nurburgring: identical for 138 frames; at 139 the port's picture has GRASS (`$FF`) under the car
-  where the real BBC has road (`$0F`)**, so `update_grip_limits` takes its grass arm and reads `$FE68`
-  where the BBC does not — the replay stops on exactly that. That arm is also the one that can
-  launch a jump (`begin_jump`, on the first grass contact with `section_jump_history` bit 7 set) — a
-  candidate mechanism for the user's jump-and-crash, unproven until the rendering difference that
-  puts the grass there is found and fixed. The picture differs from frame 0 (boundary bytes one
-  pixel apart, the colour-pattern sequence one span out by frame 22), and ⚠ **no gate had ever
-  compared the Nurburgring's picture with a real BBC** — `viewdiff` covers circuits 0-4, parked.
+**What is not compared in the PICTURE** (`--view`): `tick_wheel_spin`'s six EOR runs (the tyres
+turn in the 50 Hz interrupt — ~5 times a BBC frame, once a host frame) and the gear digit, whose
+glyph is this project's own font (`src/platform/mos_font.h`), as are `vdu_char_block`'s rows
+(`FONT`) in the physics set.
+
+**Results (practice, first gear, the autopilot's line, 2995 frames ≈ 1.2 laps each):** ALL SIX
+circuits are **identical to a real BBC in the physics AND the picture**. It took four port bugs,
+each invisible to every other gate:
+1. **`EXACTRATIO`'s width routines divided by a distance the projection had already shifted in
+   place** — the test build's own bug; every road edge and sign at the wrong width.
+2. ⭐⭐⭐ **THE USER'S JUMP-AND-CRASH.** The low block's terrain painter let a source event on a
+   run's FIRST cell replace the run's composed entry, where the chain it replaced enters at a
+   unit's +$05 and consumes that source unread. Display line 149 cell 32 is run B's first cell AND
+   the grip model's right-wheel probe: grass under a wheel on the road, the grass arm, `begin_jump`.
+3. The low block's first sweep scanned before its clip table existed — frame 0 wrong everywhere.
+4. **An expansion circuit's walk hook resumed the walk with last frame's `edge_nearest`** (the
+   6502-ABI resume marshals it IN; production published it only at the walk's end) — the queued
+   SUSPECTED item, seen at Nurburgring frame 1309 with every input byte identical.
+
+⭐⭐⭐ **THE TRANSFERABLE LESSONS.**
+- **An equivalence oracle is only as good as the TRAJECTORY it runs on.** `TERRAINLOWCHECK` (the
+  replaced chain vs its replacement, cell by cell, in process) was 0-mismatch over every
+  determinism trajectory and wrong for the whole life of the path: a road boundary exactly on a
+  run's first cell is rare on a straight run and routine under a STEERING driver. Run the in-process
+  oracles under `make lap`'s autopilot, not only under `STRAIGHT_TO_RACE`.
+- ⭐⭐ **Bisect a lockstep divergence with FULL-MEMORY dumps at matched points, and the answer
+  arrives in three runs**: `REVS_LOCKSTEP_DUMP=N:<f>` / `--lockstep-dump=N:<f>` (64 KB at frame N's
+  snapshot) and `REVS_LOCKSTEP_AT=PC:N:<f>` / `--lockstep-at=PC:N:<f>[,...]` (the first time the
+  6502 reaches PC in lockstep frame N; the host fires at its `platform_mem_snapshot_at` sites, which
+  carry the 6502 JSR addresses). "Everything matches at the end of frame N-1, and at routine R's
+  entry, and not at its exit" names R — and then the in-process oracle of R, run on that frame,
+  names the cell.
+- An oracle's report that nobody REGISTERS is no oracle: `revs_report_low` had never printed.

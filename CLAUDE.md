@@ -121,7 +121,11 @@ make lap                   # ⭐⭐ WHOLE LAPS of all six circuits, driven by th
                            #   frame — the only gate that ever takes a corner or crests a hill
 make lockstep CIRCUIT=n    # ⭐⭐ ...and that run replayed on a REAL BBC (jsbeeb), poll for poll: the first frame
                            #   the PHYSICS differs, then the VIEW.  Host EXACTRATIO=1 (the physics reads
-                           #   the picture, so ±1 LSB is not acceptable there).  5 = the Nurburgring disc
+                           #   the picture, so ±1 LSB is not acceptable there).  5 = the Nurburgring disc.
+                           #   ⭐ Bisect with 64 KB dumps at a matched PC and frame on both sides:
+                           #   REVS_LOCKSTEP_AT=PC:N:f + --lockstep-at (docs/validation-harness.md)
+                           #   ⚠⚠ and run an in-process oracle (TERRAINLOWCHECK, SCANCHECK, ...) under
+                           #   the AUTOPILOT too — a STRAIGHT_TO_RACE window hid a steering-only defect
 make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
                            #   the only gate that sees the light column; -race cannot
 python3 tools/sim_equiv.py [--steer[=l|r]] [--modes=legacy,h400,h200]   # ⭐ DECOUPLED physics vs

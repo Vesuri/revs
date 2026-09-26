@@ -967,44 +967,24 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ▶ THE AUTOPILOT: racing speed, and what the real-BBC LOCKSTEP found (user, 2026-09-26/27)
-The user hit a physics jump-and-crash (with rendering artefacts) driving the Nurburgring by hand.
-`make lap` (`docs/validation-harness.md` §WHOLE LAPS) laps all six circuits clean in first gear;
-`make lockstep` (§THE LOCKSTEP) replays a run on a real BBC. Open, in order:
-1. **The Nurburgring's picture differs from a real BBC, and at frame 139 it puts grass under the car
-   where the BBC has road** — the grip model's grass arm, the one that can launch a jump. Find the
-   rendering difference (`make lockstep CIRCUIT=5` then `tools/lockstep_diff.py ... --view`: boundary
-   bytes a pixel apart from frame 0, the colour-pattern sequence a span out at frame 22), fix it,
-   and re-run until the replay reaches the end of the log. Suspect the circuit's hook-patched render
-   path first: no gate had ever compared this circuit's picture with a real BBC.
-2. **The road sign is drawn at a different scale on every circuit** (Silverstone: `proj_width` /
-   `shape_scale_tbl` differ from frame 0, ~34 picture bytes a frame). Nothing under the car, so the
-   physics is unaffected; `viewdiff` never saw it because it compares one parked frame.
-3. **Classify the cells the diff still sets aside** (`UNVERIFIED` in lockstep_diff.py: the corner
-   markers' offsets, `$62C4-$62C9`) — relocated state compared stale, or a real difference.
-4. **Racing speed** — the autopilot crashes above a 40 cap (braking distance grows with speed², the
+### ▶ THE AUTOPILOT: racing speed, and the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
+The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
+under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it and the three other
+bugs the lockstep found).  `make lap` laps all six circuits clean in first gear; `make lockstep`
+matches a real BBC in physics and picture over 2995 frames (~1.2 laps) on ALL SIX circuits.
+Open, in order:
+1. **Racing speed** — the autopilot crashes above a 40 cap (braking distance grows with speed², the
    far window is a fixed number of edge points); needed before the lockstep can cover a fast lap.
-5. Run the lockstep on circuits 1-4 and over whole laps.
+2. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — its
+   3000 frames already cover ~1.2 laps of practice at first-gear pace, and racing speed (item 1)
+   widens what the physics sees.
+3. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
+   build's accepted true-ratio ±1 LSB, byte-identical before and after this work.  Decide whether it
+   should run `EXACTRATIO=1` (then it is a pass/fail gate again) or compare against a recorded HEAD.
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.
-
-### 🔎 SUSPECTED, expansion circuits: a hook's resume re-imports a STALE `edge_nearest` mid-walk
-Found while gating the asm walk (2026-09-25), and identical on the C path, so it predates it.
-`hook_edge_walk_limit` ($56BC, the `$248B` patch on Brands/Donington/Oulton/Snetterton) resumes
-the walk through `road_edge_walk_resume_from`, whose `edge_nearest_marshal_in()` reloads
-`edge_nearest_v` from `mem[$10/$11]` — but production marshals that pair OUT only at the end of
-`build_track_geometry_native`, so mid-walk the cells hold LAST frame's final value, not this
-frame's running minimum (armed `$FFxx` at `$24F9`, then beaten down natively). The resumed points
-then test the running nearest against the wrong floor, which can move `edge_nearest_section` (the
-subdivision floor) and `nearest_edge_*`. The 6502 has one copy, so it cannot happen there.
-[INFERRED from the code; not yet observed in a picture.] Gate: `make viewdiff CIRCUITS=…` /
-`--trace-edge` on a frame where the hook resumes; the fix is a resume entry that marshals in only
-what a hook could have changed (the harness needs the full marshal on its 6502-ABI path — see the
-comment at `hook_edge_walk_limit`). The camera and heading re-imports on the same path are
-coherent [DERIVED]: `apply_driving_model_frame_native` (phase 4) publishes both to `mem[]` before
-phase 5 runs, and nothing in the walk changes them.
 
 ### ▶ FRAME-RATE-INDEPENDENT SIMULATION — **started 2026-09-25 (user decision)**
 The engine steps its whole simulation once per painted frame, and its clock is calibrated to a
