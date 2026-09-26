@@ -3892,6 +3892,14 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     PROBE_VIEW_PHASE(0);
     PROBE_SHAPE_VIEW_PHASE(0);
     if (!g_viewTablesBuilt) view_build_tables();
+#ifdef REVS_TERRAIN_LOW
+    /* ⚠⚠ THE CLIP TABLE BEFORE THE FIRST SCAN, not after it: the scan's per-cell floor
+       (s_lowConsume) is $FF until the table exists, so a first sweep that scanned first recorded
+       NO event in the low block, and its runs painted their entry colours alone over the chain's
+       picture — frame 0 wrong on every circuit (the real-BBC lockstep).  fill_dash_edge_columns
+       has written the boundary tables by now (phase 18, this frame). */
+    if (!s_lowBuilt) view_low_build();
+#endif
     view_stops_rescan();          /* what is REALLY in the page, before any plant of ours */
 
     /* ⭐ Both pointers are seeded WHOLE here, so this island needs no marshal-IN: nothing it
@@ -3994,7 +4002,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        built on the first sweep — `fill_dash_edge_columns` has written the boundary tables by
        then — and a failed build leaves the chain in charge for the whole run, which is the
        dead-arm-by-its-own-precondition move rather than a per-line fallback. */
-    if (!s_lowBuilt) view_low_build();
+    if (!s_lowBuilt) view_low_build();   /* normally done above; a failed build retries */
 #ifdef REVS_TERRAIN_LOW_CHECK
     {   /* ⚠ the chain paints, then the replacement CHECKS — see view_low_run's oracle note.
            ⚠⚠ THE SCAN-LINE STATE MUST BE REWOUND between them: `step_scanline` mutates
