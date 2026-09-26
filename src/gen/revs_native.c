@@ -20807,12 +20807,25 @@ void fill_line_surface_core(void)
 
     /* ⭐ The 6502 stores on every line because it has nowhere else to keep the running colour.
        Where the entry is already non-zero the byte written IS the byte read, so only the ZERO
-       entries need a store — the same 80 bytes of memory, up to 80 writes a frame fewer. */
-    uint8_t colour = 0x21u;                              /* $18D9 — below the road: ground */
-    for (int line = 0x4F; line >= 0; line--) {           /* $18DD-$18E7 */
-        uint8_t here = mem[MEM_view_line_surface + line];
-        if (here != 0u) colour = here;                   /* inherit from here on down */
-        else            mem[MEM_view_line_surface + line] = colour;
+       entries need a store.
+       ⭐⭐ FOUR LINES A STEP: in a race frame ~78 of the 80 entries are zero, so the sweep is
+       really a fill of the running colour.  A group of four zero bytes takes one longword store
+       of that colour; a group holding a non-zero entry is walked byte by byte, top line first,
+       exactly as the 6502 does.  $5F60 is 4-aligned in mem[] and 80 = 20 groups.
+       ENDIAN-OK: the group is only tested against ZERO and only stored as a UNIFORM value. */
+    uint8_t  colour = 0x21u;                             /* $18D9 — below the road: ground */
+    uint32_t fill4  = 0x21212121u;                       /* colour in all four lanes */
+    uint32_t* w = (uint32_t*)(void*)&mem[MEM_view_line_surface + 0x50u];   /* ENDIAN-OK: zero/uniform */
+    for (unsigned g = 0x50u / 4u; g != 0u; g--) {       /* $18DD-$18E7, four lines at a time */
+        if (*--w == 0u) { *w = fill4; continue; }        /* ENDIAN-OK: zero test, uniform store */
+        uint8_t* b = (uint8_t*)(void*)w + 4;
+        for (unsigned n = 4u; n != 0u; n--) {
+            const uint8_t here = *--b;
+            if (here != 0u) colour = here;               /* inherit from here on down */
+            else            *b = colour;
+        }
+        fill4 = (uint32_t)colour | ((uint32_t)colour << 8);  /* shifts: no 32-bit mul on a 68000 */
+        fill4 |= fill4 << 16;
     }
 }
 
