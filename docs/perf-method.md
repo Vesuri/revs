@@ -385,11 +385,29 @@ fields, so its cost belongs to the painted frame (~2.3 ms of a ~220 ms frame), n
 more than the work it measures, and an unmemoised recompute of an unchanged value costs everything.
 Both are invisible in a phase table, because the ISR has no row.
 
-**What is left** (~720 µs/field ≈ 3.6% of wall clock): `snd_tick` ×2 at ~276 µs real is still the
-largest and is now mostly the genuine per-tick four-channel walk for the ~1.8 channels that reach
-`program()`. Everything else is at or near the 92 µs instrument floor. ⚠ Do not merge the two ticks
-into one pass to save a walk: `make sound` compares chip state **tick by tick** against a real MOS,
-and the intermediate state is part of the contract.
+**The second pass (2026-09-26) — `VERTB ISR` 1002 → 671 µs a field (−33%), frame 76.77 → 75.70 ms
+field-matched** (the ISR preempts every phase, so its saving spreads across the rows):
+1. ⭐⭐ **A QUIET FLAG, NOT A FASTER TICK.** Revs's engine note is a static-amplitude infinite sound
+   re-issued with a flush only when its pitch moves, so ~87% of ticks provably change nothing: every
+   channel idle with an empty queue, or sounding with no duration counting and no envelope. The last
+   tick sets `g_sndQuiet`; every command entry point clears it **LAST, behind a compiler barrier**
+   (they run in main-loop context under the ISR — cleared first, a tick preempting the write could
+   set it again and strand the command). The ISR tests it inline and skips both ticks and the
+   reprogram: a quiet field is 11 instructions, was 37. `make sound` gates it tick for tick; the
+   queue-behind arms survive sabotage because Revs only flushes (argued at the code).
+2. **`program_paula` re-applies only the Paula channels whose chip inputs moved** — `apply()` is
+   idempotent, so it is exact; an in-process check of incremental against the full rebuild read 0
+   of 1873 reprograms (sabotages 1863 / 558).
+3. **`present()`'s needle loop** called `tt_active()` and `revs_needle_sprite()` across TUs four times
+   a present and rewrote the constant `SPRxPT` register words; `tt_active()` is inline now (the ISR
+   asks it every field). Screen slot 261 → 200 µs real.
+4. The mouse's button decode, branch-free (proven over all 2^24 inputs).
+
+**What is left** (~670 µs/field ≈ 3.4% of wall clock): the screen slot (~200 µs real, per PAINTED
+frame — `showBitmap`, the tyre and needle pointers, the beam record), the busy sound fields (a flush
+→ restart → three Paula channels, ~20% of fields — real work), the mouse (~80), and the floor rows.
+⚠ Do not merge the two ticks into one pass to save a walk: `make sound` compares chip state **tick by
+tick** against a real MOS, and the intermediate state is part of the contract.
 
 ⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) remains the
 dominant subsystem, and its whole call tree has no interpreter dispatch left in it.** Of the ordinary levers,

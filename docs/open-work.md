@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 76.77 ms bracketed** (after the rendering-path review's first cuts — the MOS round trip, the edge-buffer clear, the PF2 outline, §9b — and the source scan's hits stopped being calls, the ownership map stopped being cleared before its template overwrote it, and a run-B seed stopped computing its list's head, ph24 17.69 → 16.11 → 15.87 → 15.51; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.79× the real BBC's 97.0 (0.84× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 75.10 ms bracketed** (after the rendering-path review's second pass — the VERTB ISR 1002 → 671 µs a field, the line-surface sweep four lines a step, the on-track crash test's redundant publish, §9b — and its first cuts — the MOS round trip, the edge-buffer clear, the PF2 outline — and the source scan's hits stopped being calls, the ownership map stopped being cleared before its template overwrote it, and a run-B seed stopped computing its list's head, ph24 17.69 → 16.11 → 15.87 → 15.51; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.77× the real BBC's 97.0 (0.83× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -845,7 +845,15 @@ function with inlines (`addr2line -f`), plus `make fatscan --profile` for the av
 priced in two worktrees so the tree stays editable. ⚠ ISR work that lands in the vblank spin is
 invisible to Σ(1..39)−ph28 — read `VERTB ISR … us each` and the painted-frame count instead.
 **Done:** MOS round trip for ADVAL + SOUND/ENVELOPE (−0.36), `buildBands` memo (ISR 1335 → 1002 µs a
-field), the four edge buffers' clear in one loop (−0.33), the PF2 tyre outline gated (−0.20).
+field), the four edge buffers' clear in one loop (−0.33), the PF2 tyre outline gated (−0.20); second
+pass: the ISR 1002 → 671 µs a field (sound quiet flag, per-channel Paula memo, `present()`'s needle
+words — frame −1.07, docs/perf-method.md §The VERTB ISR), `fill_line_surface` four lines a step (ph13
+0.86 → 0.34), `check_crash`'s on-track arm stopped publishing the model state it did not touch (ph23
+−0.16).  Measured NULL and kept only as cleaner C: `keyDown` flattened (ph3 ±0.01),
+`mark_line_surfaces` over locals (±0.00 — GCC was already caching the zero-page cursor).
+⚠ The measured build polls the keyboard through the AUTORUN harness (`AutoRun::keyDown` +
+`pressBbcKey`, ~310 instructions ≈ 0.5 ms a frame in ph3) — overhead a player never pays, so it is
+not a lever and a cut there would not be a win.
 **Open, ranked by what is left:**
 - **The object plotter tree** (ph15+16 ≈ 3 ms practice, ~5 ms more in a race): single-stepped at ~1280
   instructions a `plot_object_core` call, two calls a frame. Half of `plot_view_src_line_core` is its
@@ -864,12 +872,12 @@ field), the four edge buffers' clear in one loop (−0.33), the PF2 tyre outline
   mem[] is worth ~10-20% of the ~2.8 ms, against six fixtures and a re-record. Wholly dead 6502
   stores on the path (`DEFUSE=1`'s new DEAD STORES list, Silverstone): `$1D31` ($48), `$1FE0` ($2B),
   `$202C`/`$2040` (scale entries 2/7), `$20A5` ($8C), `$2AF6` ($74).
-- **The VERTB ISR** (~1.0 ms a field, 5% of wall clock; `make ISRSPLIT=1`): `snd_tick` ×2 ~400 µs net
-  (a per-channel dirty flag instead of the four-field program memo — `make sound` is the gate),
-  `screen` ~264 µs (`present()`'s pointer writes), `mouse` ~90 µs.
-- `model_state` marshals (~0.35 ms): the `mem[]` mirror's one twin reader is
-  `advance_player_section_core` ($62E2); moving it to `model_state_16` retires the per-step
-  marshal-out, needs a determinism re-record.
+- **The VERTB ISR** (671 µs a field, 3.4% of wall clock): what is left is per painted frame (the
+  screen slot) or real work (a flush's restart) — docs/perf-method.md §The VERTB ISR.
+- `model_state` marshals: one IN (ph3, load-bearing — a needle can land in `$62D0..$62EE`) and one
+  OUT (ph4, ~93 instructions ≈ 0.16 ms) a frame remain.  The OUT's one twin reader is
+  `advance_player_section_core` ($62E2); moving it to `model_state_16` retires it, needs a
+  determinism re-record.
 - `view_stops_rescan` (~0.3 ms a sweep): stays — circuits patch the chain page's unit slots.
 - Near their floor, not levers: the terrain painter (its signature compare saves more than it costs),
   the scan (after 9128841/12b6837), `step_scanline` and the drivers (⛔ CLOSED), `snd_tick`'s body,
