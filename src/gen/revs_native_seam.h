@@ -532,6 +532,48 @@ REVS_FLAG_OP MosRegs mos_osbyte(uint8_t a, uint8_t x, uint8_t y) { return mos_ca
 REVS_FLAG_OP MosRegs mos_osword(uint8_t a, uint8_t x, uint8_t y) { return mos_call(0xFFF1u, a, x, y); }
 REVS_FLAG_OP void     mos_oswrch(uint8_t a, uint8_t x, uint8_t y) { MosRegs in = { a, x, y, 0u }; platform_mos_call_typed(0xFFEEu, in); }
 
+/* ⭐⭐ THE TWO MOS CALLS A RACE FRAME MAKES, WITHOUT THE ROUND TRIP — ON THE AMIGA ONLY.  Each went
+   mos_call -> platform_mos_call_typed -> the virtual Platform::mosCall -> switch(entry) -> osbyte()/
+   osword() -> switch(a), a MosRegs copied by value at every step, for an answer that is one virtual
+   call (ADVAL) or a block copy into the sound model (SOUND/ENVELOPE).  Each returns EXACTLY what
+   that path returns (src/platform/mos.cpp `case 0x80`, `case 0x07`/`0x08`: OSWORD hands its
+   registers back untouched), so no caller can tell — the same move as kbd_test_key_regs' INKEY.
+   ⚠ The host keeps the real MOS call: its REVS_HW_TRACE log is part of `make validate`'s
+   differential (docs/faithfulness-seam.md: a small Amiga variation stays here, guarded). */
+#ifdef REVS_PLATFORM_AMIGA
+#include "../platform/sound.h"
+REVS_FLAG_OP MosRegs mos_adval(uint8_t channel)
+{
+    MosRegs r = { 0x80u, 0x00u, 0x00u, 0u };
+    if (channel == 0u) {
+        r.x = platform_adc_buttons();
+    } else {
+        const uint16_t v = platform_adc_axis(channel);
+        r.x = (uint8_t)v;
+        r.y = (uint8_t)(v >> 8);
+    }
+    return r;
+}
+REVS_FLAG_OP MosRegs mos_sound_osword(uint8_t a, uint8_t x, uint8_t y)
+{
+    const unsigned blk = (unsigned)x | ((unsigned)y << 8);
+    MosRegs r = { a, x, y, 0u };
+    if (a == 0x07u) {
+        uint8_t b[8];
+        for (int i = 0; i < 8; i++) b[i] = mem[(uint16_t)(blk + i)];
+        snd_sound(b);
+    } else {
+        uint8_t b[14];
+        for (int i = 0; i < 14; i++) b[i] = mem[(uint16_t)(blk + i)];
+        snd_envelope(b);
+    }
+    return r;
+}
+#else
+REVS_FLAG_OP MosRegs mos_adval(uint8_t channel) { return mos_osbyte(0x80u, channel, 0u); }
+REVS_FLAG_OP MosRegs mos_sound_osword(uint8_t a, uint8_t x, uint8_t y) { return mos_osword(a, x, y); }
+#endif
+
 /* ---- span-plotter descriptors (defined in revs_native.c) ---- */
 extern const SpanPlotter SPAN_PLOT_1;
 extern const SpanPlotter SPAN_PLOT_2;

@@ -12829,7 +12829,7 @@ MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
        ($0B70-$0B73).  Returns the MOS's exit registers; the caller's X (in sound_saved_x) is
        restored by the exit ABI, not here.  mos_osword also leaves cpu.A/X/Y set, which the
        sound_osword / sound_queue shims read back as their exit A/Y. */
-    return mos_osword(oswordNum, blockLow, 0x0Bu);
+    return mos_sound_osword(oswordNum, blockLow, 0x0Bu);
 }
 
 /* Returns the OSWORD's exit Y — begin_jump threads it out as the spin's yScale residue. */
@@ -15683,7 +15683,7 @@ AdcRead adc_read_core(uint8_t channel)
     /* $503F — OSBYTE $80 (ADVAL) with the channel in X; the reading's high byte comes back in Y.
        ADVAL's entry-Y is don't-care and the differential does not compare it for A=$80
        (validate_native.c), so 0 is passed. */
-    MosRegs r80 = mos_call(0xFFF4u, 0x80u, channel, 0u);
+    MosRegs r80 = mos_adval(channel);
     uint8_t reading = r80.y;                            /* $5044 */
 
     /* $5047 — recentre on $80 (adding $80 with no carry-in just flips bit 7, i.e. ^ $80), then
@@ -15980,7 +15980,7 @@ static void read_pedals_and_gears(void)
         /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X.  The MOS's
            exit X/Y are read here and nowhere else — they used to leak out through the no-key
            return as well, which is residue nothing reads. */
-        MosRegs b = mos_call(0xFFF4u, 0x80u, 0x00u, 0u);
+        MosRegs b = mos_adval(0x00u);
         if (b.x & 0x01u) {                             /* $1691 — the fire button */
             if (pedal_mode != 0x01u) {
                 request = GEAR_UP;                     /* not braking: shift up */

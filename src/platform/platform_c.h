@@ -52,6 +52,12 @@ MosRegs platform_mos_call_typed(uint16_t entry, MosRegs in);
    because its MOS-call trace is part of `make validate`'s differential. */
 int     platform_key_down(uint8_t code);
 
+/* ⭐ ADVAL's ANSWERS (OSBYTE $80, mos.cpp `case 0x80`) without the OS call around them — the fire
+   buttons for channel 0, the 16-bit conversion for 1..4.  The Amiga's steering axis and joystick
+   buttons, read directly for the same reason as platform_key_down; the host keeps the MOS call. */
+uint8_t  platform_adc_buttons(void);
+uint16_t platform_adc_axis(uint8_t channel);
+
 /* A BRK was executed at `pc`.  On the BBC this is a software interrupt, not a no-op: it
    vectors through BRKV ($0202) into the MOS error handler and does NOT return to the
    following instruction.  Revs contains four routines that are a single $00 byte, called

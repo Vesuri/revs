@@ -81,6 +81,14 @@ int platform_key_down(uint8_t code) {
     return platform ? (platform->keyDown(code) ? 1 : 0) : 0;
 }
 
+uint8_t platform_adc_buttons(void) {
+    return platform ? platform->adcButtons() : 0x00;
+}
+
+uint16_t platform_adc_axis(uint8_t channel) {
+    return platform ? platform->adcAxis(channel) : 0x8000;
+}
+
 void platform_brk(uint16_t pc) {
     if (platform) platform->brk(pc);
 }
