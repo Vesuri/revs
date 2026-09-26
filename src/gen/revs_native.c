@@ -4252,6 +4252,7 @@ static uint16_t sim_pitch_k_q16(uint16_t h);
 volatile unsigned long g_simSteps, g_simSlowTicks;
 static unsigned s_simBacklog;          /* game time owed, not yet stepped */
 static unsigned s_simTickAcc;          /* game time since the last slow tick */
+static unsigned s_noteAccTenths;       /* game time toward the next engine-note unit (sim_note_accrue) */
 /* What each scaled accumulator has owed below its least unit (sim_scale). */
 static uint16_t s_rateRem[3];          /* integrate_state_rates, per element */
 static uint16_t s_posRem[2];           /* integrate_car_position, per component */
@@ -4281,6 +4282,7 @@ static void sim_clock_session_start(void)
     s_pitchK = sim_h_q16 ? sim_pitch_k_q16(sim_h_q16) : 0u;
     sim_note_budget_on  = (uint8_t)(s_simStepTenths != 0u);
     sim_note_steps_owed = 0u;
+    s_noteAccTenths = 0u;
     (void)platform_sim_fields();       /* the fields the reset took are not game time */
     /* The session's first painted frame runs one step, and it is a slow tick — as the BBC's
        first frame is. */
@@ -4303,6 +4305,26 @@ static unsigned sim_steps_due(void)
     if (s_simBacklog > SIM_BACKLOG_CAP_TENTHS) s_simBacklog = SIM_BACKLOG_CAP_TENTHS;
     while (s_simBacklog >= s_simStepTenths) { s_simBacklog -= s_simStepTenths; n++; }
     return n;
+}
+
+/* ⭐ THE NOTE BUDGET ACCRUES WITH GAME TIME, NOT IN A LUMP AT THE SLOW TICK.  The engine slews
+   engine_note four units per engine frame (93.6 ms).  Handing all four over at the slow tick made
+   the next painted frame's four calls spend them inside ONE field — a jump of up to a whole
+   semitone (four quarter-semitone MOS pitch units) every 93.6 ms, a staircase at 10.7 Hz that is
+   audible at 50 painted fps and is NOT what the BBC played: there the four calls sit at phases
+   9, 12, 20 and the tail, spread across a ~97 ms frame, so each step lands on its own 100 Hz
+   scheduler tick.  Accrued per step (4 units per 936 tenths, exact over any number of steps),
+   the same slew arrives as ~one unit a field at 50 Hz steps.  Capped at 8, as the lump was: the
+   four calls a painted frame can spend at most four, so a slow frame is slew-limited either way.
+   Nothing but the sound reads engine_note (the pause and volume keys only nudge it). */
+static void sim_note_accrue(void)
+{
+    if (!sim_note_budget_on) return;
+    s_noteAccTenths += 4u * s_simStepTenths;
+    while (s_noteAccTenths >= SIM_BBC_FRAME_TENTHS) {
+        s_noteAccTenths -= SIM_BBC_FRAME_TENTHS;
+        if (sim_note_steps_owed < 8u) sim_note_steps_owed++;
+    }
 }
 
 static int sim_slow_tick_due(void)
@@ -4340,8 +4362,9 @@ uint8_t  sim_engine_caught;
 /* ⭐ ONCE PER PAINTED FRAME, BUT MEASURING ENGINE FRAMES (docs/open-work.md §FRAME-RATE-INDEPENDENT
    SIMULATION, stage 4).  engine_sound_update moves the note one unit a call and is called four
    times a painted frame, so its slew is four units per ENGINE frame: decoupled, it draws on a
-   budget of four per slow tick (a call with none owed does nothing, as a call already on target
-   does).  place_player_in_section's section-jump test is a lateral speed — |change in across|
+   budget that accrues four units per 93.6 ms of game time, step by step (sim_note_accrue — a
+   lump at the slow tick was a semitone staircase), and a call with none owed does nothing, as
+   a call already on target does.  place_player_in_section's section-jump test is a lateral speed — |change in across|
    >= $16 between frames 93.6 ms apart — so its threshold scales with the game time the painted
    frame covered.  Both are the engine's own behaviour in legacy mode and outside the driver. */
 uint8_t  sim_note_budget_on;
@@ -4475,11 +4498,11 @@ uint8_t race_main_loop_core(RestartDepth depth)
             for (unsigned step = 0; step < steps; step++) {
                 const uint16_t headingBefore = car_heading_v;
                 g_simSteps++;
+                sim_note_accrue();
                 sim_tick_step = (uint8_t)sim_slow_tick_due();
                 if (sim_tick_step) {
                     g_simSlowTicks++;
                     frameTicks++;
-                    if (sim_note_steps_owed <= 4u) sim_note_steps_owed = (uint8_t)(sim_note_steps_owed + 4u);
                     PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
                     PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
                 }

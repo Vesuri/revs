@@ -695,7 +695,14 @@ the BBC's own sample is one frame old. In a scene that renders slower than the B
 the BBC by the difference. Two per-frame measurements were really per-ENGINE-frame and are
 converted:
 - the section-jump threshold scales with the game time the frame covered;
-- the engine note's slew draws a budget of four steps per tick.
+- the engine note's slew draws a budget of four units per 93.6 ms, **accrued step by step**.
+  ⚠ Handed over as a lump at the slow tick, the next painted frame's four calls spent it inside
+  one field: at 50 painted fps the pitch jumped up to a semitone (four quarter-semitone MOS pitch
+  units) every 93.6 ms, a 10.7 Hz staircase the user heard as discrete steps, and burstier than
+  the BBC, whose four calls sit at phases 9, 12, 20 and the tail of a ~97 ms frame, so each step
+  lands on its own 100 Hz scheduler tick. Accrued, `h200` moves the note at most one unit a
+  frame (host trace: 156×+1 and 144×0 over 300 frames, against 20×+2, 13×+3, 17×+4 before) on
+  the same slope in game time.
 
 **The original's discretization, where a player can see it.** The engine's semi-implicit Euler flies
 a jump as if launched g/2 slower: a severity-$30 jump peaks at 61 where exact physics gives 72. Finer
