@@ -27,7 +27,7 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
 **Where the frame stands:** **Σ(1..39) − ph28 = 77.48 ms bracketed** (after the source scan's hits stopped being calls, the ownership map stopped being cleared before its template overwrote it, and a run-B seed stopped computing its list's head, ph24 17.69 → 16.11 → 15.87 → 15.51; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.81× the real BBC's 97.0 (0.86× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
+~3-4 ms of crash reset — see below) — **0.80× the real BBC's 97.0 (0.85× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -907,15 +907,19 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.
 
-### 🔴 `LOWFULLCHECK` FAILS — 38 mismatches, first at display line 133 cell 0, and it PREDATES 2026-09-26
-`make SCANCHECK=1 LOWFULLCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + a script printing
-`g_lowFull*` (as `amiga/lowfullcheck.gdb`, 2500 fields): **38 of ~214 000 checks, `at=8500`**, identical at
-HEAD (`d7c47e9`), at `8c62187`, and with every file the 2026-09-26 session touched rolled back to
-`01cee80` — so it is older than that session, and its last recorded PASS is the scan-in-asm commit
-(docs/perf-method.md). Not bisected. Suspects by date: the unchanged-line skip (`69b4f51`, the painter
-no longer repaints a matching row — does the oracle's poisoned buffer assume it does?) and the
-frame-rate-independence stages. Gate to close: bisect, then fix the painter or state the oracle's
-scope at the oracle.
+### 🔴 `LOWFULLCHECK` FAILS — first at display line 133 cell 0, and it is OLDER THAN ITS LAST RECORDED PASS
+`make LOWFULLCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + `g_lowFull*` printed at a field count
+(the shape of `amiga/lowfullcheck.gdb`): **38 of ~214 000 checks at HEAD, `at=8500`, and every failing
+build's FIRST mismatch is that same pixel.** A `git bisect` (with `make gen` per step — the generated
+sources are git-ignored, so an old commit does not build against today's `mem.h`) named `c7e9d2c`, the
+commit right after the scan-in-asm pass `8b2301b` — but ⚠ that is the TRAJECTORY, not the cause:
+`c7e9d2c`'s kind-table memo switched off at HEAD still fails (392), and **`8b2301b` itself fails over
+5000 fields (983 of 746 200) where it passed over 2500.** The check's recorded PASS was a window too
+short to reach the case, and these builds carry no `FIXED_RNG`, so any speed change moves where it lands.
+⇒ Next: stop the run at the first mismatch (a gdb `watch g_lowFullMismatch`) and look at what the
+snapshot, the painter and the PF2 plane hold at line 133 cell 0 — the low block's left edge, run A's
+entry. Then either fix the painter or, if the cell is one PF2 covers late (the cockpit plane is taken
+"as it stands this frame"), state that at the oracle. Until then the check is not a gate.
 
 ### 🔎 SUSPECTED, expansion circuits: a hook's resume re-imports a STALE `edge_nearest` mid-walk
 Found while gating the asm walk (2026-09-25), and identical on the C path, so it predates it.
