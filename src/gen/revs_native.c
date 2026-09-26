@@ -4252,7 +4252,7 @@ static uint16_t sim_pitch_k_q16(uint16_t h);
 volatile unsigned long g_simSteps, g_simSlowTicks;
 static unsigned s_simBacklog;          /* game time owed, not yet stepped */
 static unsigned s_simTickAcc;          /* game time since the last slow tick */
-static unsigned s_noteAccTenths;       /* game time toward the next engine-note unit (sim_note_accrue) */
+static uint16_t s_noteAccTenths;       /* game time toward the next engine-note unit (sim_note_accrue) */
 /* What each scaled accumulator has owed below its least unit (sim_scale). */
 static uint16_t s_rateRem[3];          /* integrate_state_rates, per element */
 static uint16_t s_posRem[2];           /* integrate_car_position, per component */
@@ -4320,11 +4320,12 @@ static unsigned sim_steps_due(void)
 static void sim_note_accrue(void)
 {
     if (!sim_note_budget_on) return;
-    s_noteAccTenths += 4u * s_simStepTenths;
-    while (s_noteAccTenths >= SIM_BBC_FRAME_TENTHS) {
-        s_noteAccTenths -= SIM_BBC_FRAME_TENTHS;
-        if (sim_note_steps_owed < 8u) sim_note_steps_owed++;
-    }
+    /* divu.w, not a subtract loop: GCC turns `while (acc >= 936) acc -= 936` into __udivsi3.
+       acc < 936 + 4 x 936 fits 16 bits. */
+    const uint16_t acc   = (uint16_t)(s_noteAccTenths + 4u * s_simStepTenths);
+    const uint16_t units = revs_divu16(acc, (uint16_t)SIM_BBC_FRAME_TENTHS);
+    s_noteAccTenths = (uint16_t)(acc - (uint16_t)revs_mulu16(units, (uint16_t)SIM_BBC_FRAME_TENTHS));
+    sim_note_steps_owed = (uint8_t)(sim_note_steps_owed + units > 8u ? 8u : sim_note_steps_owed + units);
 }
 
 static int sim_slow_tick_due(void)
