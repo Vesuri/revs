@@ -907,20 +907,6 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.
 
-### 🔴 `LOWFULLCHECK` FAILS — first at display line 133 cell 0, and it is OLDER THAN ITS LAST RECORDED PASS
-`make LOWFULLCHECK=1 PROBES=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + `g_lowFull*` printed at a field count
-(the shape of `amiga/lowfullcheck.gdb`): **38 of ~214 000 checks at HEAD, `at=8500`, and every failing
-build's FIRST mismatch is that same pixel.** A `git bisect` (with `make gen` per step — the generated
-sources are git-ignored, so an old commit does not build against today's `mem.h`) named `c7e9d2c`, the
-commit right after the scan-in-asm pass `8b2301b` — but ⚠ that is the TRAJECTORY, not the cause:
-`c7e9d2c`'s kind-table memo switched off at HEAD still fails (392), and **`8b2301b` itself fails over
-5000 fields (983 of 746 200) where it passed over 2500.** The check's recorded PASS was a window too
-short to reach the case, and these builds carry no `FIXED_RNG`, so any speed change moves where it lands.
-⇒ Next: stop the run at the first mismatch (a gdb `watch g_lowFullMismatch`) and look at what the
-snapshot, the painter and the PF2 plane hold at line 133 cell 0 — the low block's left edge, run A's
-entry. Then either fix the painter or, if the cell is one PF2 covers late (the cockpit plane is taken
-"as it stands this frame"), state that at the oracle. Until then the check is not a gate.
-
 ### 🔎 SUSPECTED, expansion circuits: a hook's resume re-imports a STALE `edge_nearest` mid-walk
 Found while gating the asm walk (2026-09-25), and identical on the C path, so it predates it.
 `hook_edge_walk_limit` ($56BC, the `$248B` patch on Brands/Donington/Oulton/Snetterton) resumes

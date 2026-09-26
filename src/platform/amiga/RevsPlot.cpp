@@ -687,7 +687,13 @@ static uint8_t* s_cockPlane;
    the whole claim the change rests on: that PF2 hides every cell the painter adds, and that the
    run cells keep their colours (the scan's seeded run-B entry included).
    ⚠ Its scope: the PF2 plane as it stands this frame.  DIAGNOSTIC ONLY — the reference painter
-   runs too, so no framerate may be quoted. */
+   runs too, so no framerate may be quoted.
+   ⚠⚠ AND IT EXCLUDES THE TYRE TREAD FOOTPRINT, as TERRAINCHECK and DUALPFCHECK do: there PF2 is
+   transparent and `revs_tyres_outline` ANDs the tread out of PF1 after every paint, so the
+   snapshot holds last paint's MASKED byte while the painter writes the unmasked one — and the
+   outline fixes it before display.  Without this the check failed at display line 133 cell 0
+   whenever a line's entry colour changed (38 of ~214 000 at 9128841; its recorded PASS had been a
+   window too short to meet one).  The footprint's composite is the sprite's, not PF1's. */
 extern "C" {
 volatile unsigned long  g_lowFullChecks     = 0;
 volatile unsigned long  g_lowFullMismatch   = 0;   /* ⚠⚠ MUST BE 0 */
@@ -717,8 +723,15 @@ extern "C" void revs_plot_low_compare(void)
     n = s_target + LOW_FULL_Y0 * kRowBytes;
     k = s_cockPlane + LOW_FULL_Y0 * kRowBytes;
     for (y = 0; y < LOW_FULL_LINES; y++, o += kRowBytes, n += kRowBytes, k += kRowBytes) {
+#ifdef REVS_TYRE_SPRITES
+        const unsigned yy = LOW_FULL_Y0 + y;
+        const int tread = (yy >= REVS_TYRE_Y0 && yy < REVS_TYRE_Y0 + REVS_TYRE_LINES);
+#endif
         for (c = 0; c < BBC_SCREEN_CELLS; c++) {
             const uint8_t shown = (uint8_t)~(k[c] | k[c + kPlaneGap]);
+#ifdef REVS_TYRE_SPRITES
+            if (tread && (c <= REVS_TYRE_L_CELL + 1u || c >= REVS_TYRE_R_CELL)) continue;
+#endif
             g_lowFullChecks++;
             if ((uint8_t)((n[c] ^ o[c]) | (n[c + kPlaneGap] ^ o[c + kPlaneGap])) & shown) {
                 if (!g_lowFullMismatch)

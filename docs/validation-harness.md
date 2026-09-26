@@ -990,6 +990,23 @@ the surviving control says nothing about the change — it says the gate is the 
 When no gate can see a byte the 6502 provably wrote, the faithful move is to KEEP reproducing it
 and to write the argument at the code, because a run will never report its loss.
 
+### ⚠⚠ ...and a PASS OVER A WINDOW TOO SHORT TO MEET THE CASE, and SIBLING ORACLES THAT SCOPE DIFFERENTLY (`LOWFULLCHECK`, 2026-09-26)
+`LOWFULLCHECK` was recorded clean at the scan-in-asm commit over 2500 fields and was found failing
+three days later (38 of ~214 000, always display line 133 cell 0). A `git bisect` named the next
+commit — and was wrong: that build merely moved the trajectory (no `FIXED_RNG`), and **the recorded
+PASS itself failed over 5000 fields**. The cause was the oracle's SCOPE: its two siblings over the
+same rows, `TERRAINCHECK` and `DUALPFCHECK`, both exclude the tyre-tread footprint because
+`revs_tyres_outline` masks PF1 there after every paint, and this one did not, so it compared last
+paint's masked byte against this paint's unmasked one whenever a line's entry colour changed.
+⇒ **Two rules.** (1) A pass is a pass *over its window*: run a new oracle for at least twice the
+window that first reached every arm it guards, and bisect only with the trajectory pinned (or a
+window long enough that both ends meet the case). (2) **When oracles share rows, their scope
+exclusions must be shared too** — an exclusion added to one for a reason that is about the ROWS
+(a post-pass that rewrites them) belongs in every oracle over those rows, with the reason at each.
+The first-mismatch probe that settled it: break on the mismatch counter's increment and dump the
+oracle's three buffers plus its run tables raw, then analyse off-target (⚠ in gdb on m68k `$a0` and
+`$a1` ARE the address registers — a convenience variable of that name silently reads the register).
+
 ## ⚠⚠ A DIFFERENTIAL IS BLIND TO WHAT ITS TWO SIDES SHARE (the decode rewrite, 2026-09-13)
 
 `make DIRTYCHECK=1` is a strong-looking oracle: after the optimised decode has run, re-decode the
