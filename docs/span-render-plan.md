@@ -2741,18 +2741,72 @@ the longword fill plus ~15 instructions an event; the skip already declines 74% 
   cell — plus the pixel-exact boundary byte gathered from the block at each edge. It deletes the
   scan (4.8k) and the whole seam fill (3.5k: an entry colour is just the colour of the interval
   holding `first`), and costs ~60 instructions a line (4.8k) plus object notes. **Ceiling ≈ −3.3k,
-  ≈ −5 ms, with a real exactness risk**, and two measured facts that must be explained first
-  (host census, driving, 596 sweeps):
-  1. the edges are fully nested (`e1 ≤ e3 ≤ e2 ≤ e0`, the classifier's compare order) on **79% of
-     lines** (37 529 of 47 680) — the rest break one of the three orders (63 lines break two); whether those are
-     the `$80` "not on this line" value or real crossings decides whether the intervals are fixed;
-  2. **5.5 road bytes a sweep are solid colour changes ≥ 2 cells from every recorded edge**, all on
-     sweep lines 47..58 — a colour change the edge record does not explain, which a renderer built
-     on that record would drop.
-  ⇒ settle both on the host (a census, no emulator run), then decide. It changes the `mem[]`
-  bytes, so it is gated by `viewdiff` per circuit, not `determinism`.
+  ≈ −5 ms.** The two facts that stood in its way are now settled — see §13e.
 - **It does not reach the next visible step.** A frame is displayed every `ceil(ms/20)` fields, so
   75 ms shows at 12.5 fps and anything from 41 to 60 ms at 16.7 — **−15 ms to the next step**; C + A
   supply 1-3 of it and D at best 5. The producers are the other mass (ph11 14.49 at BBC parity,
   ph5 9.94 at 2.2× the BBC), and `docs/perf-method.md` §the producers mapped already says what is
   left there: fewer edge points, fewer spans — a visual-fidelity trade, which is the user's call.
+
+### 13e. ✅ THE ANALYTIC RENDERER'S TWO OPEN FACTS, SETTLED ON THE HOST — the model is EXACT
+
+Host census (`tmp/census/model_census.patch`, `make SRCCENSUS=1` via a temporary Makefile `ifdef`;
+not committed): at every sweep, every visible cell (above `dash_block_starts[cell]`, the
+low block's two composite cells per line excluded) of the row the CURRENT pipeline paints — the
+RLE of the translated source bytes from the line's entry byte, run B re-entered at its seed — is
+compared with the MODEL:
+
+> **the classifier's colour at the cell, except that on a cell holding an on-line `surface_edge`
+> the block's own byte (translated) is taken when it is non-zero.**
+
+Cells whose carried byte came from a non-road producer (the sign, the cars, the corner markers, the
+lights, …) are skipped — they are the object layer, which the renderer keeps separate.
+
+| trajectory | cells compared | mismatches |
+|---|---:|---:|
+| Silverstone, practice, driving (576 sweeps) | 1 162 953 | **0** |
+| Silverstone, **race proper** (`RACEPROPER=1`, sweeps with `session_is_race & $80`) | 21 232 417 | **0** |
+| Donington / Snetterton (`REVS_TRACK=2/4`) | 1 145 024 / 1 150 233 | **0 / 0** |
+| Oulton (`REVS_TRACK=3`) | 1 140 233 | 52 — **all 52 in the warm-up sweeps before `view_low_build` succeeds**, where the census could not exclude the composite cells; 0 after |
+| Brands Hatch (`REVS_TRACK=1`) | 1 162 505 | **8 — one cell, see below** |
+
+⭐ **Sabotaged three ways, three distinct counts:** dropping the edge cell's byte 15 150, probing
+one cell right of the edge 12 226, a wrong colour after edge 0 17 254. The check can fail.
+
+**Fact 1 — the nesting: SETTLED, the interval order is fixed.** All 9 742 non-nested lines (28 661
+in the race) have at least one edge carrying the `$80` "not on this line" marker; **not one line
+with all four edges on-line breaks `e1 ≤ e3 ≤ e2 ≤ e0`.** So a line is at most five intervals in
+a fixed order, with an absent edge collapsing its interval — no sort.
+
+**Fact 2 — the "unexplained" road bytes: SETTLED, they restate.** All 3 254 (45 206 in the race)
+paint exactly the classifier's colour at their cell — they are the DDA re-stating the colour it
+already carries, not colour changes. And **every one of the 16 205 mixed road bytes (249 128 in the
+race) sits EXACTLY on its edge's cell** (offset 0, all four edges): the gather is one probe per
+on-line edge.
+
+⚠ **The one residual — Brands Hatch, a kerb-stripe JOIN.** Line 53, cell 12, on 8 of 596 sweeps:
+edges `25 11 $80 13`, the cell after edge 1 holds the DDA's solid `$FF` while the classifier gives
+`$0F`. The classifier takes a kerb's colour from `line_attr_0[line]` (the line → edge-point map
+`fill_line_attr` builds); the DDA takes it from the span it is drawing; at a join between two kerb
+segments they disagree about which segment owns one line. Letting the byte after each edge set its
+interval's colour fixes Brands and breaks Silverstone (16) and Oulton (2 586), so it is not the
+rule. ⇒ either find the exact join rule (read `fill_line_attr` against the span DDA's endpoints),
+or accept a one-line, one-cell kerb-colour difference at a stripe join as a departure — **the
+user's call**, like the true-ratio divide — and gate it with `viewdiff` on Brands.
+
+⚠ **Two things the census names that the renderer must still carry:**
+1. **An unidentified producer attributed to phase 23** (`check_crash_native`'s bracket, or a
+   write it reaches): 6 mixed bytes a sweep on Silverstone, 21 on Brands, 12 on Oulton. Name it
+   (`make rangeaudit` over the live span, or the ink watch) before building — it belongs to the
+   object layer or to the road, and the census cannot tell which.
+2. **The object layer** — ~12-20 bytes a sweep (sign, cars, markers, lights) that no edge record
+   describes. Without the full scan they need finding another way: a note in each object
+   plotter's own store loop (the 67-cycle placement `SRCEVENTS` measured) or a scan bounded by the
+   object's own footprint.
+
+⇒ **D is feasible on the data.** What it would build: per line, the ≤5 interval colours from the
+classifier's rules once, one gather per on-line edge, the object layer's events merged in, and the
+seam's seeds read off the same intervals (the whole fill goes on the plane arm; its tables stay for
+the surface probe and the `mem[]` arm). It changes no `mem[]` byte the host checks, since it is
+the Amiga plane arm only; its gates are an in-process oracle of the painted row against today's
+pipeline (this census's model, on the target), `LOWFULLCHECK`, and `viewdiff` per circuit.

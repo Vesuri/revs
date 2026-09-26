@@ -201,9 +201,13 @@ by certainty × size:
      scan is the cheapest way to find ~150 events, the painter is at its store floor, the drivers
      are register code (a partial fold is already ⛔ CLOSED at −0.03). What is left: the seam fill
      as an exact per-line pass (~−1.3 ms, `determinism`-gated), a driver fold only if a carve arm
-     shows >1 ms, and **one real design — the ANALYTIC LINE RENDERER (§13d, ceiling ≈ −5 ms)** —
-     whose two open facts (edges nested on only 79% of lines; 5.5 road bytes a sweep that no
-     recorded edge explains) are host censuses to settle before deciding.
+     shows >1 ms, and **one real design — the ANALYTIC LINE RENDERER (§13d, ceiling ≈ −5 ms)**.
+     ✅ **Its feasibility is SETTLED on the host (§13e): the model "classifier colour + the block's
+     byte on each on-line edge cell" reproduces the painted terrain with 0 mismatches over 1.16M
+     cells (practice) and 21.2M (race proper), and on Donington, Snetterton and Oulton.** The one
+     residual is a kerb-stripe join on Brands (one cell, 8 of 596 sweeps) — find the join rule or
+     accept it (user's call). Before building, name the phase-23 producer and choose how the object
+     layer is found without the scan.
 - ✅ **THE TRUE 68000 RATIO (user decision), −5.77** — ph5 `build_track_geometry` **24.22 →
   18.83**. `bearing_to_section` and `project_point` each take `(S << 8) / L` in one `DIVU` of the
   real operands where the 6502 divided by a divisor truncated to its top byte (0..+2 above the
