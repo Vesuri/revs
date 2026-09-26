@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **Σ(1..39) − ph28 = 83.26 ms bracketed** (after the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
-~3-4 ms of crash reset — see below) — **0.86× the real BBC's 97.0 (0.91× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
+**Where the frame stands:** **Σ(1..39) − ph28 = 80.78 ms bracketed** (after two `draw_road` producer cuts, ph11 16.17 → 13.99: `fill_line_attr`'s walk over locals −1.20 and the span pass's twelve dead scratch stores −1.00; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
+~3-4 ms of crash reset — see below) — **0.83× the real BBC's 97.0 (0.89× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
 billed a whole `decodeTeletext()` each to ph27 (calls = 2 × frames + 12); they are phase 0 now (`ffe602f`). Every frame
 figure before that commit is ~1.7 ms high against the same trajectory (91.24 then = 89.53 now).
@@ -226,9 +226,16 @@ and replacing it must carry §12b's same-cell composition. ⇒ the geometry walk
 goes first (user decision).
 ⛔ **The blitter was measured as the consumer (2026-09-25) and CLOSED at +5.25 ms** — the blits are
 nearly free, making the toggles is not, and the skipping painter left it nothing to take (§CLOSED).
-⇒ STEP 2 continues on the PRODUCERS (user decision): `draw_road`'s ~13k instructions a frame (the
-span pass asm still stores every 6502 scratch cell the C does; `fill_line_attr` and
-`mark_line_surfaces` are still C), then `build_track_geometry`'s remainder and
+⇒ STEP 2 continues on the PRODUCERS (user decision). `draw_road` (ph11 **13.99**, against the BBC's
+16.5) single-steps at ~11.5k instructions a call before the two cuts below: the span-pass asm 65%,
+the walk 16%, `fill_line_attr` 12%, `mark_line_surfaces` 3.5%. ✅ `fill_line_attr`'s walk over
+locals with pointer-run fills, **−1.20**. ✅ The span pass no longer stores twelve 6502 working cells
+nothing outside it reads (reader audit on five circuits, SETUPCHECK masks exactly those), **−1.00**.
+Left in the pass: the cross-span cells it does read back (`Z_CLIP`, `Z_X77`/`Z_X7E`, `Z_CURSOR`,
+`Z_LINEEND`, `Z_SWAPPED`, `Z_NEARIDX`/`Z_FARIDX`, `Z_ARM`, `Z_CAPPEND`, `Z_STYLEIDX` — ~10 stores
+and ~10 reloads a span); holding them in registers across spans needs the cap's C to take them as
+arguments. `fill_line_attr`'s per-fill unroll prologue (~15 instructions for runs of ~4 lines) is a
+small `#pragma GCC unroll 1` candidate. Then `build_track_geometry`'s remainder and
 `fill_dash_edge_columns`.
 
 ⇒ **The last 8 ms (48 → 40) is where the `50/N` ladder steps to 25 fps; not planned until 48.**
@@ -856,8 +863,8 @@ those reads `(main loop)`.
   `edge_runs_asm_raw`): its V leaves through a shim the native loop calls, into
   `engine_sound_update`'s entry, so it needs a whole-loop audit. `hook_merge_horizon_edges` sits at
   a hook seam itself.
-- **zp 123:** `fill_line_attr_core`'s `shared_temp_76` / `$82` / `span_line_cursor` stores are the
-  transliteration's handoff cells: a RESULTS question (the reader audit), not a code-shape one.
+- **zp:** `fill_line_attr_core`'s per-point `shared_temp_76` / `$82` / `span_line_cursor` stores are
+  gone — the walk holds them in locals and stores each once (`fa7d3a7`, byte-identical).
 - **PRICED (2026-09-26): −1.54 ms bracketed field-matched (84.80 → 83.26, `55926fe` vs `8d8a45b`),
   −1.15 frame-matched** (the protocol's field cap lets the faster arm reach a cheaper stretch of
   lap — docs/perf-method.md §bound the window). By row, frame-matched: `draw_road` (ph11) −0.81,
