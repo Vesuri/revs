@@ -4614,9 +4614,14 @@ uint8_t race_main_loop_core(RestartDepth depth)
             /* ⭐ Its exit X and Y are the entry X and Y of the very next call ($1710), whose
                $462B hook seam inherits them — passed by value, not through `cpu`. */
             GeoExit geo;
+            /* platform_mem_snapshot_at: the lockstep's sample points, at the 6502's JSR addresses */
+            platform_mem_snapshot_at(0x170D);
             PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  geo = build_track_geometry_native();
+            platform_mem_snapshot_at(0x1710);
             PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  EngineRegs place = place_player_in_section_native(geo.x, geo.y);
+            platform_mem_snapshot_at(0x1713);
             PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section_core(place.x, place.y);
+            platform_mem_snapshot_at(0x1716);
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
             PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
             PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers_core();
@@ -4660,7 +4665,9 @@ uint8_t race_main_loop_core(RestartDepth depth)
                real BBC, not `determinism`: pass A's source bytes really do change. */
             view_edge_start_only(mem);
 #else
+            platform_mem_snapshot_at(0x1E15);
             fill_dash_edge_columns();
+            platform_mem_snapshot_at(0x7B00);
 #ifdef REVS_EDGE_START_CHECK
             view_edge_start_check();
 #endif

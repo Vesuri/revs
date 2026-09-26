@@ -1088,7 +1088,28 @@ tm.processor.debugWrite.add((addr, b) => {
 // the same code must be asked (else the CONTROL FLOW diverged, reported and stopped), and that
 // key's matrix state is set to the recorded answer before the MOS reads it.  starter_random_mask
 // ($0009) is forced to 0 on both machines — the starter's VIA-timer lottery cannot be shared.
+// ⭐ --lockstep-dump=N:<file> writes the whole 64 KB at frame N's snapshot (the host's twin is
+// REVS_LOCKSTEP_DUMP=N:<file>), for a divergence the snapshot regions cannot see.
 const lockIn = opt("lockstep", null), lockOut = opt("lockstep-out", null);
+const lockDumpArg = opt("lockstep-dump", null);
+// ⭐ --lockstep-at=PC:N:<file> — the whole 64 KB the first time the CPU reaches PC in lockstep frame
+// N (the host's twin is REVS_LOCKSTEP_AT, at its platform_mem_snapshot_at sites): mid-frame state,
+// e.g. $1A20 = draw_road's entry, where the frame-boundary snapshot has already been consumed.
+// Several at once: comma-separated.
+const lockAtArg = opt("lockstep-at", null);
+for (const spec of lockAtArg ? lockAtArg.split(",") : []) {
+    const [pcS, frS, ...fileP] = spec.split(":");
+    const atPc = parseInt(pcS, 16), atFrame = parseInt(frS, 10), atFile = fileP.join(":");
+    let done = false;
+    tm.processor.debugInstruction.add((addr) => {
+        if (done || addr !== atPc || lockFrame !== atFrame || !lockArmed) return false;
+        const m = Buffer.alloc(0x10000);
+        for (let i = 0; i < 0x10000; i++) m[i] = tm.processor.peekmem(i);
+        fs.writeFileSync(atFile, m);
+        done = true;
+        return false;
+    });
+}
 let lockRecs = null, lockRegions = null, lockIdx = 0, lockArmed = false, lockDone = false,
     lockFrame = 0, lockWhy = null;
 const lockOutBufs = [];
@@ -1128,6 +1149,11 @@ if (lockIn) {
             let o = 5;
             for (const [a, l] of lockRegions) for (let i = 0; i < l; i++) rec[o++] = tm.processor.peekmem(a + i);
             lockOutBufs.push(rec);
+            if (lockDumpArg && lockFrame === parseInt(lockDumpArg, 10)) {
+                const m = Buffer.alloc(0x10000);
+                for (let i = 0; i < 0x10000; i++) m[i] = tm.processor.peekmem(i);
+                fs.writeFileSync(lockDumpArg.slice(lockDumpArg.indexOf(":") + 1), m);
+            }
             lockFrame++;
         }
         const r = lockRecs[lockIdx];

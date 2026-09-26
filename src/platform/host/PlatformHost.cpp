@@ -37,8 +37,47 @@ static int         snapAtInit   = 0;
 static int         snapAtDone   = 0;
 static unsigned long* snapAtFrames = 0;   /* the host's own frame counter, once constructed */
 
+extern "C" {
+void model_state_marshal_out(void);   void car_angle_marshal_out(void);
+void car_distance_marshal_out(void);  void car_heading_marshal_out(void);
+void edge_nearest_marshal_out(void);  void hypot_min_marshal_out(void);
+void hypot_max_marshal_out(void);     void bearing_marshal_out(void);
+void view_origin_marshal_out(void);   void lateral_speed_entry_marshal_out(void);
+void plot_ptrs_marshal_out(void);
+}
+/* mem[] as the 6502 would hold it: every value the port keeps outside mem[] marshalled back in,
+   on a scratch copy — the run itself is not perturbed.  The lockstep's snapshots and dumps. */
+static void ls_true_mem(uint8_t* out)
+{
+    static uint8_t saved[65536];
+    std::memcpy(saved, (const void*)mem, sizeof saved);
+    model_state_marshal_out(); car_angle_marshal_out(); car_distance_marshal_out();
+    car_heading_marshal_out(); edge_nearest_marshal_out(); hypot_min_marshal_out();
+    hypot_max_marshal_out(); bearing_marshal_out(); view_origin_marshal_out();
+    lateral_speed_entry_marshal_out(); plot_ptrs_marshal_out();
+    std::memcpy(out, (const void*)mem, 65536);
+    std::memcpy((void*)mem, saved, sizeof saved);
+}
+static uint32_t s_lsFrame;            /* THE LOCKSTEP RECORDER's frame (below) */
 extern "C" void revs_host_mem_snapshot_at(uint16_t pc)
 {
+    /* REVS_LOCKSTEP_AT=PC:N:<file> — the same, keyed on the LOCKSTEP frame, so it pairs with
+       bbc_refloop_race.mjs --lockstep-at=PC:N:<file> on the replay (a host frame count does not) */
+    static const char* lsAt = std::getenv("REVS_LOCKSTEP_AT");
+    static int lsAtDone = 0;
+    if (lsAt && !lsAtDone) {
+        char* e;
+        const unsigned long atPc = std::strtoul(lsAt, &e, 16);
+        const unsigned long atFrame = *e == ':' ? std::strtoul(e + 1, &e, 10) : 0;
+        if (pc == atPc && s_lsFrame == atFrame && *e == ':')
+            if (std::FILE* f = std::fopen(e + 1, "wb")) {
+                static uint8_t m[65536];
+                ls_true_mem(m);
+                std::fwrite(m, 1, sizeof m, f);
+                std::fclose(f);
+                lsAtDone = 1;
+            }
+    }
     if (!snapAtInit) {
         snapAtInit = 1;
         const char* w = std::getenv("REVS_MEM_DUMP_AT");
@@ -685,8 +724,7 @@ uint32_t PlatformHost::hwMicros()
    the same point, and can tell when it is asked a DIFFERENT question (a control-flow divergence).
    At each SHIFT poll (-1, once a frame in race_main_loop's tail) it also records a SNAPSHOT of the
    car-state regions below.  The port keeps several values outside mem[] (the model state, the car
-   angles, the distances, ...), so the snapshot saves mem[], runs every marshal-out, copies the
-   regions and restores mem[] — true values, and the run itself is not perturbed.
+   angles, the distances, ...), so the snapshot is taken from ls_true_mem (above).
    ⚠ The starter catches on a VIA-timer lottery that the two machines cannot share, so both sides
    force starter_random_mask ($0009) to 0 — the engine catches on the first 'T'.
    ⚠⚠ And the engine's only entropy source, the User VIA T2 counter ($FE68: the starter delay,
@@ -697,14 +735,6 @@ uint32_t PlatformHost::hwMicros()
      'P' code answer            one key poll
      'R' value                  one $FE68 read
      'S' u32 frame  bytes...    a snapshot at the frame's SHIFT poll */
-extern "C" {
-void model_state_marshal_out(void);   void car_angle_marshal_out(void);
-void car_distance_marshal_out(void);  void car_heading_marshal_out(void);
-void edge_nearest_marshal_out(void);  void hypot_min_marshal_out(void);
-void hypot_max_marshal_out(void);     void bearing_marshal_out(void);
-void view_origin_marshal_out(void);   void lateral_speed_entry_marshal_out(void);
-void plot_ptrs_marshal_out(void);
-}
 static const uint16_t kLsRegions[][2] = {
     {0x0000, 0x0100}, {0x0100, 0x00A0}, {0x0500, 0x0300}, {0x0800, 0x0100},
     {0x5E40, 0x0130}, {0x5F30, 0x0010}, {0x6280, 0x0080},
@@ -717,7 +747,6 @@ static const uint16_t kLsRegions[][2] = {
 extern "C" void (*g_viaT2Note)(uint8_t);
 static FILE*    s_ls;
 static int      s_lsOn = -1, s_lsStarted;
-static uint32_t s_lsFrame;
 static void lsPoll(uint8_t x, bool held)
 {
     if (s_lsOn < 0) {
@@ -752,16 +781,19 @@ static void lsPoll(uint8_t x, bool held)
     }
     mem[0x0009] = 0;                                /* starter_random_mask: catch on the first T */
     if (x == 0xFF) {
-        static uint8_t saved[65536];
-        std::memcpy(saved, (const void*)mem, sizeof saved);
-        model_state_marshal_out(); car_angle_marshal_out(); car_distance_marshal_out();
-        car_heading_marshal_out(); edge_nearest_marshal_out(); hypot_min_marshal_out();
-        hypot_max_marshal_out(); bearing_marshal_out(); view_origin_marshal_out();
-        lateral_speed_entry_marshal_out(); plot_ptrs_marshal_out();
+        static uint8_t m[65536];
+        ls_true_mem(m);
         std::fputc('S', s_ls);
         std::fwrite(&s_lsFrame, 4, 1, s_ls);
-        for (const auto& r : kLsRegions) std::fwrite((const void*)(mem + r[0]), 1, r[1], s_ls);
-        std::memcpy((void*)mem, saved, sizeof saved);
+        for (const auto& r : kLsRegions) std::fwrite(m + r[0], 1, r[1], s_ls);
+        /* REVS_LOCKSTEP_DUMP=N:<file> — the whole 64 KB at frame N's snapshot (bbc_refloop_race.mjs
+           --lockstep-dump is the other half), for state the regions above do not cover */
+        static const char* dump = std::getenv("REVS_LOCKSTEP_DUMP");
+        if (dump && std::strchr(dump, ':') && (long)s_lsFrame == std::atol(dump))
+            if (FILE* f = std::fopen(std::strchr(dump, ':') + 1, "wb")) {
+                std::fwrite(m, 1, sizeof m, f);
+                std::fclose(f);
+            }
         s_lsFrame++;
     }
     std::fputc('P', s_ls);
