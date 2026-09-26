@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <execinfo.h>
 
 extern "C" {
 #include "../../gen/revs_decl.h"     /* the transpiled 6502 routines, incl. engine_main */
@@ -675,11 +676,105 @@ uint32_t PlatformHost::hwMicros()
     return (uint32_t)duration_cast<microseconds>(steady_clock::now() - t0).count();
 }
 
+
+/* ⭐⭐ THE LOCKSTEP RECORDER (`REVS_LOCKSTEP=<file>`) — layer 2 of `make lap`: a log a real BBC
+   replays under jsbeeb (tools/bbc_refloop_race.mjs --lockstep=<file>), then tools/lockstep_diff.py
+   names the first frame where the two machines' car state differs.  From the first steering-key
+   poll (-87, which only the race body makes) it records EVERY key poll — the code the engine asked
+   about and the answer the script gave — so the BBC can answer the same question the same way at
+   the same point, and can tell when it is asked a DIFFERENT question (a control-flow divergence).
+   At each SHIFT poll (-1, once a frame in race_main_loop's tail) it also records a SNAPSHOT of the
+   car-state regions below.  The port keeps several values outside mem[] (the model state, the car
+   angles, the distances, ...), so the snapshot saves mem[], runs every marshal-out, copies the
+   regions and restores mem[] — true values, and the run itself is not perturbed.
+   ⚠ The starter catches on a VIA-timer lottery that the two machines cannot share, so both sides
+   force starter_random_mask ($0009) to 0 — the engine catches on the first 'T'.
+   ⚠⚠ And the engine's only entropy source, the User VIA T2 counter ($FE68: the starter delay,
+   the idle-rev jitter, the gravel trigger, ...), reads a cycle-timed clock that no two machines
+   share — so every value the host returns is logged too ('R'), and the BBC returns the same
+   sequence.  The ORDER of reads is then a control-flow check of its own.
+   Format: "RLS1", u16 region count, (u16 start, u16 length)*; then records
+     'P' code answer            one key poll
+     'R' value                  one $FE68 read
+     'S' u32 frame  bytes...    a snapshot at the frame's SHIFT poll */
+extern "C" {
+void model_state_marshal_out(void);   void car_angle_marshal_out(void);
+void car_distance_marshal_out(void);  void car_heading_marshal_out(void);
+void edge_nearest_marshal_out(void);  void hypot_min_marshal_out(void);
+void hypot_max_marshal_out(void);     void bearing_marshal_out(void);
+void view_origin_marshal_out(void);   void lateral_speed_entry_marshal_out(void);
+void plot_ptrs_marshal_out(void);
+}
+static const uint16_t kLsRegions[][2] = {
+    {0x0000, 0x0100}, {0x0100, 0x00A0}, {0x0500, 0x0300}, {0x0800, 0x0100},
+    {0x5E40, 0x0130}, {0x5F30, 0x0010}, {0x6280, 0x0080},
+    {0x5FD0, 0x0103},   /* surface_style_tbl — the per-circuit style records the span plotters'
+                           colour patterns are copied from */
+    {0x6700, 0x1400},   /* the race view's frame buffer below the sky — the character row with
+                           the two SURFACE bytes the grip model reads ($713D, $7205: display line
+                           149, cells 7 and 32) is inside it */
+};
+extern "C" void (*g_viaT2Note)(uint8_t);
+static FILE*    s_ls;
+static int      s_lsOn = -1, s_lsStarted;
+static uint32_t s_lsFrame;
+static void lsPoll(uint8_t x, bool held)
+{
+    if (s_lsOn < 0) {
+        const char* e = std::getenv("REVS_LOCKSTEP");
+        s_lsOn = e && e[0];
+        if (s_lsOn && !(s_ls = std::fopen(e, "wb"))) s_lsOn = 0;
+        if (s_lsOn) {
+            const uint16_t n = sizeof kLsRegions / sizeof kLsRegions[0];
+            std::fwrite("RLS1", 1, 4, s_ls);
+            std::fwrite(&n, 2, 1, s_ls);
+            std::fwrite(kLsRegions, 4, n, s_ls);
+        }
+    }
+    if (!s_lsOn) return;
+    if (!s_lsStarted) {
+        if (x != 0xA9) return;
+        s_lsStarted = 1;
+        g_viaT2Note = [](uint8_t v) {
+            std::fputc('R', s_ls); std::fputc(v, s_ls);
+            /* REVS_LOCKSTEP_WHO=<frame>: name the native caller of every $FE68 read in that frame */
+            static long who = -2;
+            if (who == -2) { const char* e = std::getenv("REVS_LOCKSTEP_WHO"); who = e ? std::atol(e) : -1; }
+            if (who >= 0 && (long)s_lsFrame == who) {
+                void* bt[8]; const int n = backtrace(bt, 8);
+                char** sym = backtrace_symbols(bt, n);
+                std::fprintf(stderr, "[lockstep] frame %ld $FE68 read:", who);
+                for (int i = 1; i < n && i < 7; i++) std::fprintf(stderr, " <- %s", std::strrchr(sym[i], ' ') ? sym[i] + 59 : sym[i]);
+                std::fprintf(stderr, "\n");
+                std::free(sym);
+            }
+        };
+    }
+    mem[0x0009] = 0;                                /* starter_random_mask: catch on the first T */
+    if (x == 0xFF) {
+        static uint8_t saved[65536];
+        std::memcpy(saved, (const void*)mem, sizeof saved);
+        model_state_marshal_out(); car_angle_marshal_out(); car_distance_marshal_out();
+        car_heading_marshal_out(); edge_nearest_marshal_out(); hypot_min_marshal_out();
+        hypot_max_marshal_out(); bearing_marshal_out(); view_origin_marshal_out();
+        lateral_speed_entry_marshal_out(); plot_ptrs_marshal_out();
+        std::fputc('S', s_ls);
+        std::fwrite(&s_lsFrame, 4, 1, s_ls);
+        for (const auto& r : kLsRegions) std::fwrite((const void*)(mem + r[0]), 1, r[1], s_ls);
+        std::memcpy((void*)mem, saved, sizeof saved);
+        s_lsFrame++;
+    }
+    std::fputc('P', s_ls);
+    std::fputc(x, s_ls);
+    std::fputc(held ? 1 : 0, s_ls);
+}
+
 bool PlatformHost::keyDown(uint8_t x)
 {
     /* The host has no keyboard at all, so a script that has handed control back leaves
        every key up — which is the honest answer here, not a bug. */
     bool held = autoRun.done() ? false : autoRun.keyDown(x);
+    lsPoll(x, held);
     if (traceKeys)
         std::printf("inkey %5lu step %2u  X=$%02X (-%u) -> %s\n",
                     autoRun.polls(), autoRun.stepIndex(), x, 256u - x, held ? "HELD" : ".");

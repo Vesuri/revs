@@ -5244,8 +5244,10 @@ static uint8_t float_width_6502(uint16_t dist, uint8_t* exponent)
    table byte an expansion circuit could rewrite, so anything past 15 also takes the old path. */
 static unsigned edge_width_offset_for(uint16_t dist, uint8_t k)
 {
+#ifndef REVS_EXACT_RATIO
     if (k <= 15u && dist > (64u >> k))
         return revs_divu16(0x400000u >> k, dist);
+#endif
     if (dist == 0u)
         return 0u;                                    /* unreachable — see float_width_6502 */
     {
@@ -5261,6 +5263,18 @@ static unsigned edge_width_offset_for(uint16_t dist, uint8_t k)
    bit for bit, including its loops' both-ways walk to 0 past eight places. */
 static uint8_t object_width_for(uint16_t dist)
 {
+#ifdef REVS_EXACT_RATIO
+    /* `make EXACTRATIO=1` — the 6502's float at every distance: its two loops shift the mantissa
+       by exponent - 10 places, LEFT or RIGHT, and eight or more either way walks it to 0. */
+    if (dist == 0u) return 0u;
+    {
+        uint8_t  exponent;
+        unsigned width  = float_width_6502(dist, &exponent);
+        int      places = (int)exponent - 10;
+        if (places >= 8 || places <= -8) return 0u;
+        return places >= 0 ? (uint8_t)(width << places) : (uint8_t)(width >> -places);
+    }
+#endif
     if (dist > 32u)
         return (uint8_t)revs_divu16(0x2000u, dist);
     if (dist == 0u)
@@ -8075,7 +8089,23 @@ static void bearing_diagonal(void)
 static void bearing_arm(unsigned largerComponent, uint16_t larger, uint16_t smaller,
                         uint8_t quadrantBase, int negateWhenSignsAgree)
 {
+#ifdef REVS_EXACT_RATIO
+    /* `make EXACTRATIO=1` — THE 6502'S RATIO, for the real-BBC lockstep (the physics reads the
+       road surface off the picture, so the accepted ±1 LSB here would steer the two machines
+       apart within a few frames).  $21BD-$21DF: normalise the larger until its top bit falls out,
+       shift the smaller one place fewer, divide by the larger's high byte (with the 1 rotated
+       back in); a dividend that catches the divisor is the second 45-degree door. */
+    uint8_t quotient;
+    {
+        unsigned z       = (larger & 0xFF00u) ? s_clz8[larger >> 8] : 8u + s_clz8[larger & 0xFFu];
+        uint8_t  divisor = (uint8_t)(((uint16_t)(larger << (z + 1u)) >> 9) | 0x80u);
+        uint16_t sm      = (uint16_t)(smaller << z);
+        if ((uint8_t)(sm >> 8) == divisor) { bearing_diagonal(); return; }
+        quotient = (uint8_t)revs_divu16(sm, divisor);
+    }
+#else
     uint8_t quotient  = (uint8_t)revs_divu16((uint32_t)smaller << 8, larger);
+#endif
     uint8_t rawArctan = mem[MEM_arctan_table + quotient];
     shared_temp_7e    = rawArctan;                  /* how oblique — the hypot's segment split */
 
@@ -8176,7 +8206,22 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        object_width_for).  proj_width / proj_width_shift keep their other tenancy, the object
        plotter's scale (draw_track_object → scale_shape_vectors), which never came from here.
        Validated to a tolerance, not to equality: tools/validate_native.c §projection tolerance. */
+#ifdef REVS_EXACT_RATIO
+    /* `make EXACTRATIO=1` — the 6502's divide and its float of 1/distance (see bearing_arm):
+       point_dist_lo is shifted in place, and the mantissa/exponent go to proj_width(_shift). */
+    unsigned q;
+    {
+        unsigned z       = (dist & 0xFF00u) ? s_clz8[dist >> 8] : 8u + s_clz8[dist & 0xFFu];
+        uint16_t dn      = (uint16_t)(dist << (z + 1u));
+        uint8_t  divisor = (uint8_t)((dn >> 9) | 0x80u);
+        point_dist_lo    = (uint8_t)dn;
+        proj_width_shift = (uint8_t)z;
+        proj_width       = mem[MEM_reciprocal_table - 0x80u + divisor];
+        q = revs_divu16((uint16_t)(height << z), divisor);
+    }
+#else
     unsigned q = revs_divu16((uint32_t)height << 8, dist);
+#endif
 
     /* $22E3-$22E7 — a quotient past $80 is off the top of the 0..79 scan-line space, and leaves
        by the same drop door as the far clip. */

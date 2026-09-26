@@ -295,7 +295,11 @@ const soundOut = opt("sound", null);
 const soundChip = soundOut ? new CaptureSoundChip() : undefined;
 const soundCmds = [];
 
-const data = fs.readFileSync(new URL("../revs.ssd", import.meta.url));
+// --disc=<file> (relative to the repo root): boot another disc, e.g. revs-hack-nurburgring.ssd,
+// whose menu is 1 Brands, 2 Donington, 3 NURBURGRING, 4 Oulton, 5 Silverstone, 6 Snetterton.
+const discArg = opt("disc", null);
+const data = fs.readFileSync(discArg ? new URL("../" + discArg, import.meta.url)
+                                     : new URL("../revs.ssd", import.meta.url));
 const tm = new TestMachine("B-DFS1.2", soundChip ? { video, soundChip } : { video });
 machineReady = true;
 await tm.initialise();
@@ -1074,6 +1078,97 @@ tm.processor.debugWrite.add((addr, b) => {
         curBand.writes.push({ line, reg: addr === ULA_CTRL ? "MODE" : "PAL", val: b });
 });
 
+
+// ⭐⭐ --lockstep=<host.rls> [--lockstep-out=<bbc.rls>] — LAYER 2 OF `make lap`: replay a host
+// autopilot run on this real BBC, poll for poll, and log the same car-state snapshots, so
+// tools/lockstep_diff.py can name the first frame the two machines disagree.  The host log
+// (src/platform/host/PlatformHost.cpp §THE LOCKSTEP RECORDER) holds every key poll from the first
+// steering-key poll (-87) on — the code asked and the answer given — and a snapshot at each SHIFT
+// poll (-1, once a frame).  Here every kbd_test_key ($0E50) entry takes the next recorded poll:
+// the same code must be asked (else the CONTROL FLOW diverged, reported and stopped), and that
+// key's matrix state is set to the recorded answer before the MOS reads it.  starter_random_mask
+// ($0009) is forced to 0 on both machines — the starter's VIA-timer lottery cannot be shared.
+const lockIn = opt("lockstep", null), lockOut = opt("lockstep-out", null);
+let lockRecs = null, lockRegions = null, lockIdx = 0, lockArmed = false, lockDone = false,
+    lockFrame = 0, lockWhy = null;
+const lockOutBufs = [];
+if (lockIn) {
+    const b = fs.readFileSync(lockIn);
+    if (b.toString("latin1", 0, 4) !== "RLS1") throw new Error(`${lockIn}: not an RLS1 log`);
+    const n = b.readUInt16LE(4);
+    lockRegions = [];
+    for (let i = 0; i < n; i++) lockRegions.push([b.readUInt16LE(6 + 4 * i), b.readUInt16LE(8 + 4 * i)]);
+    const snapLen = lockRegions.reduce((t, r) => t + r[1], 0);
+    lockRecs = [];
+    for (let o = 6 + 4 * n; o < b.length;) {
+        const t = String.fromCharCode(b[o]);
+        if (t === "P") { lockRecs.push({ t, x: b[o + 1], held: b[o + 2] }); o += 3; }
+        else if (t === "R") { lockRecs.push({ t, v: b[o + 1] }); o += 2; }
+        else if (t === "S") { lockRecs.push({ t, frame: b.readUInt32LE(o + 1) }); o += 5 + snapLen; }
+        else throw new Error(`${lockIn}: bad record tag at ${o}`);
+    }
+    const hdr = Buffer.alloc(6 + 4 * n);
+    b.copy(hdr, 0, 0, 6 + 4 * n);
+    lockOutBufs.push(hdr);
+    console.log(`   --lockstep: ${lockRecs.length} records from ${lockIn}, ` +
+        `${lockRecs.filter((r) => r.t === "S").length} frames, ${snapLen}-byte snapshots`);
+    const lockStop = (why) => { lockDone = true; lockWhy = why; };
+    tm.processor.debugInstruction.add((addr) => {
+        if (addr !== 0x0e50 || lockDone) return false;
+        const x = tm.processor.x;
+        if (!lockArmed) { if (x !== 0xa9) return false; lockArmed = true; }
+        tm.processor.writemem(0x0009, 0);
+        if (x === 0xff) {
+            const r = lockRecs[lockIdx];
+            if (!r) { lockStop("the host log ran out"); return false; }
+            if (r.t !== "S") { lockStop(`frame ${lockFrame}: the BBC reached its frame boundary where the host ` + (r.t === "P" ? `polled $${r.x.toString(16)}` : "read $FE68")); return false; }
+            lockIdx++;
+            const rec = Buffer.alloc(5 + snapLen);
+            rec[0] = 0x53; rec.writeUInt32LE(lockFrame, 1);
+            let o = 5;
+            for (const [a, l] of lockRegions) for (let i = 0; i < l; i++) rec[o++] = tm.processor.peekmem(a + i);
+            lockOutBufs.push(rec);
+            lockFrame++;
+        }
+        const r = lockRecs[lockIdx];
+        if (!r) { lockStop("the host log ran out"); return false; }
+        if (r.t !== "P" || r.x !== x) {
+            lockStop(`frame ${lockFrame}: CONTROL FLOW DIVERGED — the BBC polled $${x.toString(16)} ` +
+                `where the host ${r.t === "P" ? "polled $" + r.x.toString(16) : r.t === "R" ? "read $FE68" : "took a snapshot"}`);
+            return false;
+        }
+        lockIdx++;
+        const cr = inkeyToColRow(x);
+        if (r.held) tm.processor.sysvia.keyDownRaw(cr); else tm.processor.sysvia.keyUpRaw(cr);
+        lockOutBufs.push(Buffer.from([0x50, x, r.held]));
+        return false;
+    });
+    // ⭐ $FE68 (User VIA T2 low): every read after arming returns the host's value.  The real
+    // read still happens first, so the VIA's own side effect (clearing the T2 flag) is kept.
+    const via = tm.processor.uservia, viaRead = via.read.bind(via);
+    via.read = (addr) => {
+        const real = viaRead(addr);
+        if ((addr & 0x0f) !== 0x08 || !lockArmed || lockDone) return real;
+        const r = lockRecs[lockIdx];
+        if (!r || r.t !== "R") {
+            lockStop(`frame ${lockFrame}: CONTROL FLOW DIVERGED — the BBC read $FE68 where the host ` +
+                (r ? (r.t === "P" ? `polled $${r.x.toString(16)}` : "took a snapshot") : "log ended"));
+            return real;
+        }
+        lockIdx++;
+        lockOutBufs.push(Buffer.from([0x52, r.v]));
+        return r.v;
+    };
+    const flush = () => {
+        if (lockOut) fs.writeFileSync(lockOut, Buffer.concat(lockOutBufs));
+    };
+    process.on("exit", () => {
+        flush();
+        console.log(`   --lockstep: ${lockFrame} frames replayed, ${lockIdx}/${lockRecs.length} records; ` +
+            `stopped: ${lockWhy || "not stopped"}${lockOut ? "; wrote " + lockOut : ""}`);
+    });
+}
+
 // ── input ─────────────────────────────────────────────────────────────────────────────────
 async function hold(colrow, cycles) {
     tm.processor.sysvia.keyDownRaw(colrow);
@@ -1181,7 +1276,7 @@ for (let i = 0; i < 40 && !atMenu; i++) {
 if (!atMenu) throw new Error("never reached the REVSMEN track menu");
 // REVSMEN is BASIC in MODE 7, so it reads the keyboard through the MOS, not through
 // key_binding_tbl — a plain keypress is right here.
-const TRACKKEY = [utils.BBC.K1, utils.BBC.K2, utils.BBC.K3, utils.BBC.K4, utils.BBC.K5][track - 1];
+const TRACKKEY = [utils.BBC.K1, utils.BBC.K2, utils.BBC.K3, utils.BBC.K4, utils.BBC.K5, utils.BBC.K6][track - 1];
 await hold(TRACKKEY, 40000);
 await tm.runFor(4 * CPS);
 console.log(`REVS2 loaded (track ${track}); driving the front end by transcript\n`);
@@ -1326,7 +1421,7 @@ const DASH = [
 const dashRow = (tag) =>
     console.log(`   [${tag}] ` + DASH.map(([a, n]) => `${n}=$${rd(a).toString(16).padStart(2, "0")}`).join("  "));
 
-if (drive) {
+if (drive && !lockIn) {
     // ⭐ BEFORE THE STARTER — this is the state the report is about: engine OFF, neutral, no
     // throttle.  A rev counter reading maximum here would be wrong on any machine.
     dashRow("engine off, in the pits");
@@ -1380,7 +1475,9 @@ if (drive) {
 
 const f0 = frames;
 let waited = 0;
-while (frames - f0 < wantFrames && waited < 60 * CPS) {
+while (lockIn ? (!lockDone && waited < 4000 * CPS) : (frames - f0 < wantFrames && waited < 60 * CPS)) {
+    if (lockIn && waited % (20 * CPS) === 0 && waited)
+        console.log(`   --lockstep: t=${waited / CPS}s ${lockFrame} frames, ${lockIdx}/${lockRecs.length} records`);
     await tm.runFor(CPS);
     waited += CPS;
     const t = waited / CPS;

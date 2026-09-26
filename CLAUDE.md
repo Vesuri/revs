@@ -119,6 +119,9 @@ make determinism-steer     #   ...and the same 300 frames with the WHEEL TURNED 
 make lap                   # ⭐⭐ WHOLE LAPS of all six circuits, driven by the AUTOPILOT (autorun.cpp):
                            #   fails on any crash (the car is reset to the grid), stall or airborne
                            #   frame — the only gate that ever takes a corner or crests a hill
+make lockstep CIRCUIT=n    # ⭐⭐ ...and that run replayed on a REAL BBC (jsbeeb), poll for poll: the first frame
+                           #   the PHYSICS differs, then the VIEW.  Host EXACTRATIO=1 (the physics reads
+                           #   the picture, so ±1 LSB is not acceptable there).  5 = the Nurburgring disc
 make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
                            #   the only gate that sees the light column; -race cannot
 python3 tools/sim_equiv.py [--steer[=l|r]] [--modes=legacy,h400,h200]   # ⭐ DECOUPLED physics vs

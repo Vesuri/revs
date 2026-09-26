@@ -1306,3 +1306,58 @@ Nurburgring (a jump to height 11, then a crash) while flat Silverstone passes �
 symptom class, which no other gate can see. Lowering the touchdown-rebound threshold fails all six.
 ⚠ Scope: first gear, ≤30 speed. A defect that only shows at racing speed needs the autopilot to
 change gear (`docs/open-work.md`).
+
+## ⭐⭐⭐ THE LOCKSTEP — the autopilot's run replayed on a REAL BBC, frame for frame (`make lockstep`, 2026-09-27)
+
+Layer 2 of `make lap`. Invariants (no crash, no jump) say a lap LOOKED right; they cannot say the
+port computed what a BBC computes, so a defect with plausible symptoms — or a faithful quirk that
+looks like one — goes undecided. The lockstep decides it.
+
+**The mechanism.** The host (`src/platform/host/PlatformHost.cpp` §THE LOCKSTEP RECORDER,
+`REVS_LOCKSTEP=<file>`) logs, from the first steering-key poll (-87, which only the race body makes):
+every key poll — the code the engine asked and the answer given; every value read from `$FE68`; and
+at each SHIFT poll (-1, once a frame in `race_main_loop`'s tail) a snapshot of the car-state regions
+and the view's frame buffer. jsbeeb (`bbc_refloop_race.mjs --lockstep=<file> --lockstep-out=<file>`)
+hooks `kbd_test_key` ($0E50): each call must ask the SAME code the host was asked — otherwise the
+CONTROL FLOW diverged, and the replay stops and says where — and that key's matrix state is set to
+the recorded answer before the MOS reads it; the User VIA's T2 read returns the host's value (the
+real read still happens, keeping its flag side effect). So up to the first difference both machines
+saw identical input, and `tools/lockstep_diff.py` names the first frame their state differs.
+Replaying recorded answers needs no second copy of the controller. ~30 BBC frames a second.
+
+**What it took to make two machines agree, each one a measured divergence first:**
+1. ⚠ **The starter's catch is a VIA-timer lottery**, so both sides force `starter_random_mask`
+   ($0009) to 0 — the engine catches on the first `T`.
+2. ⚠⚠ **`$FE68` is the engine's only entropy source** (six sites: the starter, the idle-rev jitter,
+   the gravel trigger, ...) and reads a cycle-timed clock no two machines share: without replaying it
+   `engine_revs` differed by one from frame 0.
+3. ⚠⚠ **The wings.** The host's script takes the validator's default (0); the refloop typed 20 by
+   default, and wing angle feeds grip — the physics parted at frame 6 through `grip_limit`. Both 0 now.
+4. ⚠⚠⚠ **The accepted ±1 LSB of the true 68000 ratio cannot be accepted here, because the PHYSICS
+   READS THE PICTURE**: the grip model's two surface bytes are frame-buffer cells, so a one-pixel
+   edge shift is a different grip and a different trajectory within a few frames. ⇒ `make
+   EXACTRATIO=1` (host only) computes the 6502's own ratio in `bearing_to_section`, `project_point`
+   and the two width routines — and `make validate EXACTRATIO=1` switches the tolerance OFF, so those
+   twins must match their oracles EXACTLY (they do; `bearing_to_section` differs only in the shifted
+   `point_delta` scratch lanes).
+5. The port keeps several values outside `mem[]`, so the host snapshot saves `mem[]`, runs every
+   marshal-out, copies, restores — true values without perturbing the run.
+
+**What is not compared, and why** (`tools/lockstep_diff.py`, each set named at the code): the 6502's
+scratch cells the port does not reproduce (the RESULTS rule), the MOS/BASIC workspace, the 50 Hz
+counters (`field_countdown`, `wheel_spin_accum` — how often the interrupt runs per frame differs
+between the machines), the span/object plotters' per-draw state, the other car slots' seeds in
+practice, and edge-array slots past the live end cursors (stale).
+
+**Results (practice, first gear, the autopilot's line):**
+- **Silverstone: the PHYSICS is identical to a real BBC for all 595 frames.** The picture differs by
+  ~34 bytes a frame — the road sign at a different scale (the object plotter's `proj_width` and
+  `shape_scale_tbl` differ from frame 0) — nowhere under the car.
+- **Nurburgring: identical for 138 frames; at 139 the port's picture has GRASS (`$FF`) under the car
+  where the real BBC has road (`$0F`)**, so `update_grip_limits` takes its grass arm and reads `$FE68`
+  where the BBC does not — the replay stops on exactly that. That arm is also the one that can
+  launch a jump (`begin_jump`, on the first grass contact with `section_jump_history` bit 7 set) — a
+  candidate mechanism for the user's jump-and-crash, unproven until the rendering difference that
+  puts the grass there is found and fixed. The picture differs from frame 0 (boundary bytes one
+  pixel apart, the colour-pattern sequence one span out by frame 22), and ⚠ **no gate had ever
+  compared the Nurburgring's picture with a real BBC** — `viewdiff` covers circuits 0-4, parked.

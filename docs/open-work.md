@@ -967,17 +967,24 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ▶ THE AUTOPILOT, STEP 2 — racing speed, then the real-BBC lockstep (user, 2026-09-26)
+### ▶ THE AUTOPILOT: racing speed, and what the real-BBC LOCKSTEP found (user, 2026-09-26/27)
 The user hit a physics jump-and-crash (with rendering artefacts) driving the Nurburgring by hand.
-`make lap` (layer 1, `docs/validation-harness.md` §WHOLE LAPS) laps all six circuits clean in FIRST
-GEAR at ≤30 speed and does not reproduce it. Next, in order:
-1. **Gears and speed** — up/down-shift on `engine_revs`, a speed target per bend, aimed at the
-   Nurburgring; first reproduce the jump on the host (`LAPARGS=--trace` names the frames before it).
-2. **Layer 2, the real-BBC lockstep** — the same controller driving jsbeeb through the refloop
-   machinery (it reads only game state, so identical states give identical keys), comparing the
-   car state frame by frame; the first divergent frame says "port bug" and where, and none says
-   "faithful". Open question: how often the 50 Hz body runs per game frame differs between the two
-   machines, so tick-driven cells may need excluding.
+`make lap` (`docs/validation-harness.md` §WHOLE LAPS) laps all six circuits clean in first gear;
+`make lockstep` (§THE LOCKSTEP) replays a run on a real BBC. Open, in order:
+1. **The Nurburgring's picture differs from a real BBC, and at frame 139 it puts grass under the car
+   where the BBC has road** — the grip model's grass arm, the one that can launch a jump. Find the
+   rendering difference (`make lockstep CIRCUIT=5` then `tools/lockstep_diff.py ... --view`: boundary
+   bytes a pixel apart from frame 0, the colour-pattern sequence a span out at frame 22), fix it,
+   and re-run until the replay reaches the end of the log. Suspect the circuit's hook-patched render
+   path first: no gate had ever compared this circuit's picture with a real BBC.
+2. **The road sign is drawn at a different scale on every circuit** (Silverstone: `proj_width` /
+   `shape_scale_tbl` differ from frame 0, ~34 picture bytes a frame). Nothing under the car, so the
+   physics is unaffected; `viewdiff` never saw it because it compares one parked frame.
+3. **Classify the cells the diff still sets aside** (`UNVERIFIED` in lockstep_diff.py: the corner
+   markers' offsets, `$62C4-$62C9`) — relocated state compared stale, or a real difference.
+4. **Racing speed** — the autopilot crashes above a 40 cap (braking distance grows with speed², the
+   far window is a fixed number of edge points); needed before the lockstep can cover a fast lap.
+5. Run the lockstep on circuits 1-4 and over whole laps.
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so

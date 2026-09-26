@@ -90,6 +90,8 @@ extern "C" {
    indistinguishable from the picture, which is exactly how the old model survived. */
 unsigned long g_viaT2Reads = 0;
 uint8_t       g_viaT2Last  = 0;
+/* The lockstep recorder's tap on every value the game reads from $FE68 (PlatformHost.cpp). */
+void (*g_viaT2Note)(uint8_t) = 0;
 }
 
 /* Start of a band cycle: the backend calls this immediately before dispatching the five
@@ -167,6 +169,7 @@ uint8_t Platform::hwRead(uint16_t addr)
         const uint8_t v = (uint8_t)(0u - hwMicros());   /* virtual: the backend's finest clock */
         g_viaT2Last = v;
         g_viaT2Reads++;
+        if (g_viaT2Note) g_viaT2Note(v);
         return v;
     }
 

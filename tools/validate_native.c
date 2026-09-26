@@ -211,7 +211,14 @@ static TolFn         g_tol = 0;
 static unsigned long g_tolDiffs = 0;      /* accepted cell differences since the last reset */
 static unsigned      g_tolMaxDelta = 0;   /* ...and the largest |delta| among them */
 /* Installing a hook resets the census; clearing one (f = 0) leaves it for the report. */
-static void set_tolerance(TolFn f) { g_tol = f; if (f) { g_tolDiffs = 0; g_tolMaxDelta = 0; } }
+/* `make validate EXACTRATIO=1`: the twins compute the 6502's own ratio, so the tolerance is
+   switched OFF and every compare must be exact — the lockstep build's own gate. */
+#ifdef REVS_EXACT_RATIO
+#define set_tolerance(f) set_tolerance_((TolFn)0)
+#else
+#define set_tolerance(f) set_tolerance_(f)
+#endif
+static void set_tolerance_(TolFn f) { g_tol = f; if (f) { g_tolDiffs = 0; g_tolMaxDelta = 0; } }
 
 /* One little-endian result value of `bytes` bytes at `addr`: accept |native - oracle| <= maxDelta
    (modulo 2^(8*bytes), read signed), else report.  Returns 1 on a rejected difference. */

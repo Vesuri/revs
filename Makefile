@@ -104,6 +104,14 @@ endif
 # reset_driving_variables' race arm included — is unexecuted in every other determinism
 # trajectories.  src/platform/autorun.cpp has the menu chain and why one qualifying run is
 # enough.  Same `make clean` caveat.
+# `make EXACTRATIO=1` — the 6502's truncated-divisor ratio in bearing_to_section, project_point and
+# the two width routines instead of the true 68000 ratio (user decision, accepted at ±1 LSB).  For
+# the real-BBC lockstep only: the physics reads the road surface off the picture, so the two
+# machines' geometry has to agree to the bit or their trajectories part within a few frames.
+ifdef EXACTRATIO
+CFLAGS   += -DREVS_EXACT_RATIO
+CXXFLAGS += -DREVS_EXACT_RATIO
+endif
 ifdef RACEPROPER
 CFLAGS   += -DREVS_RACE_PROPER
 CXXFLAGS += -DREVS_RACE_PROPER
@@ -368,7 +376,7 @@ TARGET   := build/revs
         sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
         determinism-drive determinism-drive-record \
         determinism-crash determinism-crash-record \
-        determinism-steer determinism-steer-record lap
+        determinism-steer determinism-steer-record lap lockstep
 
 all: $(TARGET)
 
@@ -462,6 +470,32 @@ lap:
 	 $(MAKE) --no-print-directory clean >/dev/null; \
 	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
 	 test "$$r" = PASS
+
+# ⭐⭐ `make lockstep [CIRCUIT=n] [FRAMES=n]` — LAYER 2: the autopilot's run replayed on a REAL BBC.
+# The host (EXACTRATIO=1 — the 6502's own divide, so the two machines' geometry agrees to the bit)
+# records every key poll, every $FE68 read and a car-state + picture snapshot a frame
+# (PlatformHost.cpp §THE LOCKSTEP RECORDER); jsbeeb replays the answers poll for poll and snapshots
+# the same bytes (bbc_refloop_race.mjs --lockstep); tools/lockstep_diff.py names the first frame
+# the PHYSICS differs, then prints the VIEW comparison.  A control-flow divergence (the BBC asked a
+# different question) stops the replay and is printed by it.  CIRCUIT 5 boots
+# revs-hack-nurburgring.ssd (git-ignored, local).  docs/validation-harness.md §THE LOCKSTEP.
+CIRCUIT ?= 0
+FRAMES  ?= 3000
+lockstep:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 EXACTRATIO=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/lockstep
+	@REVS_TRACK=$(CIRCUIT) REVS_LOCKSTEP=tmp/lockstep/host$(CIRCUIT).rls REVS_AUTOPILOT=1 REVS_FIXED_RNG=1 \
+	  REVS_SCREEN_DUMP=tmp/lockstep/h$(CIRCUIT) REVS_SCREEN_FRAME=$(FRAMES) REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) 2>&1 >/dev/null | grep '^\[autopilot\]' | sed 's/^/  host: /'
+	@case $(CIRCUIT) in 0) disc=""; bt=5;; 1) disc=""; bt=1;; 2) disc=""; bt=2;; 3) disc=""; bt=3;; \
+	   4) disc=""; bt=4;; 5) disc="--disc=revs-hack-nurburgring.ssd"; bt=3;; esac; \
+	 (cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs $$disc --track=$$bt \
+	   --wing=0 --lockstep=../../tmp/lockstep/host$(CIRCUIT).rls \
+	   --lockstep-out=../../tmp/lockstep/bbc$(CIRCUIT).rls) 2>&1 | grep -- '--lockstep: [0-9]* frames' | sed 's/^ */  bbc:  /'
+	@python3 tools/lockstep_diff.py tmp/lockstep/host$(CIRCUIT).rls tmp/lockstep/bbc$(CIRCUIT).rls; \
+	 python3 tools/lockstep_diff.py tmp/lockstep/host$(CIRCUIT).rls tmp/lockstep/bbc$(CIRCUIT).rls --view --all | tail -1; \
+	 $(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory $(TARGET) >/dev/null
 
 determinism-drive:
 	@test -f $(DET_DRIVE_REF) || \
