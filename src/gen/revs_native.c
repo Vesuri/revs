@@ -10512,82 +10512,82 @@ uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 {
     uint8_t a;                                /* the 6502's A as the walk tests it */
 
+    /* ⭐ THE WALK'S STATE IN LOCALS, each cell written once at the end with the value the 6502
+       leaves there.  The cursor was the zero-page cell math_hi (loaded, compared and incremented
+       in memory every point), the class was re-read from $88 at every point, and the last
+       `other` / `entry` were stored on every hit.  Nothing inside the loop calls out, so the
+       memory those cells end up holding is unchanged:
+         cur       = math_hi, the walk index (firstPoint when the walk is skipped);
+         lastOther = shared_temp_77, the last point's other boundary;
+         lastEntry = math_lo, the last line_surface entry the stamp test read. */
+    uint8_t cur       = firstPoint;
+    uint8_t lastOther = shared_temp_77;
+    uint8_t lastEntry = math_lo;
     mem[SPAN_CLIP] = surfaceClass;            /* ⚠ a THIRD tenant of $88 — docs/rename.md */
-    math_hi        = firstPoint;              /* the walk index, and the loop's own cursor */
-    span_end_index--;
+    const uint8_t end = --span_end_index;
 
     /* $1B00 CMP #$28 — the whole walk is skipped once view_yaw_offset is >= 45 deg off axis. */
-    if (view_yaw_offset < 0x28u) for (;;) {
-        /* $1B05 — the loop is entered at its own bottom test; X comes from math_hi, never from
-           the class the caller passed in.  Its CPX carry is the loop's only exit. */
-        uint8_t x = math_hi;
-        if (x >= span_end_index) break;
+    if (view_yaw_offset < 0x28u) {
+        /* $1B05 — the loop is entered at its own bottom test; its CPX carry is the only exit. */
+        for (; cur < end; cur++) {            /* $1B03 INC math_hi */
+            ROAD_COUNT(g_roadMarkPts);        /* one edge point examined for its surface class */
+            const uint8_t y = mem[MEM_edge_y + cur];
+            if (y >= 0x50u) continue;
+            /* A holds the style byte; bit 7 set means fill_line_attr already marked it. */
+            a = mem[MEM_edge_style + cur];
+            if (a & 0x80u) continue;
 
-        ROAD_COUNT(g_roadMarkPts);        /* one edge point examined for its surface class */
-        {
-            uint8_t y = mem[MEM_edge_y + x];
-            if (y < 0x50u) {
-                /* A holds the style byte; bit 7 set means fill_line_attr already marked it. */
-                a = mem[MEM_edge_style + x];
-                if (!(a & 0x80u)) {
-                    uint8_t other;                /* the point's OTHER boundary, order per side */
-                    if (mem[SPAN_CLIP] == 0x14u) {
-                        /* high byte only, as the 6502 does: this is a COARSE angle test and
-                           the low byte is never loaded (see the note on edge_x_word). */
-                        other = mem[MEM_edge_x_hi + x];
-                        a     = mem[MEM_edge_opp_x_hi + x];
-                    } else {
-                        other = mem[MEM_edge_opp_x_hi + x];
-                        a     = mem[MEM_edge_x_hi + x];
-                    }
-                    shared_temp_77 = other;       /* a real mem[] store the differential sees */
-                    /* Both +$14 are plain binary adds: D=0 on the road pass (docs/static-map.md
-                       §Decimal mode — no SED site is on draw_road), so a uint8_t add is exact.
-                       (Their V was the chain draw_road threaded into the hook seams, where no
-                       hook reads it — see draw_road_core.) */
-                    a = (uint8_t)(a + 0x14u);
-                    if (!(a & 0x80u)) {
-                        a = (uint8_t)(other + 0x14u);
-                        if (a & 0x80u) {
-                            int stamp;
-                            uint8_t entry;
+            uint8_t other;                    /* the point's OTHER boundary, order per side */
+            if (surfaceClass == 0x14u) {
+                /* high byte only, as the 6502 does: this is a COARSE angle test and the low byte
+                   is never loaded (see the note on edge_x_word). */
+                other = mem[MEM_edge_x_hi + cur];
+                a     = mem[MEM_edge_opp_x_hi + cur];
+            } else {
+                other = mem[MEM_edge_opp_x_hi + cur];
+                a     = mem[MEM_edge_x_hi + cur];
+            }
+            lastOther = other;
+            /* Both +$14 are plain binary adds: D=0 on the road pass (docs/static-map.md §Decimal
+               mode — no SED site is on draw_road), so a uint8_t add is exact.  (Their V was the
+               chain draw_road threaded into the hook seams, where no hook reads it — see
+               draw_road_core.) */
+            if ((uint8_t)(a + 0x14u) & 0x80u) continue;
+            if (!((uint8_t)(other + 0x14u) & 0x80u)) continue;
 
-                            /* $1AD8 — skip a whole run of points fill_line_attr marked; X and
-                               math_hi advance together, but y (this point's line) is unchanged. */
-                            while (mem[MEM_edge_style + x + 1] & 0x80u) {
-                                x++;
-                                math_hi++;
-                                if (x >= span_end_index) break;
-                            }
+            /* $1AD8 — skip a whole run of points fill_line_attr marked; the index advances but y
+               (this point's line) is unchanged. */
+            while (mem[MEM_edge_style + cur + 1] & 0x80u) {
+                cur++;
+                if (cur >= end) break;
+            }
 
-                            /* An entry already on this line wins, unless it belongs to another
-                               class and the sign test says this point is the nearer one.  In the
-                               not-stamped arm A holds the same byte the 6502's ROR/EOR left. */
-                            entry   = mem[MEM_view_line_surface + y];
-                            math_lo = entry;      /* a real mem[] store the differential sees */
-                            if (entry == 0) {
-                                stamp = 1;
-                            } else {
-                                uint8_t masked = (uint8_t)(entry & 0x1Cu);
-                                if (masked == mem[SPAN_CLIP]) {
-                                    stamp = 1;
-                                } else {
-                                    uint8_t carryIn = (masked >= mem[SPAN_CLIP]) ? 0x80u : 0x00u;
-                                    a = (uint8_t)((uint8_t)(carryIn | (masked >> 1)) ^ entry);
-                                    stamp = !(a & 0x80u);
-                                }
-                            }
-                            if (stamp) {
-                                a = (uint8_t)((mem[MEM_edge_style + x] & 0x03u) | mem[SPAN_CLIP]);
-                                mem[MEM_view_line_surface + y] = a;
-                            }
-                        }
-                    }
+            /* An entry already on this line wins, unless it belongs to another class and the
+               sign test says this point is the nearer one.  In the not-stamped arm A holds the
+               same byte the 6502's ROR/EOR left. */
+            const uint8_t entry = mem[MEM_view_line_surface + y];
+            int stamp;
+            lastEntry = entry;
+            if (entry == 0) {
+                stamp = 1;
+            } else {
+                const uint8_t masked = (uint8_t)(entry & 0x1Cu);
+                if (masked == surfaceClass) {
+                    stamp = 1;
+                } else {
+                    const uint8_t carryIn = (masked >= surfaceClass) ? 0x80u : 0x00u;
+                    a = (uint8_t)((uint8_t)(carryIn | (masked >> 1)) ^ entry);
+                    stamp = !(a & 0x80u);
                 }
             }
+            if (stamp)
+                mem[MEM_view_line_surface + y] =
+                    (uint8_t)((mem[MEM_edge_style + cur] & 0x03u) | surfaceClass);
         }
-        math_hi++;                            /* $1B03 */
     }
+    math_hi        = cur;
+    shared_temp_77 = lastOther;
+    math_lo        = lastEntry;
 
     /* $1B0B — the limit, and the routine's real return value: Y, the scan line at which this
        side's line_attr buffer stops being valid.  (C is set on every exit; A/X/N/Z/V are dead at
