@@ -87,7 +87,28 @@ typedef struct {
 
 static SndChan   s_chan[SND_CHANNELS];
 static SndEnvDef s_env[4];
-static unsigned long s_gen = 0;
+unsigned long g_sndGen = 0;
+#define s_gen g_sndGen
+
+/* ⭐⭐ THE QUIET FLAG: non-zero means the next snd_tick() provably changes nothing, so it returns
+ * at once.  A tick is a no-op exactly when every channel is either idle with an empty queue, or
+ * sounding with no clock on it — infinite (or already-expired) duration and no defined envelope —
+ * and its program memo already matches (program() ran for it on the tick that set the flag).
+ * Revs sits in that state almost all the time: the engine note is a static-amplitude infinite
+ * sound on one channel, re-issued with a flush only when its pitch moves.
+ *
+ * WHY: snd_tick() runs twice a display field forever inside the VERTB ISR, a fixed tax on wall
+ * clock (docs/perf-method.md §the VERTB ISR), and three idle channels still paid a start_next()
+ * call each to find an empty queue.
+ *
+ * ⚠ EVERY ENTRY POINT THAT WRITES s_chan OR s_env MUST CLEAR IT — snd_sound, snd_flush_channel,
+ * snd_envelope and snd_reset do.  snd_tick() itself sets it only from the state it leaves. */
+uint8_t g_sndQuiet = 0;
+#define s_quiet g_sndQuiet
+/* ⚠ CLEARED LAST, behind a compiler barrier: these entry points run in main-loop context and the
+   VERTB ISR ticks in between.  Cleared FIRST, a tick preempting the write could see the old state,
+   set the flag again, and strand the new command until some later call cleared it. */
+#define SND_WAKE() do { __asm__ __volatile__("" ::: "memory"); s_quiet = 0; } while (0)
 
 /* ⭐ NOT static, and that is deliberate: this is the one thing a debugger has to be able to read
    to tell "the scheduler produced nothing" from "the backend dropped it".  Listed in
@@ -232,6 +253,7 @@ void snd_reset(void)
     s_chip.noise = 0;
     for (i = 0; i < 4; i++) s_chip.vol[i] = 15;
     s_gen++;
+    SND_WAKE();
 }
 
 void snd_envelope(const uint8_t blk[14])
@@ -245,6 +267,7 @@ void snd_envelope(const uint8_t blk[14])
         for (i = 0; i < 14; i++) e->bytes[i] = blk[i];
         e->defined = 1;
     }
+    SND_WAKE();
 }
 
 void snd_sound(const uint8_t blk[8])
@@ -272,12 +295,14 @@ void snd_sound(const uint8_t blk[8])
            form Revs ever issues (all five of its blocks are $10..$13). */
         c->qHead = 0; c->qCount = 1; c->queue[0] = cmd;
         c->active = 0;
+        SND_WAKE();
         return;
     }
     if (c->qCount >= SND_QUEUE) { g_sndQueueDrops++; return; }
     g_sndQueued++;
     c->queue[(c->qHead + c->qCount) % SND_QUEUE] = cmd;
     c->qCount++;
+    SND_WAKE();
 }
 
 void snd_flush_channel(uint8_t channel)
@@ -301,6 +326,7 @@ void snd_flush_channel(uint8_t channel)
     if (channel == 0) chip_set_noise(0);
     else              chip_set_tone((uint8_t)(3 - channel), divider_for(channel, 0));
     chip_set_vol((uint8_t)(3 - channel), 15);
+    SND_WAKE();
 }
 
 /* One envelope step: amplitude first, then pitch, then the phase bookkeeping. */
@@ -391,8 +417,9 @@ static int start_next(uint8_t chan)
 
 void snd_tick(void)
 {
-    uint8_t ch;
+    uint8_t ch, busy = 0;
     SND_STAT(g_sndTicks);
+    if (s_quiet) return;
 
     for (ch = 0; ch < SND_CHANNELS; ch++) {
         SndChan* c = &s_chan[ch];
@@ -400,9 +427,9 @@ void snd_tick(void)
         SND_STAT(g_sndChanVisits);
 
         if (!c->active) {
-            if (!start_next(ch)) continue;
+            if (!c->qCount || !start_next(ch)) continue;   /* idle, empty queue: stays so */
             started = 1;
-            if (!c->active) continue;    /* an amplitude-0 command: pitch programmed, no sound */
+            if (!c->active) { busy |= c->qCount; continue; }   /* amplitude 0: pitch programmed, no sound */
         }
 
         /* The duration first: MEASURED, a duration-4 sound is audible for 19 ticks, so the
@@ -433,8 +460,18 @@ void snd_tick(void)
         }
 
         program(ch);
+        /* Can the NEXT tick change this channel?  A queue behind a silent channel, a duration
+           still counting, or an envelope still stepping — anything else is fixed until a command.
+           ⚠ The two QUEUE arms (here and the amplitude-0 `continue` above) survive sabotage in
+           `make sound`: the recorded MOS sweeps never queue a note behind one that ends, and Revs
+           cannot — every block it issues is a flush (F = 1), so a queue holds at most the one
+           command start_next() consumes.  Unreachable here, a fixture gap for any other client:
+           keep both (docs/validation-harness.md §FIFTEENTH). */
+        busy |= (uint8_t)(c->active ? ((!c->infinite && c->durLeft) ||
+                                       (c->env && s_env[c->env - 1].defined))
+                                    : c->qCount != 0);
     }
+    s_quiet = (uint8_t)!busy;
 }
 
 const SndChip* snd_chip(void) { return &s_chip; }
-unsigned long  snd_generation(void) { return s_gen; }

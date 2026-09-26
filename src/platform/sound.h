@@ -131,8 +131,14 @@ void snd_tick(void);
 extern SndChip g_sndChip;
 const SndChip* snd_chip(void);
 /* Bumped whenever snd_tick / snd_flush_channel changes the chip state, so a backend can skip
-   reprogramming its hardware on an unchanged tick (the common case: nothing is playing). */
-unsigned long snd_generation(void);
+   reprogramming its hardware on an unchanged tick (the common case: nothing is playing).
+   ⭐ Both accessors are INLINE: the Amiga backend asks them in the VERTB ISR on every field. */
+extern unsigned long g_sndGen;
+static inline unsigned long snd_generation(void) { return g_sndGen; }
+/* Non-zero while the next snd_tick() provably changes nothing (sound.c, s_quiet) — so a backend
+   driving two ticks a field can skip both, and the reprogram behind them, with one test. */
+extern uint8_t g_sndQuiet;
+static inline int snd_quiet(void) { return g_sndQuiet; }
 
 /* The noise generator's shift-rate divisor: 16, 32, 64, or tone 2's divider (noise mode 3, which
    is the one Revs's engine uses).  Both a tone divider and this divisor count the same clock —

@@ -162,42 +162,53 @@ static void apply(uint8_t pch, uint32_t ptr, uint16_t len, uint16_t per, uint16_
 /* ⚠ Decide each Paula channel ONCE and apply it once.  The first version wrote channel 3 twice
    per field — the squeal's square wave, then the noise mirror over the top of it — and each write
    was a waveform change, so it paid two DMA restarts a field for a sound nobody could hear. */
+/* ⭐ WHAT EACH PAULA CHANNEL WAS LAST APPLIED FROM — the chip fields it reads.  apply() is
+   idempotent (a second call with the same arguments writes nothing, deferred restarts included),
+   so a channel whose inputs have not moved is skipped outright.  Revs changes ONE field at a time
+   (the engine's pitch) and the old full rebuild paid four period conversions, four apply()s and
+   the stack arrays between them for it, ~300 instructions a reprogram in the VERTB ISR. */
+static SndChip s_applied;
+static uint8_t s_appliedValid = 0;
+
 static void program_paula(void)
 {
-    const SndChip* c = snd_chip();
-    uint32_t ptr[4];
-    uint16_t len[4], per[4], vol[4];
+    const SndChip* const c = &g_sndChip;
+    const int all = !s_appliedValid;
+    /* The noise voice reads its register, its volume and — in mode 3 — tone 2's divider. */
+    const int noiseMoved = all || c->noise != s_applied.noise || c->vol[3] != s_applied.vol[3] ||
+                           ((c->noise & 3) == 3 && c->tone[2] != s_applied.tone[2]);
     uint8_t chip;
 
-    for (chip = 0; chip < 3; chip++) {
-        const uint8_t pch = kPaulaOf[chip];
-        ptr[pch] = (uint32_t)s_square;
-        len[pch] = 1u;
-        per[pch] = period_for(c->tone[chip]);
-        vol[pch] = kVolume[c->vol[chip] & 15];
+    for (chip = 1; chip < 3; chip++) {
+        if (!all && c->tone[chip] == s_applied.tone[chip] && c->vol[chip] == s_applied.vol[chip])
+            continue;
+        apply(kPaulaOf[chip], (uint32_t)s_square, 1u, period_for(c->tone[chip]),
+              kVolume[c->vol[chip] & 15]);
     }
     {
-        const int white = (c->noise & 4) != 0;
-        const uint32_t nptr = (uint32_t)(white ? s_white : s_periodic);
-        const uint16_t nlen = (uint16_t)((white ? kWhiteBytes : kPeriodicBytes) >> 1);
-        const uint16_t nper = period_for(snd_noise_divisor(c));
-        const uint16_t nvol = kVolume[c->vol[3] & 15];
-        ptr[PAULA_NOISE] = nptr; len[PAULA_NOISE] = nlen;
-        per[PAULA_NOISE] = nper; vol[PAULA_NOISE] = nvol;
+        const int squealMoved = all || c->tone[0] != s_applied.tone[0] ||
+                                c->vol[0] != s_applied.vol[0];
         /* ⭐ THE MIRROR (RevsAudio.h).  While the squeal channel is silent, its Paula channel plays
            the noise generator too, so an idling engine — whose ONLY voice is this one, because Revs
            mutes both tones and merely borrows channel 1's divider — is not stuck in one speaker.
            Same buffer and period; the two DMA pointers are not phase-locked, which widens the noise
            rather than doubling it. */
-        if (c->vol[0] == 15) {
-            ptr[PAULA_SQUEAL] = nptr; len[PAULA_SQUEAL] = nlen;
-            per[PAULA_SQUEAL] = nper; vol[PAULA_SQUEAL] = nvol;
+        const int mirror = c->vol[0] == 15;
+        if (noiseMoved || (mirror && squealMoved)) {
+            const int white = (c->noise & 4) != 0;
+            const uint32_t nptr = (uint32_t)(white ? s_white : s_periodic);
+            const uint16_t nlen = (uint16_t)((white ? kWhiteBytes : kPeriodicBytes) >> 1);
+            const uint16_t nper = period_for(snd_noise_divisor(c));
+            const uint16_t nvol = kVolume[c->vol[3] & 15];
+            apply(PAULA_NOISE, nptr, nlen, nper, nvol);
+            if (mirror) apply(PAULA_SQUEAL, nptr, nlen, nper, nvol);
         }
+        if (!mirror && squealMoved)
+            apply(PAULA_SQUEAL, (uint32_t)s_square, 1u, period_for(c->tone[0]),
+                  kVolume[c->vol[0] & 15]);
     }
-    {
-        uint8_t pch;
-        for (pch = 0; pch < 4; pch++) apply(pch, ptr[pch], len[pch], per[pch], vol[pch]);
-    }
+    s_applied = *c;
+    s_appliedValid = 1;
 }
 
 void revs_audio_init(void)
@@ -212,6 +223,7 @@ void revs_audio_init(void)
     s_square[1] = (int8_t)-127;
     build_noise();
     snd_reset();
+    s_appliedValid = 0;
 
     {
         uint8_t pch;
@@ -250,13 +262,18 @@ void revs_audio_vbi(void)
 {
     unsigned long gen;
     if (!s_ready) return;
+#ifdef REVS_PROBE
+    g_audioTicks += 2;      /* a volatile 32-bit RMW every field: diagnostics builds only */
+#endif
+    /* ⭐ Both ticks provably change nothing (sound.c's quiet flag), so neither can the reprogram
+       behind them — the common field, and it is paid 50 times a second forever. */
+    if (snd_quiet()) return;
     gen = snd_generation();
     PROBE_ISR_SPLIT(PROBE_ISR_SNDTICK);
     /* Two ticks: the MOS schedules sound at 100 Hz and this is a 50 Hz interrupt.  Paula is
        programmed once, from the state after both — see RevsAudio.h for what that quantises. */
     snd_tick();
     snd_tick();
-    g_audioTicks += 2;
     if (snd_generation() != gen) {
         PROBE_ISR_SPLIT(PROBE_ISR_PAULA);
         program_paula();
