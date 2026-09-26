@@ -50,6 +50,13 @@ analysed.
     make fatscan [FATSCAN_ARGS="--top=60 --detector=exit,zp --fields=<core> --no-shortlist"]
       --fields=<core>   every exit field of one producer, with each consumer reason
       --debug=<fn>      each marshal call of one routine, priced separately
+      --profile         no detectors: target instructions/frame (and how many touch memory) by
+                        SOURCE function, inlined copies credited where they came from
+      --profile=<fn>    ...one function by source line
+    ⚠ --profile sees C only, priced by HOST executions: a C body the target replaces with asm
+    (the span pass, the view scan, the geometry walk, the edge pass's surface_colour_at) still
+    reads as if it ran whenever its fallback copy is linked.  Trust a row only for C with no asm
+    twin — fill_line_attr's 4k/frame was one, and its rewrite paid −1.20 ms.
 """
 import json, os, re, subprocess, sys
 from collections import defaultdict
@@ -898,6 +905,39 @@ def oracle_uses(shims, abi={}):
 
 # ────────────────────────────────────────────────────────────────────────────────────────────
 
+BRANCH_RE = re.compile(r'^(b[a-z]{2}|bra|bsr|jsr|jmp|db[a-z]{1,2})(\.[bswl])?$')
+
+def is_mem(i):
+    """Does the instruction touch memory through an operand: a register indirect, a
+    displacement, an index, or an absolute address (objdump prints `<hex> <sym>`)?  A branch's
+    target prints the same way and is not a data access."""
+    if BRANCH_RE.match(i['mn']): return False
+    return '(' in i['ops'] or bool(re.search(r'(^|,)[0-9a-f]+ <', i['ops']))
+
+def profile(insns, which, top):
+    """--profile: target instructions per frame by SOURCE function (inlined copies credited to
+    the function they came from), and how many of them touch memory — the ranking of the C
+    that is left.  --profile=<fn> breaks that function down by source line.  C the target
+    replaced with asm prices at 0 here, and asm itself is not seen at all (no host count)."""
+    agg = defaultdict(lambda: [0.0, 0.0])
+    for i in insns:
+        if i.get('x', 0) <= 0: continue
+        if which == '1':
+            k = base_fn(i['ifn'])
+        elif base_fn(i['ifn']) == which or base_fn(i['fn']) == which:
+            k = f"{i['inner'][0]}:{i['inner'][1]}  ({base_fn(i['ifn'])})"
+        else:
+            continue
+        agg[k][0] += i['x']
+        if is_mem(i): agg[k][1] += i['x']
+    rows = sorted(agg.items(), key=lambda kv: -kv[1][0])
+    tot = sum(v[0] for _, v in rows); mem = sum(v[1] for _, v in rows)
+    print(f"fatscan --profile{'' if which == '1' else '=' + which}: {tot:.0f} target "
+          f"instructions/frame, {mem:.0f} with a memory operand (an estimate for RANKING)\n")
+    print(f"{'≈instr/f':>9s} {'≈mem/f':>8s}  {'function' if which == '1' else 'line'}")
+    for k, (x, m) in rows[:top]:
+        print(f'{x:9.0f} {m:8.0f}  {k}')
+
 def main():
     args = dict(a[2:].split('=', 1) if '=' in a else (a[2:], '1') for a in sys.argv[1:])
     objdir = args.get('objdir', 'build/fatscan')
@@ -924,6 +964,8 @@ def main():
                       text=True).stdout.count('g_phaseTicks'):
         print(f'⚠ fatscan: {elf} is a PROBES build — its code shape is not the shipping one')
     price_insns(insns, counts, entries, frames)
+    if 'profile' in args:
+        return profile(insns, args['profile'], top)
     by_inner = defaultdict(list)                 # (file, line) -> instructions whose line it is
     by_site = defaultdict(list)                  # (file, line) -> instructions inlined from there
     by_fn = defaultdict(list)
