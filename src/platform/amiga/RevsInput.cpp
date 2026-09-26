@@ -510,10 +510,12 @@ void RevsInput::sampleMouse()
        register; this runs in the VERTB ISR, which is a fixed 50 Hz tax on wall clock rather than
        a per-frame cost (docs/perf-method.md §the VERTB ISR), so a duplicated chip read here is
        paid forever.  Both pins are active LOW, exactly as mouseButton() reads them. */
-    const uint16_t pot = *potinpPointer;
-    unsigned char b = (unsigned char)(((*ciaapraPointer & 0x40u) == 0u ? 1u : 0u) |
-                                      ((pot & 0x0400u) == 0u ? 2u : 0u) |
-                                      ((pot & 0x0100u) == 0u ? 4u : 0u));
+    /* ⭐ Branch-free: shift each pin onto its mask bit and invert once — 1 = CIA-A PRA bit 6,
+       2 = POTINP bit 10, 4 = POTINP bit 8.  Equal to the per-pin `== 0 ? bit : 0` form over all
+       2^24 (PRA, POTINP) inputs, at about half the instructions in a 50 Hz ISR. */
+    const unsigned pot = *potinpPointer;
+    const unsigned cia = *ciaapraPointer;
+    unsigned char b = (unsigned char)(~(((cia >> 6) & 1u) | ((pot >> 9) & 2u) | ((pot >> 6) & 4u)) & 7u);
     g_mouseBtnMask  = b;
     g_mouseBtnSeen |= b;
 }
