@@ -2794,6 +2794,13 @@ static void view_low_build(void)
         for (line = VIEW_LOW_LO; line <= VIEW_LOW_HI; line++) {
             s_lowSeedNext[line] = s_lowSeedHead[s_lowB0[line]];
             s_lowSeedHead[s_lowB0[line]] = (unsigned char)line;
+            /* ⭐ THE ASM SEED'S EMPTY-LIST GUARD (scan_m68k.s, sc_seed): it asks "does this list's
+               last event start at my cell?" by reading the byte before its cursor, which for an
+               EMPTY list is the previous list's last slot.  That slot is never written — a line
+               holds at most 40 events + one seed + its sentinel, slot 41 of 48 — so a $FF there
+               (no cell is >= 40) answers "no" without a head computation.  Seeded lines start at
+               VIEW_LOW_LO = 3, so line - 1 is always a real list. */
+            g_viewEv[line - 1u][VIEW_EV_MAX - 1u].start = 0xFFu;
         }
     }
 #endif

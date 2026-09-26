@@ -2830,6 +2830,14 @@ mismatches; sabotages 1 (floor group entered at lane 0), 3 and 6 caught. ⭐ **"
 claim about the WALK and the RECORD's stores, and it was true of both; the call and counter shape
 AROUND the record was never priced** — the lesson is the familiar one, a floor argument covers only the
 operations it names.
+⭐ **And a run-B seed no longer computes its list's head — −0.34 ms of ph24** (15.85 → 15.51). A seed asks
+"does this line's last event start at my cell?" and must not read before an EMPTY list, so it built
+`line * 96`, read `A_EV(sp)` and subtracted — ~68 cycles × 41 seeds a sweep. Now `view_low_build`
+writes `$FF` into the previous list's LAST slot when it builds the seed chains; no writer ever reaches
+that slot (40 events + one seed + a sentinel is slot 41 of 48) and no cell is ≥ 40, so the byte before
+an empty list's cursor answers "no" by itself. The head arithmetic survives only in the LOWFULLCHECK
+arm. Gate: `SCANCHECK` 131 sweeps, 0 mismatches; a guard holding the line's own seed cell fails at
+3269, sabotage 4 at 194.
 
 ⭐⭐ **`emit_edge_width_offset` IN 68000 ASM IS −2.78 ms OF ph5** (18.91 → 16.13, frame 108.39 →
 104.83; `src/platform/amiga/emit_width_m68k.s`, `make GEOASM=0` the control). Single-stepped it was

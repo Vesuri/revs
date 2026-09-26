@@ -162,18 +162,10 @@ sc_seed:
 	add.w	d2,d2
 	add.w	d2,d2                       | its cursor slot
 	move.l	(a2,d2.w),a4
-	move.w	d1,d3
-	lsl.w	#5,d3
-	move.w	d3,d4
-	add.w	d3,d3
-	add.w	d4,d3                       | line * 96
-	move.l	a4,d4
-	sub.l	A_EV(sp),d4
-	sub.w	d3,d4                       | the cursor's byte offset in its list
-	beq.s	3f                          | an empty list: append
-	cmp.b	-2(a4),d6
-	beq.s	4f                          | a real event already starts at this cell: it wins
-3:	move.b	d6,(a4)+
+	cmp.b	-2(a4),d6                   | ⚠ an EMPTY list reads the previous list's last slot, which
+	beq.s	4f                          |   view_low_build guards with $FF — never a cell.  Else a
+	                                    |   real event already starts at this cell: it wins
+	move.b	d6,(a4)+
 	move.l	A_RSTART(sp),a0
 	.if SABOTAGE == 4
 	move.b	1(a0,d1.w),(a4)+            | SABOTAGE 4: the NEXT line's entry byte
@@ -183,9 +175,18 @@ sc_seed:
 	move.l	a4,(a2,d2.w)
 	move.l	A_SEEDPOS(sp),d0
 	beq.s	4f
+	move.w	d1,d3                       | LOWFULLCHECK only: the seed's slot in its list
+	lsl.w	#5,d3
+	move.w	d3,d4
+	add.w	d3,d3
+	add.w	d4,d3                       | line * 96
+	move.l	a4,d4
+	subq.l	#2,d4
+	sub.l	A_EV(sp),d4
+	sub.w	d3,d4
 	move.l	d0,a0
 	lsr.w	#1,d4
-	move.b	d4,(a0,d1.w)                | LOWFULLCHECK: where the seed went
+	move.b	d4,(a0,d1.w)                | where the seed went
 4:	move.l	A_SEEDNEXT(sp),a0
 	move.b	(a0,d1.w),d1
 	cmp.b	#0xFF,d1
