@@ -10172,6 +10172,11 @@ volatile unsigned long g_setupSelfFirstAddr, g_setupSelfFirstC, g_setupSelfFirst
 /* ⭐ The compare runs over two COPIES held as longwords (mem[] itself is never aliased wide —
    make endian-lint): a byte loop over 64 KB was most of the check's cost.  Equality is endian-free. */
 static uint32_t s_scRef[0x4000], s_scGot[0x4000];
+/* span_saved_index, saved_slot_index, plot_ptr/2/3 page bytes, math_lo/hi, SPAN_DX/DY/BLOCK,
+   SPAN_YSTEP, bearing_hi — the cells span_pass_m68k.s does not store (its header has the audit). */
+static const uint8_t span_pass_dead_cells[] = {
+    0x1B, 0x45, 0x71, 0x73, 0x8F, 0x74, 0x75, 0x83, 0x84, 0x85, 0x87, 0x8B
+};
 static uint8_t  s_scSnap[0x10000], s_scSelf[0x10000];
 
 typedef struct { uint16_t p1, p2, p3; typeof(cpu) c; } SetupAux;
@@ -10215,6 +10220,11 @@ static int span_pass_diff(uint8_t styleLo, unsigned dest, unsigned long *addr, u
     *refOut = ref;
 
     memcpy(s_scGot, (const void *)mem, 0x10000u);
+    /* ⭐ The twelve 6502 working cells the asm leaves unwritten (THE RESULTS RULE — the reader
+       audit is at the top of span_pass_m68k.s): the C's value stands in for the asm's, so only
+       these bytes are excused and a stray store anywhere else still fails. */
+    for (i = 0; i < sizeof span_pass_dead_cells; i++)
+        ((uint8_t *)s_scGot)[span_pass_dead_cells[i]] = ((const uint8_t *)s_scRef)[span_pass_dead_cells[i]];
     for (i = 0; i < 0x4000u; i++)
         if (s_scRef[i] != s_scGot[i]) {
             const uint8_t *r = (const uint8_t *)&s_scRef[i], *g = (const uint8_t *)&s_scGot[i];

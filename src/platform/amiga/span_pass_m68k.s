@@ -12,11 +12,23 @@
 | unpacked its results (~59), the per-span entry and write-back (~52) and the entry decode (~23).  Here
 | the setup computes each walk input IN the register the walk takes it in, falls into the walk's jump
 | table (span_walk_enter), and the loop around it costs no C call per span.
-| ⭐ WHAT IT STORES: every cell interp_edge_core stores, with the same value, in the same span, before
-| the cap — the cap can run circuit code, and the next span reads the cross-span cells.  So mem[] is
-| byte-identical to the C's after every span, not merely at the pass end, and `make determinism*`
-| and `validate` (which run the C) are untouched.  What it does NOT write is C-private scratch:
-| g_spanStepIn / g_spanStepOut / g_spanMarkOn, which every C walk path sets before it reads them.
+| ⭐ WHAT IT STORES: every cell interp_edge_core stores that anything outside the pass READS, with the
+| same value, in the same span, before the cap — the cap can run circuit code, and the next span reads
+| the cross-span cells.  `make determinism*` and `validate` run the C, which still stores everything,
+| so they are untouched.  What it does NOT write:
+|   - C-private scratch: g_spanStepIn / g_spanStepOut / g_spanMarkOn, which every C walk path sets
+|     before it reads them;
+|   - ⭐ TWELVE 6502 WORKING CELLS NOTHING OUTSIDE THE PASS READS (THE RESULTS RULE,
+|     docs/validation-harness.md): span_saved_index $1B, saved_slot_index $45, the three plot
+|     pointers' page bytes $71/$73/$8F, math_lo/math_hi $74/$75, SPAN_DX/DY/BLOCK $83-$85,
+|     SPAN_YSTEP $87 and bearing_hi $8B.  Here each lives in a register.  READER AUDIT:
+|     `make rangeaudit DEFUSE=1` over those cells on all five circuits (2026-09-26) — every read
+|     of a value interp_edge / draw_surface_spans / the span plotters left is made by those same
+|     routines (all inside this one routine here) or by interp_edge's own neg16_math_noinit; no
+|     other routine and no circuit hook reads one.  The hooks that name these cells (math_lo/hi,
+|     saved_slot_index, span_saved_index in revs_track_hooks.c) write each before reading it.
+|     On the port side the cap's C reads span_swapped and $33/$34, which are still stored.
+|     `make SETUPCHECK=1` masks exactly these twelve (span_pass_dead_cells in revs_native.c).
 | ⚠ Read LIVE, as the C does: colour_pattern_keep_tbl ($33FC) and every walk input the walk itself
 |   reads live (span_walk_m68k.s).  $33FC sits in a page a walk can write.
 |
@@ -226,8 +238,6 @@ pass_span:
 	move.b	d0,d3                   | x77
 	move.b	d3,Z_X77(a5)
 	move.b	d1,Z_LINEEND(a5)
-	move.b	d6,Z_SLOTIDX(a5)
-	move.b	d7,Z_SAVEDIDX(a5)
 	tst.b	d4
 	jbne	pass_publish
 
@@ -252,7 +262,6 @@ pass_span:
 	| 3 — the deltas.  span_dy = |lineEnd - cursor|
 	move.b	d1,d7
 	sub.b	d6,d7                   | lineDelta
-	move.b	d7,Z_YSTEP(a5)
 	move.b	d7,d6
 	jbpl	5f
 	neg.b	d6                      | dy ($80 stays $80, as the 6502's does)
@@ -289,8 +298,7 @@ pass_span:
 8:	add.w	d0,d0
 	jbpl	9f                      | give back none
 7:	lsr.b	#2,d6
-9:	move.b	d0,Z_MATHLO(a5)         | the 6502's ASL_M leaves the shifted low byte here
-	lsr.w	#8,d0
+9:	lsr.w	#8,d0
 	move.b	d0,d2                   | dx
 	jbra	pass_deltas
 pass_oneclip:
@@ -308,8 +316,6 @@ pass_oneclip:
 pass_deltas:
 	| d1 clip, d2 dx, d4 arm, d5 swapped, d6 dy, d7 lineDelta
 	move.b	d6,d3                   | dy
-	move.b	d3,Z_DY(a5)
-	move.b	d2,Z_DX(a5)
 	move.b	d4,Z_ARM(a5)
 	move.b	d2,d0
 	or.b	d3,d0
@@ -324,7 +330,6 @@ pass_deltas:
 	jbne	12f
 	move.b	d5,d7
 	not.b	d7
-	move.b	d7,Z_YSTEP(a5)
 12:
 	| 4 — the style record becomes the four column patterns (d2 dx, d3 dy, d4 arm, d7 ystep)
 	moveq	#0,d0
@@ -355,7 +360,6 @@ pass_deltas:
 	| the two surface classes a cap can stamp
 	move.b	Z_PASS(a5),d1
 	lsl.b	#3,d1                   | the pass, in bits 3-5
-	move.b	d1,Z_MATHLO(a5)
 	move.b	d6,d0
 	lsr.b	#3,d0
 	andi.b	#3,d0
@@ -368,7 +372,7 @@ pass_deltas:
 	moveq	#0x55,d6                | an all-zero pattern is substituted (SABOTAGE 8: not)
 	move.b	d6,(a5)
 	.endif
-13:	move.b	d6,Z_BEARHI(a5)         | bearing_hi — and d6.b is the walk's bh from here
+13:	                                | d6.b is the walk's bh (the 6502's bearing_hi) from here
 	move.b	d5,d0
 	lsr.b	#1,d0
 	andi.b	#1,d0
@@ -403,22 +407,13 @@ pass_deltas:
 	| 6 — the source block and the three screen pages, from the endpoint's x
 	move.b	Z_X7E(a5),d0
 	sub.b	#0x30,d0
-	move.b	d0,Z_MATHHI(a5)
 	moveq	#0,d1
 	move.b	d0,d1
 	lsr.b	#2,d1                   | block
-	move.b	d1,Z_BLOCK(a5)
 	cmp.b	#0x28,d1
 	jbcc	pass_publish            | off the side
 	andi.w	#7,d0
 	movea.w	d0,a0                   | the sub-column phase, an index from here
-	move.b	d1,d0
-	lsr.b	#1,d0
-	add.b	#0x30,d0                | the page
-	move.b	d0,Z_PTR1HI(a5)
-	move.b	d0,Z_PTR2HI(a5)
-	addq.b	#1,d0
-	move.b	d0,Z_PTR3HI(a5)         | plot_ptr3 one page above
 	| which of the twelve walks: variant * 16 into d7, the walk's inputs into their registers
 	tst.b	d7
 	smi	d7
@@ -504,21 +499,17 @@ pass_ptrs:
 	.endif
 	jsr	span_walk_enter
 
-	| the write-back: the three pointers (their C words and mem[] pages) and the block
+	| the write-back: the three pointers' C words (their mem[] page bytes are dead — see the header)
 	lea	-BASE(a5),a0
 	move.l	a1,d0
 	sub.l	a0,d0
 	move.w	d0,plot_ptr_v
-	move.b	plot_ptr_v,Z_PTR1HI(a5)
 	move.l	a2,d0
 	sub.l	a0,d0
 	move.w	d0,plot_ptr2_v
-	move.b	plot_ptr2_v,Z_PTR2HI(a5)
 	move.l	a3,d0
 	sub.l	a0,d0
 	move.w	d0,plot_ptr3_v
-	move.b	plot_ptr3_v,Z_PTR3HI(a5)
-	move.b	d4,Z_BLOCK(a5)
 	tst.l	d7
 	jbne	pass_abandoned
 	tst.b	F_REV(sp)
