@@ -22,8 +22,8 @@
 |     that saved d1, derived the line from a0 and bumped a line and a slot counter every lane, ~110
 |     cycles a hit at ~109 hits a sweep.)
 | ⚠ THE FLOOR IS A CORRECTNESS BOUNDARY (s_lowConsume's banner): below it the bytes are live producer
-|   state, never consumed and never recorded.  A floor >= 80 ($FF until view_low_build has run) scans
-|   nothing, exactly as the C's `q < qe` loop does.
+|   state, never consumed and never recorded.  A floor >= 80 scans nothing, exactly as the C's
+|   `q < qe` loop does (44 before view_low_build has run: the low block is the chain's, phase 1 ours).
 |
 | unsigned view_scan_m68k(uint8_t *src, ViewSpan *ev, ViewSpan **evEnd, const uint8_t *floor,
 |                         const uint8_t *xlat, const uint8_t *seedHead, const uint8_t *seedNext,

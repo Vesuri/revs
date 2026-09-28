@@ -1220,14 +1220,22 @@ ViewSpan*      g_viewEvEnd[VIEW_EV_LINES];   /* the append cursor, and the paint
    ⭐ The silhouette is monotone in the line, so "is cell c painted?" is true for every line at or
    below one threshold, which collapses the whole question to one byte a cell.  `view_low_build`
    derives it and asserts the contiguity rather than assuming it.
-   ⚠⚠ $FF UNTIL THE TABLE IS BUILT: the build needs the boundary tables `fill_dash_edge_columns`
-   writes, so it happens on the first sweep AFTER the scan — and until it does, `paint_lines_short`
-   is still the painter and the sources are still ITS to consume. */
+   ⚠⚠ UNTIL THE TABLE IS BUILT EVERY CELL'S FLOOR IS THE LOW BLOCK'S TOP + 1 (44) — the value the
+   build itself gives a cell the runs never visit.  The build needs the boundary tables
+   `fill_dash_edge_columns` writes, and it can fail and retry (Brands Hatch: its first ~22 sweeps);
+   until it succeeds `paint_lines_clipped` paints the low block, so lines 0..43 keep their sources
+   for it.  Lines 44..79 are NOT the chain's either way: the terrain painter owns them whenever
+   there is a plot target, and they must be scanned.
+   ⚠⚠ It was $FF, from when the scan covered the low block alone.  Once `view_scan_all` took
+   0..79 in one pass, $FF also skipped phase 1 — no event above the cockpit, so the Amiga painted
+   plain grass there, with no road, for every sweep before the build succeeded: seven seconds of
+   Brands' start on an A500 while the real BBC shows the road from frame 1. */
+#define LOW_FLOOR_UNBUILT 44u   /* = VIEW_LOW_HI + 1, asserted where that is defined */
 static unsigned char s_lowConsume[VIEW_SPAN_CELLS] = {
-    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
-    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
-    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
-    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu };
+    44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u,
+    44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u,
+    44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u,
+    44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u, 44u };
 
 /* ⭐ THE LOW BLOCK PAINTS STRAIGHT INTO THE BITPLANES (§2a) on the Amiga with `LOWOWN=1`; the
    host keeps the faithful `mem[]` arm.  Defined here, ahead of the scan, because the scan seeds
@@ -1457,7 +1465,7 @@ static void view_ev_check(void)
 {
     unsigned line;
     /* ⚠ THE FIRST SWEEP IS NOT A COMPARISON: the producer lists are still BSS (no reset has run
-       yet) and `s_lowConsume` is $FF, so nothing was recorded on either side for a reason that
+       yet) and nothing below the unbuilt floor was recorded on either side, for a reason that
        has nothing to do with the mechanism.  Skip it, or 80 lines of noise bury the real diff —
        which is exactly what it did on the first run of this oracle. */
     static int warm;
@@ -1676,9 +1684,9 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
         {
             MEM_QUAL unsigned char* q  = base + k0 * 4u;
             MEM_QUAL unsigned char* qe = base + (hi + 1u - lo);
-            /* ⚠ `<`, NOT `!=`: before the clip table is built `s_lowConsume` is $FF, so the
-               start can be past the end — a `!=` loop then walks off mem[] and segfaults,
-               where the counted form it replaced simply did not run. */
+            /* ⚠ `<`, NOT `!=`: the floor can be past the end — 44 on the low block's own range
+               (0..43) before the clip table is built — and a `!=` loop then walks off mem[] and
+               segfaults, where the counted form it replaced simply did not run. */
             for (; q < qe; q += 4)
                 if (*(const uint32_t*)q)
                     view_scan_lanes(q, lo + (unsigned)(q - base), cell, &found, consume);
@@ -2709,6 +2717,7 @@ static void view_own_full(ViewState* v)
 
 #define VIEW_LOW_LO        3u     /* display line 157 — the sweep's last */
 #define VIEW_LOW_HI        43u    /* display line 117 */
+_Static_assert(LOW_FLOOR_UNBUILT == VIEW_LOW_HI + 1u, "s_lowConsume's unbuilt floor is the low block's top + 1");
 
 static unsigned char s_lowA0[VIEW_EV_LINES], s_lowA1[VIEW_EV_LINES];
 static unsigned char s_lowB0[VIEW_EV_LINES], s_lowB1[VIEW_EV_LINES];
@@ -3894,8 +3903,8 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     if (!g_viewTablesBuilt) view_build_tables();
 #ifdef REVS_TERRAIN_LOW
     /* ⚠⚠ THE CLIP TABLE BEFORE THE FIRST SCAN, not after it: the scan's per-cell floor
-       (s_lowConsume) is $FF until the table exists, so a first sweep that scanned first recorded
-       NO event in the low block, and its runs painted their entry colours alone over the chain's
+       (s_lowConsume) sits above the low block until the table exists, so a first sweep that
+       scanned first recorded NO event in the low block, and its runs painted their entry colours alone over the chain's
        picture — frame 0 wrong on every circuit (the real-BBC lockstep).  fill_dash_edge_columns
        has written the boundary tables by now (phase 18, this frame). */
     if (!s_lowBuilt) view_low_build();
@@ -3951,8 +3960,8 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        `$FF` sentinel as its first act; with the scan gone, sweep 1 would hand the painters BSS —
        `start = 0` reads as "an event at cell 0" and there is NO SENTINEL, so the painter walks
        off the end of `g_viewEv` for 48 entries.  Nothing is lost by resetting here: no producer
-       store can have been KEPT yet, because `s_lowConsume` is $FF until `view_low_build` runs
-       inside this very routine. */
+       store can have been KEPT yet: `g_evLineHi` starts at 43 and `s_lowConsume` rejects every
+       line below 44 until `view_low_build` runs inside this very routine. */
     { static int evReady; if (!evReady) { evReady = 1; view_ev_reset(); } }
     /* ⭐ ONE source of truth for the owned range, taken from the same conditions that pick the
        scan below — so a producer can never record a line the painters do not cover. */
