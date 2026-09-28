@@ -620,6 +620,7 @@ void RevsScreen::setConstantRegisters()
 static void revs_cockpit_slot_tables(void);   /* the cockpit layer — defined with the rest of it */
 #endif
 
+static void tt_build_tables(void);   /* the MODE 7 painter's tables — see decodeTeletext */
 void RevsScreen::initialize()
 {
     for (unsigned b = 0; b < 256; b++) {
@@ -660,6 +661,7 @@ void RevsScreen::initialize()
     /* MODE 7's own configuration.  ⚠ Allocated up front, never on the mode switch: a chip-RAM
        allocation inside a frame is the Atari port's 3.6-second freeze, and a FAILED one at a
        mode switch would blank the front end with no way to attribute it. */
+    tt_build_tables();   /* the MODE 7 painter's glyph and mask tables — at start-up, not in a page */
     m_ttBitmap = Bitmap::allocate(kTtW, kTtH, kTtBP, /*interleaved*/true);
     m_ttCopper = CopperList::allocate(TT_LIST_LENGTH);
     if (!m_ttBitmap) g_ttAllocFailed |= 1u;
@@ -810,101 +812,341 @@ void RevsScreen::buildTeletextCopper()
         d[IDX_TT_PAL + c] = copperMove(color00 + (c << 1), kTtPalette[c]);
 }
 
-/* ⭐ THE PAGE -> THREE BITPLANES.  Main-loop context, ROW BY ROW, only where the page changed.
+/* ⭐⭐ THE PAGE -> THREE BITPLANES, CELL BY CELL, ONLY WHERE THE PICTURE CHANGES.  Main loop.
  *
- * A full 25-row redraw is 1000 cells x 10 lines x 3 planes = 30000 byte stores, so redrawing
- * unconditionally would drag the front end down re-drawing a page that has not moved.  Every
- * writer of the page marks its row in g_ttRowDirty (teletext.h) instead, and this converts only
- * the marked rows — an unchanged frame does no work and reads no screen RAM.  A flash-phase flip
- * re-dirties the whole page: a static front end can afford the occasional full redraw, and it
- * keeps the flashing "PRESS" prompt correct with no per-row flash bookkeeping.
+ * A full page is 1000 cells x 10 lines x 3 planes = 30000 byte stores, and the row-at-a-time loop
+ * this replaces measured **~4380 raster lines — ~280 ms — for one** on an A500 (`make TTTIME=1`).
+ * It ran on every flash-phase flip (~1.6 a second, the whole page re-dirtied for one flashing
+ * prompt), so the idle menu spent ~45% of the CPU repainting an unchanged page, and each new page
+ * visibly wiped down the single-buffered bitmap for a quarter of a second.  Three changes:
  *
- * ⭐ The row and half base addresses are walked with a running pointer (rowTop += kRowStride), so
- * there is no per-row / per-scanline multiply in the addressing.
- * ⚠ NOT a widening cast on mem[] — it must never be aliased as a 16- or 32-bit pointer
- * (make endian-lint). */
+ *  1. ⭐⭐ THE PAGE ITSELF IS THE DIRTY RECORD, not the writers' marks.  The game pokes screen RAM
+ *     directly (teletext.h: $3A65, $65BA, $659A) — `menu_wait_key`'s highlight among them — and
+ *     none of those marked a row, so a moved highlight appeared only when the next flash flip
+ *     repainted everything: up to 0.64 s late.  Each row's 40 bytes are compared against a shadow
+ *     of the bytes the bitmap was drawn from (10 longword compares a row, ~1.3 ms a page, EQUALITY
+ *     ONLY so byte order cannot be observed).  `g_ttRowDirty` stays as an extra hint.
+ *  2. ⭐ A CHANGED ROW IS DECODED, AND ONLY ITS CHANGED CELLS ARE PAINTED: every DISPLAY cell keeps
+ *     the key of what is drawn there (the decoded TtCell plus which half of a double-height glyph),
+ *     so a highlight repaints its attribute's cells and a flash flip its flashing ones.
+ *  3. A flash flip re-decodes only the rows that CARRY a flash code (`s_ttRowFlash`).
+ * The cells are painted in PAIRS, a word per plane per line, unrolled with constant displacements,
+ * and a pair of blank glyphs is thirty constant stores with no glyph reads.
+ *
+ * ⚠ The shadows are exact because nothing else writes `m_ttBitmap` (allocated cleared, drawn only
+ *   here), which is why the mode switch no longer needs to force a repaint of the whole page.
+ * ⚠ `make TTCHECK=1` is the gate: after every decode it repaints the WHOLE page with the old
+ *   row loop (`tt_reference_page`) into a scratch buffer and compares all 30000 bytes.  Its scope:
+ *   it shares `tt_decode_row` and the font, so it checks what this code SKIPS and how it draws,
+ *   never the decode itself — that is `make mode7`'s decoder differential (tools/validate_mode7.c). */
+#ifdef REVS_TT_TIME
+extern "C" volatile uint16_t g_vbiCount;
+/* `make TTTIME=1` — the front end's cost, in RASTER LINES read in-program (`amiga/tttime.gdb`).
+   ⚠ In-program because a gdb `finish` through FS-UAE's stub reads the same beam delta for a
+   25-row decode as for an empty one. */
+extern "C" {
+volatile uint32_t g_ttTimeLast = 0, g_ttTimeMax = 0, g_ttTimeTotal = 0, g_ttTimeCalls = 0;
+volatile uint16_t g_ttTimeCells = 0;
+}
+static inline uint32_t tt_beam_lines(void)
+{
+    volatile const uint32_t* vp = (volatile const uint32_t*)0xDFF004;   /* VPOSR:VHPOSR */
+    uint16_t v0, v1; uint32_t b;
+    do { v0 = g_vbiCount; b = *vp; v1 = g_vbiCount; } while (v0 != v1);
+    return revs_mulu16(v0, 313u) + ((b >> 8) & 0x1FFu);
+}
+#endif
+extern "C" { volatile uint16_t g_ttCellsDrawn = 0; }   /* cells painted by the last decode */
+
+static uint32_t      s_ttSrc[TT_ROWS * TT_COLS / 4];   /* the page bytes the bitmap shows */
+static uint32_t      s_ttKey[TT_ROWS * TT_COLS];       /* per DISPLAY cell: what is drawn there */
+static unsigned long s_ttRowFlash = 0;                 /* rows carrying a flash code */
+static unsigned char s_ttPrimed   = 0;
+static unsigned char s_ttBlank[TT_SETS * 128u];        /* 1 = the glyph has no set pixel */
+/* ⭐ CELLS ARE PAINTED IN PAIRS, ONE WORD PER PLANE PER LINE: a cell is one byte of a plane row,
+   so an even column and the next share an aligned word, and pairing halves the store count
+   (a 68000 word store costs what a byte store does).  The left cell is the HIGH byte — the
+   bitmap is big-endian memory the display reads, not mem[].  Two tables make the pair cheap:
+   every glyph line pre-shifted into the high byte (a `lsl.w #8` is 22 cycles a line), and each
+   (fg, bg)'s plane masks, high and low. */
+static uint16_t s_ttGlyphHi[TT_SETS * 128u << TT_GLYPH_SHIFT];
+static uint16_t s_ttMaskHi[64][6], s_ttMaskLo[64][6];  /* [fg | bg << 3] -> m0 m1 m2 c0 c1 c2 */
+
+static void tt_build_tables(void)
+{
+    for (unsigned gi = 0; gi < TT_SETS * 128u; gi++) {
+        const uint8_t* g = &g_ttFont[gi << TT_GLYPH_SHIFT];
+        uint8_t any = 0;
+        for (unsigned y = 0; y < TT_CELL_H; y++) {
+            any |= g[y];
+            s_ttGlyphHi[(gi << TT_GLYPH_SHIFT) + y] = (uint16_t)((unsigned)g[y] << 8);
+        }
+        s_ttBlank[gi] = (unsigned char)(any == 0);
+    }
+    /* With fg/bg as per-plane 0x00/0xFF masks, plane p is the glyph where the foreground has
+       bit p and its complement where the background does: `(bits & (f ^ b)) ^ b` — two
+       operations, no branch, and a constant when f == b. */
+    for (unsigned cb = 0; cb < 64u; cb++) {
+        const unsigned fg = cb & 7u, bg = cb >> 3;
+        for (unsigned p = 0; p < 3u; p++) {
+            const unsigned f = (fg >> p) & 1u ? 0xFFu : 0u, b = (bg >> p) & 1u ? 0xFFu : 0u;
+            s_ttMaskLo[cb][p]      = (uint16_t)(f ^ b);  s_ttMaskHi[cb][p]      = (uint16_t)((f ^ b) << 8);
+            s_ttMaskLo[cb][3u + p] = (uint16_t)b;        s_ttMaskHi[cb][3u + p] = (uint16_t)(b << 8);
+        }
+    }
+    for (unsigned i = 0; i < TT_ROWS * TT_COLS; i++) s_ttKey[i] = 0xFFFFFFFFu;  /* code < 128 */
+}
+
+/* One glyph line of the pair into the three planes; D is the pair's word, W the line's glyph
+   word, Y the display line.  kTtPlaneGap and kTtRowBytes are in bytes, D indexes words. */
+#define TT_LINE(Y, W)  do {                                                               \
+        const uint16_t w_ = (W);                                                          \
+        d[(Y) * (kTtRowBytes / 2)]                         = (uint16_t)((w_ & M0) ^ C0); \
+        d[(Y) * (kTtRowBytes / 2) + kTtPlaneGap / 2]       = (uint16_t)((w_ & M1) ^ C1); \
+        d[(Y) * (kTtRowBytes / 2) + kTtPlaneGap]           = (uint16_t)((w_ & M2) ^ C2); \
+    } while (0)
+#define TT_GW(I)  ((uint16_t)(h[I] | l[I]))
+
+/* HALF: 0 = a normal glyph, 1/2 = the top/bottom half of a double-height one, each source line
+   stretched over two display lines — the chip's rule.
+   ⚠⚠ NOINLINE, and that is the whole point: inlined into the row loop GCC addressed the pair as
+   `(0,a0,d0.l)`, kept the row offsets in stack slots and SPILLED the glyph word to the frame every
+   line — 17 instructions a pair-line, ~60% of them memory operands, single-stepped.  Out of line
+   the destination is a plain pointer with constant displacements and the six masks, the glyph
+   word and one temporary are exactly d0-d7. */
+static __attribute__((noinline))
+void tt_paint_pair(uint16_t* d, const TtCell* a, const TtCell* b, unsigned half)
+{
+    const uint16_t* ma = s_ttMaskHi[a->fg | (a->bg << 3)];
+    const uint16_t* mb = s_ttMaskLo[b->fg | (b->bg << 3)];
+    const uint16_t M0 = (uint16_t)(ma[0] | mb[0]), M1 = (uint16_t)(ma[1] | mb[1]);
+    const uint16_t M2 = (uint16_t)(ma[2] | mb[2]), C0 = (uint16_t)(ma[3] | mb[3]);
+    const uint16_t C1 = (uint16_t)(ma[4] | mb[4]), C2 = (uint16_t)(ma[5] | mb[5]);
+    const unsigned ga = ((unsigned)a->set << 7) + a->code;
+    const unsigned gb = ((unsigned)b->set << 7) + b->code;
+
+    if (s_ttBlank[ga] && s_ttBlank[gb]) {     /* the backgrounds alone: thirty constant stores */
+        TT_LINE(0, 0); TT_LINE(1, 0); TT_LINE(2, 0); TT_LINE(3, 0); TT_LINE(4, 0);
+        TT_LINE(5, 0); TT_LINE(6, 0); TT_LINE(7, 0); TT_LINE(8, 0); TT_LINE(9, 0);
+        return;
+    }
+    const uint16_t* h = &s_ttGlyphHi[ga << TT_GLYPH_SHIFT];
+    const uint8_t*  l = &g_ttFont[gb << TT_GLYPH_SHIFT];
+    if (!half) {
+        TT_LINE(0, TT_GW(0)); TT_LINE(1, TT_GW(1)); TT_LINE(2, TT_GW(2)); TT_LINE(3, TT_GW(3));
+        TT_LINE(4, TT_GW(4)); TT_LINE(5, TT_GW(5)); TT_LINE(6, TT_GW(6)); TT_LINE(7, TT_GW(7));
+        TT_LINE(8, TT_GW(8)); TT_LINE(9, TT_GW(9));
+    } else {
+        const unsigned o = (half - 1u) * (TT_CELL_H / 2u);
+        h += o; l += o;
+        TT_LINE(0, TT_GW(0)); TT_LINE(1, TT_GW(0)); TT_LINE(2, TT_GW(1)); TT_LINE(3, TT_GW(1));
+        TT_LINE(4, TT_GW(2)); TT_LINE(5, TT_GW(2)); TT_LINE(6, TT_GW(3)); TT_LINE(7, TT_GW(3));
+        TT_LINE(8, TT_GW(4)); TT_LINE(9, TT_GW(4));
+    }
+}
+#undef TT_GW
+#undef TT_LINE
+
+/* One DISPLAY row from 40 decoded cells: paint every PAIR in which either key moved.  CELLS is
+   the decode's output viewed as keys — a TtCell is four bytes, so one longword each — and HALF
+   goes into the `set` byte's high nibble (set is 0..2) through a TtCell too, so the key never
+   depends on which byte of the longword a field lands in.  Returns the cells painted. */
+static unsigned tt_paint_row(uint8_t* rowTop, uint32_t* keys, const uint32_t* cells, unsigned half)
+{
+    TtCell    hc = { 0u, (unsigned char)(half << 4), 0u, 0u };
+    uint32_t  hk;
+    unsigned  painted = 0;
+
+    __builtin_memcpy(&hk, &hc, sizeof hk);
+    for (unsigned col = 0; col < TT_COLS; col += 2u) {
+        const uint32_t ka = cells[col] | hk, kb = cells[col + 1u] | hk;
+        if (ka == keys[col] && kb == keys[col + 1u]) continue;
+        keys[col] = ka; keys[col + 1u] = kb;
+        tt_paint_pair((uint16_t*)(void*)(rowTop + col),
+                      (const TtCell*)(const void*)&cells[col],
+                      (const TtCell*)(const void*)&cells[col + 1u], half);
+        painted += 2u;
+    }
+    return painted;
+}
+
 void RevsScreen::decodeTeletext()
 {
     if (!m_ttBitmap) return;
+#ifdef REVS_TT_TIME
+    const uint32_t t0 = tt_beam_lines();
+#endif
 
     const unsigned char phase = (unsigned char)tt_flash_phase();
-    unsigned long dirty = g_ttRowDirty;
-    if (phase != m_ttFlashSeen) { dirty = (1UL << TT_ROWS) - 1UL; m_ttFlashSeen = phase; }
+    unsigned long force = g_ttRowDirty;         /* the VDU driver's and *LOAD's marks: a hint */
     g_ttRowDirty = 0;
-    if (!dirty) { g_ttRowsDrawn = 0; return; }
+    if (phase != m_ttFlashSeen) { force |= s_ttRowFlash; m_ttFlashSeen = phase; }
+    if (!s_ttPrimed) { force = (1UL << TT_ROWS) - 1UL; s_ttPrimed = 1; }
 
-    uint8_t* const base  = (uint8_t*)m_ttBitmap->data;
-    uint8_t* const limit = base + revs_mulu16(kTtH, kTtRowBytes);
+    /* ENDIAN-OK: equality only — the page is compared against a copy of itself, never read as a
+       value, so byte order cannot be observed (the bbc_hw.cpp band-input precedent). */
+    const uint32_t* page = (const uint32_t*)(const void*)(mem + TT_SCREEN_BASE);
+    uint32_t*       seen = s_ttSrc;
+    uint32_t*       keys = s_ttKey;
+    uint8_t*      rowTop = (uint8_t*)m_ttBitmap->data;
     const unsigned kRowStride = TT_CELL_H * kTtRowBytes;   /* bytes one cell row occupies */
 
-    unsigned long dblRows = m_ttRowDbl;
-    uint16_t drawn = 0;
-
-    unsigned  row    = 0;
-    uint8_t*  rowTop = base;              /* == base + row*kRowStride, kept additively */
-    while (row < TT_ROWS) {
+    unsigned long oldDbl = m_ttRowDbl, newDbl = 0;
+    int      hidden  = 0;                /* this row is the bottom half of the one above */
+    uint16_t decoded = 0, painted = 0;
+    for (unsigned row = 0; row < TT_ROWS;
+         row++, page += TT_COLS / 4u, seen += TT_COLS / 4u, keys += TT_COLS, rowTop += kRowStride) {
         const unsigned long bit = 1UL << row;
-        if (!(dirty & bit)) { rowTop += kRowStride; row++; continue; }
+        /* ⭐ Unrolled: the loop form paid two pointer bumps and a bound test per longword, ~66
+           cycles each (2322 instructions a field over the idle page, single-stepped). */
+        const int changed =
+            page[0] != seen[0] || page[1] != seen[1] || page[2] != seen[2] || page[3] != seen[3] ||
+            page[4] != seen[4] || page[5] != seen[5] || page[6] != seen[6] || page[7] != seen[7] ||
+            page[8] != seen[8] || page[9] != seen[9];
+        typedef char tt_row_is_ten_longs[TT_COLS == 40u ? 1 : -1];
+        if (changed)
+            for (unsigned i = 0; i < TT_COLS / 4u; i++) seen[i] = page[i];
 
-        const unsigned char* src =
-            (const unsigned char*)(const void*)(mem + TT_SCREEN_BASE + row * TT_COLS);
+        /* A row under a double-height row is not displayed — the chip's rule; the row above
+           painted this display row with its bottom halves. */
+        if (hidden) { hidden = 0; continue; }
+        if (!changed && !(force & bit)) {
+            if (oldDbl & bit) { newDbl |= bit; hidden = 1; }
+            continue;
+        }
+
+        const unsigned char* src = mem + TT_SCREEN_BASE + row * TT_COLS;
+        uint32_t cells[TT_COLS];
+        const int flags = tt_decode_row_flags(src, (TtCell*)(void*)cells, (int)phase);
+        const int dbl   = flags & 1;
+        if (flags & 2) s_ttRowFlash |= bit; else s_ttRowFlash &= ~bit;
+        decoded++;
+
+        painted += tt_paint_row(rowTop, keys, cells, dbl ? 1u : 0u);
+        if (dbl) {
+            newDbl |= bit;
+            hidden  = 1;
+            if (row + 1u < TT_ROWS)
+                painted += tt_paint_row(rowTop + kRowStride, keys + TT_COLS, cells, 2u);
+        } else if (oldDbl & bit) {
+            force |= bit << 1;           /* lost double height: the row below shows itself again */
+        }
+    }
+
+    m_ttRowDbl     = newDbl;
+    g_ttRowsDrawn  = decoded;
+    g_ttCellsDrawn = painted;
+#ifdef REVS_TT_CHECK
+    ttCheck();
+#endif
+#ifdef REVS_TT_TIME
+    if (painted) {
+        const uint32_t dt = tt_beam_lines() - t0;
+        g_ttTimeLast = dt; g_ttTimeCells = painted; g_ttTimeTotal += dt; g_ttTimeCalls++;
+        if (dt > g_ttTimeMax) g_ttTimeMax = dt;
+    }
+#endif
+}
+
+#ifdef REVS_TT_CHECK
+/* ⭐ `make TTCHECK=1` — the REFERENCE: the row loop this file shipped until the cell decode,
+   kept verbatim in shape (whole page, every row, double height consumed the chip's way) and run
+   into a scratch buffer after every decode, then compared byte for byte with the live bitmap.
+   `g_ttCheckMismatch` must read 0 with `g_ttCheckRuns` non-zero (`amiga/ttcheck.gdb`). */
+extern "C" {
+volatile uint32_t g_ttCheckRuns = 0, g_ttCheckMismatch = 0, g_ttCheckFirst = 0xFFFFFFFFu;
+}
+static void tt_reference_page(uint8_t* base, int phase)
+{
+    uint8_t* const limit = base + revs_mulu16(kTtH, kTtRowBytes);
+    const unsigned kRowStride = TT_CELL_H * kTtRowBytes;
+    unsigned  row    = 0;
+    uint8_t*  rowTop = base;
+    while (row < TT_ROWS) {
+        const unsigned char* src = mem + TT_SCREEN_BASE + row * TT_COLS;
         TtCell cells[TT_COLS];
-        const int dbl = tt_decode_row(src, cells, (int)phase);
-
-        /* A row that just LOST double-height must repaint the row below it: that display row was
-           this row's bottom half and the row below may not be dirty on its own account.  A row
-           that just GAINED it overwrites that display row with its own bottom half here. */
-        if ((dblRows & bit) && !dbl) dirty |= (bit << 1);
-        if (dbl) dblRows |= bit; else dblRows &= ~bit;
-
-        /* A double-height row draws the TOP halves on this display row and the BOTTOM halves on
-           the next; the source row below is then not displayed — the chip's rule. */
+        const int dbl = tt_decode_row(src, cells, phase);
         const unsigned halves = dbl ? 2u : 1u;
         uint8_t* halfBase = rowTop;
         for (unsigned half = 0; half < halves; half++, halfBase += kRowStride) {
             if (halfBase + kRowStride > limit) break;
             for (unsigned col = 0; col < TT_COLS; col++) {
                 const TtCell* c = &cells[col];
-                const uint8_t* g = &g_ttFont[((unsigned)c->set * 128u + c->code)
-                                             << TT_GLYPH_SHIFT];
-                /* ⭐ Colour becomes a per-plane BIT MASK, which is what makes this three
-                   stores and no branches: pen index == teletext colour code, so plane p's byte
-                   is the glyph where the foreground has bit p set and its complement where the
-                   background does. */
+                const uint8_t* g = &g_ttFont[((unsigned)c->set * 128u + c->code) << TT_GLYPH_SHIFT];
                 const uint8_t f0 = (c->fg & 1u) ? 0xFFu : 0x00u;
                 const uint8_t f1 = (c->fg & 2u) ? 0xFFu : 0x00u;
                 const uint8_t f2 = (c->fg & 4u) ? 0xFFu : 0x00u;
                 const uint8_t b0 = (c->bg & 1u) ? 0xFFu : 0x00u;
                 const uint8_t b1 = (c->bg & 2u) ? 0xFFu : 0x00u;
                 const uint8_t b2 = (c->bg & 4u) ? 0xFFu : 0x00u;
-
                 uint8_t* dst = halfBase + col;
                 for (unsigned y = 0; y < TT_CELL_H; y++) {
-                    /* Double height stretches each source row over two display lines: the top
-                       half of the glyph on the first row, the bottom half on the second. */
                     const uint8_t bits = dbl ? g[half * (TT_CELL_H / 2) + (y >> 1)] : g[y];
                     const uint8_t inv  = (uint8_t)~bits;
                     dst[0]               = (uint8_t)((bits & f0) | (inv & b0));
                     dst[kTtPlaneGap]     = (uint8_t)((bits & f1) | (inv & b1));
                     dst[kTtPlaneGap * 2] = (uint8_t)((bits & f2) | (inv & b2));
-                    dst += kTtRowBytes;   /* one scan line: the `lea 120(a1),a1` step */
+                    dst += kTtRowBytes;
                 }
             }
         }
-        drawn++;
-
-        if (dbl) {
-            dblRows &= ~(bit << 1);   /* the consumed bottom-half row is not itself double */
-            rowTop  += kRowStride;
-            row++;
-        }
+        if (dbl) { rowTop += kRowStride; row++; }
         rowTop += kRowStride;
         row++;
     }
-
-    m_ttRowDbl    = dblRows;
-    g_ttRowsDrawn = drawn;
 }
+/* ⭐ THE ORACLE'S OWN STIMULUS, run once before the first real page: the menus never TOGGLE double
+   height under unchanged cells, and that is exactly what the key's `half` nibble exists for (a
+   sabotage that dropped it survived a whole menu walk).  Teletext's own convention makes it the
+   common case — a double-height line is printed twice, on the row and the row below — so a row
+   turning double leaves every cell to the right of its $8D decoding the same, and only the half
+   says "repaint".  Five pages, each decoded (and checked): plain text twice; the same with $8D on
+   both rows; plain again; double height on row 24 (whose bottom half is off the screen); and two
+   stacked double rows, the lower one hidden.  The real page is restored afterwards and the page
+   compare repaints it. */
+static void tt_selftest_page(unsigned which)
+{
+    static const char kText[] = "DOUBLE HEIGHT AND THE ROW BELOW IT";
+    for (unsigned i = 0; i < TT_SCREEN_SIZE; i++) mem[TT_SCREEN_BASE + i] = 0x20u;
+    const unsigned rows[2] = { which == 3u ? 24u : 3u, which == 3u ? 24u : 4u };
+    for (unsigned r = 0; r < 2u; r++) {
+        unsigned char* d = mem + TT_SCREEN_BASE + rows[r] * TT_COLS;
+        d[0] = (which == 1u || which == 3u || which == 4u) ? 0x8Du : 0x20u;
+        d[1] = 0x83u;                                       /* yellow text */
+        for (unsigned x = 0; kText[x] && x + 2u < TT_COLS; x++) d[x + 2u] = (unsigned char)kText[x];
+    }
+    if (which == 4u) {                                      /* rows 5/6 double too: 4 is hidden */
+        for (unsigned x = 0; x < TT_COLS; x++)
+            mem[TT_SCREEN_BASE + 5u * TT_COLS + x] = mem[TT_SCREEN_BASE + 6u * TT_COLS + x] =
+                mem[TT_SCREEN_BASE + 3u * TT_COLS + x];
+    }
+}
+void RevsScreen::ttSelfTest()
+{
+    static unsigned char page[TT_SCREEN_SIZE];
+    for (unsigned i = 0; i < TT_SCREEN_SIZE; i++) page[i] = mem[TT_SCREEN_BASE + i];
+    static const unsigned char kSeq[] = { 0u, 1u, 0u, 3u, 0u, 4u, 1u, 0u };
+    for (unsigned i = 0; i < sizeof kSeq; i++) { tt_selftest_page(kSeq[i]); decodeTeletext(); }
+    for (unsigned i = 0; i < TT_SCREEN_SIZE; i++) mem[TT_SCREEN_BASE + i] = page[i];
+}
+void RevsScreen::ttCheck()
+{
+    static unsigned char selfTested = 0;
+    if (!selfTested) { selfTested = 1; ttSelfTest(); return; }   /* the next decode repaints the real page */
+    static uint8_t* ref = 0;
+    const unsigned n = revs_mulu16(kTtH, kTtRowBytes);
+    if (!ref) ref = (uint8_t*)AllocMem(n, MEMF_ANY | MEMF_CLEAR);
+    if (!ref) return;
+    tt_reference_page(ref, (int)m_ttFlashSeen);
+    const uint8_t* live = (const uint8_t*)m_ttBitmap->data;
+    for (unsigned i = 0; i < n; i++)
+        if (live[i] != ref[i]) {
+            if (g_ttCheckFirst == 0xFFFFFFFFu) g_ttCheckFirst = i;
+            g_ttCheckMismatch++;
+        }
+    g_ttCheckRuns++;
+}
+#endif
 
 /* ⭐ HAND THE DISPLAY TO WHICHEVER MODE THE MACHINE IS IN.  VBI context.
  *
@@ -942,10 +1184,9 @@ int RevsScreen::applyMode()
 
     setDisplayWindow(want ? kTtH : kH);
     if (want) {
-        /* Force a full redraw: the page has to be re-blitted into a buffer that may hold the
-           last front end, and the dirty set would otherwise say "unchanged". */
-        tt_mark_all_dirty();
-        m_ttFlashSeen = 0xFFu;
+        /* ⭐ No forced repaint: decodeTeletext() compares the page against the bytes the bitmap
+           was drawn from, and nothing else writes the bitmap, so whatever the page holds now is
+           painted on the next decode and nothing that is already right is painted twice. */
         g_screenCopperAddr  = (uint32_t)m_ttCopper->data();
         g_screenCopperWords = TT_LIST_LENGTH;
         g_screenFrontAddr   = (uint32_t)m_ttBitmap->data;

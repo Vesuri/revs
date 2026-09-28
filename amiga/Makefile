@@ -421,6 +421,21 @@ ifdef FPSCOUNT
 EXTRA_DEFINES += -DREVS_FPSCOUNT
 endif
 
+# ⭐ `make TTCHECK=1` — the MODE 7 decode's ORACLE: after every decode the whole page is
+# re-drawn by the old row loop into a scratch buffer and compared with the live bitmap, all 30000
+# bytes (RevsScreen.cpp §THE PAGE -> THREE BITPLANES).  `amiga/ttcheck.gdb`; g_ttCheckMismatch
+# must be 0 with g_ttCheckRuns non-zero.  ⚠ Diagnostic only: a full page a frame is ~280 ms.
+ifdef TTCHECK
+EXTRA_DEFINES += -DREVS_TT_CHECK
+PROBE_SYMS_TTCHECK = g_ttCheckRuns g_ttCheckMismatch g_ttCheckFirst
+endif
+# ⭐ `make TTTIME=1` — the MODE 7 decode's cost in raster lines, read in-program
+# (`amiga/tttime.gdb`): last / max / total over the decodes that painted anything.
+ifdef TTTIME
+EXTRA_DEFINES += -DREVS_TT_TIME
+PROBE_SYMS_TTTIME = g_ttTimeLast g_ttTimeMax g_ttTimeTotal g_ttTimeCalls g_ttTimeCells
+endif
+
 # `make STRAIGHT_TO_RACE=1` — boot straight into a Silverstone PRACTICE session with the
 # engine running, then hand the keyboard back to the player.
 #
@@ -1583,7 +1598,7 @@ PROBE_SYMS = g_vbiCount g_simSteps g_simSlowTicks g_fpsFrames g_smcUnhandled g_s
              g_crashBodyFieldsMax g_resetFieldsMax g_resetFieldsLast g_resetCount g_resetSplit \
              g_ttUnknownVdu g_ttLastUnknown g_ttVduBytes g_ttModeSwitches \
              g_ttModeDisagree g_screenPlanes g_screenHeight g_screenMode7 g_ttAllocFailed g_ttFlashPhase g_ttFlashToggles \
-             g_ttRowDirty g_ttRowsDrawn \
+             g_ttRowDirty g_ttRowsDrawn g_ttCellsDrawn \
              g_sndCommands g_sndEnvelopes g_sndFlushes g_sndTicks g_sndChipWrites \
              g_sndSyncRequests g_sndHoldRequests g_sndQueued g_sndQueueDrops g_sndBadEnvelope \
              g_audioAllocFailed g_audioRestarts g_audioUpdates g_audioTicks g_audioWaitLines \
@@ -1634,6 +1649,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
+PROBE_SYMS += $(PROBE_SYMS_TTCHECK) $(PROBE_SYMS_TTTIME)
 PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM) $(PROBE_SYMS_NDLASM)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)

@@ -89,6 +89,10 @@ private:
        programs the 6845 — because $7C00-$7FFF is the teletext page AND the dashboard code
        overlay, time-multiplexed. */
     void decodeTeletext();          /* main loop: the page -> the 3-plane bitmap */
+#ifdef REVS_TT_CHECK
+    void ttCheck();                 /* `make TTCHECK=1`: the whole page re-drawn the old way, compared */
+    void ttSelfTest();              /* ...and its synthetic double-height pages, once */
+#endif
     void buildTeletextCopper();     /* one-time: sprites, playfield, pointers, 8 colours */
     void setDisplayWindow(unsigned height);  /* DIWSTRT/DIWSTOP for 208 or 250 lines */
     /* VBI: hand the display to whichever mode the machine is in now.  Returns non-zero if it
@@ -142,8 +146,8 @@ private:
 #endif
     CopperList* m_copper;
     /* MODE 7's own pair.  ⚠ SINGLE-buffered, deliberately: the page is static between
-       keypresses, so it is redrawn ROW BY ROW only where it CHANGES (g_ttRowDirty, teletext.h),
-       and a real BBC tears here too — the MOS writes screen RAM while the beam is scanning it.  A
+       keypresses, so it is redrawn CELL BY CELL only where it CHANGES (decodeTeletext), and a
+       real BBC tears here too — the MOS writes screen RAM while the beam is scanning it.  A
        second 250-line 3-plane buffer would cost 30 KB of chip RAM to hide an artefact the
        original hardware shows. */
     Bitmap*     m_ttBitmap;
