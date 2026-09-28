@@ -975,10 +975,44 @@ bugs the lockstep found).  The autopilot now races: `make lap` laps all six circ
 on ALL SIX circuits at that pace.  Open, in order:
 1. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — every
    lockstep so far is a practice session, alone on track.
-2. **Why `view_low_build` fails for Brands Hatch's first ~22 sweeps** (A500; ~120 on an A1200) and
-   succeeds after: its line-table checks reject the boundary tables until then.  The picture is
-   right meanwhile (the low block falls back to the chain and the conversion), so this is a cold-
-   start cost and an unexplained difference from the other circuits, not a visible defect.
+2. ⭐ **BRANDS HATCH IS CHOPPY UNTIL THE CAR MOVES — a visible PERFORMANCE defect** (user, 2026-09-28,
+   A1200): start Brands, switch the engine on and rev while stationary, and it is very choppy; drive
+   towards the first corner and the framerate improves markedly.  The same window is where the road
+   above the cockpit was missing before b3be95a, so both are almost certainly **`view_low_build`
+   failing** — its checks reject the line tables until some point, then pass and are never re-run
+   (`s_lowBuilt`).  The other five circuits pass on the first frame.
+   - **What a failing frame pays, on the Amiga** [INFERRED, not yet priced]: the build attempt
+     itself (≈2.7 ms, phase 34 — it retries from both call sites in `revs_plot_terrain`'s path,
+     `if (!s_lowBuilt) view_low_build()`); the low block (event lines 3..43, `VIEW_LOW_LO..HI`) painted by the
+     slower `paint_lines_clipped` chain instead of the scan's painter; and the per-frame
+     `convertRace` for every row no painter owns — a gap frame, which on the other circuits stops
+     at frame 2.  Plausibly >10 ms a frame between them.
+   - **What was measured (parked, b3be95a's session)**: the build first succeeded after ~22 sweeps
+     on an A500 and ~120 on an A1200.  ⚠ Those counts were NOT taken against the car's motion, and
+     the user's report says it lasts as long as the car stands still — so "a fixed cold-start
+     count" is unproven and "fails until the view changes" is the working hypothesis.  An A1200
+     sweeping ~5x more often in the same wall time fits a time/state trigger, not a sweep count.
+   - **Confirm first (one run each, parked and then `HOLD_THROTTLE=1`, `TRACK=1`)**:
+     `g_terrainClipBad` (failed LINES, summed over attempts — already in `PROBE_SYMS_TERRAINLOW`,
+     `amiga/lowchk.gdb`), `g_decodeGapFrames` / `g_decodeGapLastAt` / `g_decodeFrames`
+     (`PROBE_SYMS_DECODEGAP`), and the frame on which `s_lowBuilt` goes 1 — needs a probe symbol.
+     Then `fps_series.gdb` before and after the build succeeds, to price the defect.
+   - **Then find which check rejects**: per failing line, dump `view_run_left_end` ($3150),
+     `view_run_right_start` ($30D0) and `view_run_right_end` ($3080) and which test fails (lattice
+     miss `<0`, the mirror `a1 + b0 == 39`, ordering, or the per-cell contiguity pass).  It is host
+     code, so a host `TRACK=1` run with a temporary print is the cheap instrument.
+   - **Suspects** [INFERRED]: (a) the tables live in the `$3000` source blocks' TAILS, and
+     `view_run_right_end` is *also* cell column 1's source area (`symbols.csv` $3080 — the two
+     readings already share one byte, `$309B`); a producer byte or the scan's destructive read
+     landing on a table cell would fail the lattice until the view moves it elsewhere.
+     (b) Brands' own hooks (`HookFieldOfView` and friends, `docs/static-map.md` §per-track hooks)
+     plant different boundary tables at the start position, a legitimate shape the checks are too
+     strict for.  (c) the anchors ($75/cell 6, $7C/33, $97/34) are Silverstone's measured values
+     and a circuit may start with another.  The fix follows from which one it is; the picture is
+     already correct either way (b3be95a's floor of 44 made the fallback render the rows).
+   - **Gate**: `make lockstep CIRCUIT=1` and a Brands start dump as in b3be95a
+     (`docs/validation-harness.md` §the target-side gate), plus `SCANCHECK` on Brands; the
+     speed-up measured with `fps_series.gdb` parked on the Brands grid.
 3. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
    build's accepted true-ratio ±1 LSB, byte-identical before and after this work.  Decide whether it
    should run `EXACTRATIO=1` (then it is a pass/fail gate again) or compare against a recorded HEAD.
