@@ -563,12 +563,22 @@ static void apDecide(void)
     if (s_apTrace > 0 && (s_apFrames % (unsigned)s_apTrace) == 0)
         std::fprintf(stderr, "[ap]%s\n", s_apRing[(s_apRingAt - 1u) & 63u]);
 }
+#ifdef REVS_TERRAIN_LOW
+extern "C" volatile unsigned long g_terrainClipBad;
+#endif
 static void apReport(void)
 {
     std::fprintf(stderr, "[autopilot] %lu frames: %lu laps, %lu crashes, %lu stalls, "
                  "%lu airborne frames (max height %lu); top speed %d in gear index %d\n",
                  s_apFrames, s_apLaps, s_apCrashes, s_apStalls, s_apAir, s_apMaxH,
                  s_apTopSpeed, s_apTopGearSeen);
+#ifdef REVS_TERRAIN_LOW
+    /* ⭐ view_low_build's rejected lines, summed over its attempts — tools/autopilot_laps.py fails
+       on any.  A rejection is not a wrong picture (the chain paints instead), it is the SLOW path,
+       so nothing else could see it: it read 12 a sweep on Brands' grid for as long as the car was
+       parked, and the game ran at 5.07 fps there where it runs 12.50 (revs_native.c §s_lowClipped). */
+    std::fprintf(stderr, "[autopilot] low-block build rejects: %lu\n", g_terrainClipBad);
+#endif
 }
 static void apInit(void)
 {

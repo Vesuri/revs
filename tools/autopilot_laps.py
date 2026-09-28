@@ -5,7 +5,9 @@ Runs build/revs (a STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 host build) once per circu
 REVS_AUTOPILOT=1 (src/platform/autorun.cpp §THE AUTOPILOT), in parallel, and parses the one
 `[autopilot]` summary line each run prints at exit.  A run passes only with ZERO crashes (the game
 puts a crashed car back on the grid, so one crash voids the lap), zero stalls, zero airborne frames
-(car_height >= 2 — a clean lap has none on any circuit) and at least MIN_LAPS laps.
+(car_height >= 2 — a clean lap has none on any circuit), at least MIN_LAPS laps, and ZERO lines
+rejected by view_low_build (the second `[autopilot]` line: a rejection is the slow path, which no
+picture gate can see).
 
   python3 tools/autopilot_laps.py [--frames N] [--circuits 0,1,2,3,4,5] [--min-laps N] [--trace]
   --trace   REVS_AP_TRACE=-40: dump the 40 frames before any crash or airborne event
@@ -16,6 +18,9 @@ NAMES = {0: 'Silverstone', 1: 'Brands Hatch', 2: 'Donington', 3: 'Oulton Park',
          4: 'Snetterton', 5: 'Nurburgring'}
 LINE = re.compile(r'\[autopilot\] (\d+) frames: (\d+) laps, (\d+) crashes, (\d+) stalls, '
                   r'(\d+) airborne frames \(max height (\d+)\); top speed (\d+) in gear index (\d+)')
+# view_low_build's rejected lines: a rejection leaves the low block on the SLOW chain, which no
+# picture gate can see (Brands' grid ran at 5.07 fps against 12.50 that way).  -1 = not reported.
+LOWBUILD = re.compile(r'\[autopilot\] low-block build rejects: (\d+)')
 
 def run(circuit, frames, trace, outdir):
     env = dict(os.environ, REVS_AUTOPILOT='1', REVS_FIXED_RNG='1', REVS_TRACK=str(circuit),
@@ -24,9 +29,11 @@ def run(circuit, frames, trace, outdir):
     if trace: env['REVS_AP_TRACE'] = '-40'
     p = subprocess.run(['./build/revs'], env=env, capture_output=True, text=True)
     m = LINE.search(p.stderr)
+    lb = LOWBUILD.search(p.stderr)
     dumps = [l for l in p.stderr.split('\n') if l.startswith('[ap]') or l.startswith('  f')]
     refused = 'REFUSED' in p.stderr.upper() and circuit != 0
-    return circuit, (tuple(int(g) for g in m.groups()) if m else None), dumps, refused
+    return circuit, (tuple(int(g) for g in m.groups()) + (int(lb.group(1)) if lb else -1,)
+                     if m else None), dumps, refused
 
 def main():
     ap = argparse.ArgumentParser()
@@ -46,11 +53,15 @@ def main():
         if r is None:
             print(f'  {name:13s} FAIL — no [autopilot] line (the run never reached the race?)')
             bad += 1; continue
-        frames, laps, crashes, stalls, air, maxh, top, gear = r
-        ok = crashes == 0 and stalls == 0 and air == 0 and laps >= a.min_laps and not refused
+        frames, laps, crashes, stalls, air, maxh, top, gear, lowbad = r
+        ok = (crashes == 0 and stalls == 0 and air == 0 and laps >= a.min_laps and not refused
+              and lowbad == 0)
         why = [] if ok else [w for w, c in (('crashed', crashes), ('stalled', stalls),
                                              ('airborne', air), ('too few laps', laps < a.min_laps),
-                                             ('circuit refused', refused)) if c]
+                                             ('circuit refused', refused),
+                                             (f'low-block build rejected {lowbad} line(s)'
+                                              if lowbad > 0 else 'no low-block report', lowbad != 0))
+               if c]
         print(f'  {name:13s} {"PASS" if ok else "FAIL"}  {laps:2d} laps, {crashes} crashes, '
               f'{stalls} stalls, {air} airborne frames (max height {maxh}) over {frames} frames, '
               f'top speed {top} in gear {gear - 1}'
@@ -58,7 +69,7 @@ def main():
         if not ok:
             bad += 1
             for l in dumps[:200]: print('     ' + l)
-    print('lap: ' + ('PASS — every circuit lapped with no crash, stall or jump' if not bad
+    print('lap: ' + ('PASS — every circuit lapped with no crash, stall or jump, and its low block built first time' if not bad
                      else f'FAIL — {bad} circuit(s)'))
     return 1 if bad else 0
 

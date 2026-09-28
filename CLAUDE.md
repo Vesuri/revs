@@ -118,7 +118,8 @@ make determinism-steer     #   ...and the same 300 frames with the WHEEL TURNED 
                            #   trajectory, the gate on the steering/response path
 make lap                   # ⭐⭐ WHOLE LAPS of all six circuits, driven by the AUTOPILOT (autorun.cpp):
                            #   fails on any crash (the car is reset to the grid), stall or airborne
-                           #   frame — the only gate that ever takes a corner or crests a hill
+                           #   frame — the only gate that ever takes a corner or crests a hill — and on
+                           #   any line view_low_build REJECTS (a correct-looking slow path: 2.5x on Brands)
 make lockstep CIRCUIT=n    # ⭐⭐ ...and that run replayed on a REAL BBC (jsbeeb), poll for poll: the first frame
                            #   the PHYSICS differs, then the VIEW.  Host EXACTRATIO=1 (the physics reads
                            #   the picture, so ±1 LSB is not acceptable there).  5 = the Nurburgring disc.
