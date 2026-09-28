@@ -973,22 +973,28 @@ improved to the maximum since that's the initial impression the player gets when
 game."  ⇒ **the target is the MAXIMUM, not a ratio**: a page change should not be visible as drawing.
 **Where it stands** (A500, `make TTTIME=1` + `amiga/tttime.gdb`, raster lines of 64 µs; HEAD
 control measured the same way): the cell-granular decode took the idle menu from **44% of the CPU
-to 1.3%**, and the `COMPETITION=1` menu walk's decode time **35 420 → 4 614 lines**, its worst page
-change **4369 → 1329 lines (280 → 85 ms)**; a moved menu highlight now shows on the next field
+to 1.3%**, and the `COMPETITION=1` menu walk's decode time **35 420 → 3 589 lines**, its worst page
+change **4369 → 1001 lines (280 → 64 ms)**; a moved menu highlight now shows on the next field
 instead of the next flash flip.  Runs of blank-on-black pairs — 74% of the pairs a page change
-paints — go to the BLITTER, which clears them beside the CPU (RevsScreen.cpp §THE PAGE -> THREE
-BITPLANES; gate `make TTCHECK=1`, `amiga/ttcheck.gdb`, and `make mode7`'s decoder differential).
-**What is left — a page change is still ~85 ms, ~4 fields of visible wipe:**
+paints — go to the BLITTER; the decoder emits one arithmetic uint32 KEY a cell (teletext.h
+`TT_KEY`) that the painter compares with one `cmp.l`, and runs of displayable characters decode in
+a loop that carries nothing else (RevsScreen.cpp §THE PAGE -> THREE BITPLANES; gate
+`make TTCHECK=1`, `amiga/ttcheck.gdb`, and `make mode7`'s decoder differential).
+**Stopped short of the 40 ms target (user: "stop at the 40 ms target … if it seems unreachable,
+you may stop earlier") — what is left, a page change still ~64 ms, ~3 fields of visible wipe:**
+- The worst walk page (all 1000 cells) is **decode 254 lines + painting ~776** (TTTIME's worst-call
+  split).  The title page, the first thing on screen, is **2287 lines = decode 379 + ~1900** — 361
+  of its 500 pairs carry mosaic glyphs, so it is almost all pair painting, ~2400 cycles a glyph pair
+  wall (the pair painter's objdump is ~100 cycles a glyph line: a 24-cycle fetch and three plane
+  words at 4+4+4+12).  ⇒ **The painter is the floor of both, and the remaining lever is an asm pair
+  painter** (the and/eor on a plane whose mask is 0 or $FFFF is 8 of every 24 cycles; four cells a
+  longword saves a `swap`'s worth) — a real project, not low-hanging fruit.
 - ⚠ **Chip-RAM stores are NOT slower than fast-RAM ones here** — calibrated: 15 000 word stores took
   1354 raster lines into the bitmap and 1343 into a fast-RAM buffer, and the fast loop ran at its
-  68000 table timing to 1.6%.  (An earlier note here said "~2x"; that was a guess from pair costs
-  that simply exceeded a back-of-envelope estimate, retracted by the measurement.)
-- The glyph pairs (~1800 cycles a pair measured, ~100 instructions) are now the paint; the next
-  cut is FOUR cells a longword (a `swap` joins two pair words, ~17% fewer cycles a line) or an asm
-  row painter.
-- The decode is ~190 cycles a cell (~7.6k a row); a page change re-decodes every changed row.
-- The idle page compare is ~2.8 ms a field (2322 instructions single-stepped before the unroll) —
-  not visible, but it is 14% of an idle 68000.
+  68000 table timing to 1.6%.
+- The decode is ~10 lines a row; its run loops are 9-12 instructions a cell, so what is left is the
+  control-code path.
+- The idle page compare is ~2.8 ms a field — not visible, but it is 14% of an idle 68000.
 - Everything outside the decode is unmeasured: `pcsample.sh` over the `COMPETITION=1` walk, for the
   text-script interpreter, the circuit menu and the key polling (`RevsInput::anyKeyDown` was 3.6%
   of one stepped window).
@@ -1001,6 +1007,12 @@ bugs the lockstep found).  The autopilot now races: `make lap` laps all six circ
 on ALL SIX circuits at that pace.  Open, in order:
 1. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — every
    lockstep so far is a practice session, alone on track.
+   ⚠ **A user-reported symptom to settle there (2026-09-28, not yet investigated):** a car seen
+   approaching in the MIRROR often never appears in the main view, and a car later passes in the
+   main view with no mirror sighting before it — expected: a car first seen in the mirror shows in
+   the main view as soon as it drives by.  Faithful (a blind spot alongside) or a port bug (the
+   mirror and the view are separate routines; the decoupled 25 Hz sim is a suspect for a
+   misclassified per-frame quantity) — decide against a real BBC race, never by argument.
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
@@ -1140,6 +1152,7 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
 - ⛔ **MODE 7: a blank glyph's key as its background alone** (2026-09-28) — painted cells 1836 → 1588 over the menu walk, paint **838k → 968k colour clocks**: the per-cell blank lookup it adds to every VISITED pair costs more than the pairs it skips. Only a scheme whose skip test is already paid (the blitter clear above) can use it.
+- ⛔ **MODE 7: a whole display row painted by the BLITTER** (2026-09-28) — the CPU staged a 10-line glyph mask + six pen lines in chip RAM and three `blitterCombineWithMask` blits coloured the row (D = glyph ? fg : bg); byte-exact (TTCHECK 0) and the worst walk page went **1026 → 2142 lines**, the title page 2287 → 2280.  The blits (~9.5k cycles a row) do not overlap the CPU — one bus — and the staging alone was ~26k cycles a row, so it breaks even only at ~15 glyph pairs a row.  The blank-run CLEAR pays because it replaces work outright and is D-only.
 - ⛔ **MODE 7: passing the pair painter scalars instead of `TtCell`s, with a separate blank-fill routine** — 852k → 838k colour clocks (inside the noise); the call is not the pair's overhead.
 - ⛔ **THE TERRAIN BY BLITTER AREA FILL** — exact (0 mismatches over 616k cells, seven sabotages
   caught) and **+5.25 ms** (84.43 → 89.68), in both shapes: a C toggle writer over the event lists
