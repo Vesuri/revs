@@ -737,16 +737,16 @@ instead**. What the first pass through them found (2026-09-20):
   2.7 ms is that single run amortised over the window's 333 frames, so **the real recurring frame is
   ~169 ms, not 172** — and a longer run reports a smaller number for the same binary. Any A/B that
   straddles it is comparing two different amortisations. Check `calls=` on every row before diffing.
-- ⭐ **Phase 3 (`read_driving_controls`, 5.11 ms) is ~7 MOS calls a frame, priced at ~1450 cycles
-  each ≈ 2.1-2.5 ms.** Host census (`make`, a counter in `Platform::mosCall`): **2097 OSBYTE 129 +
-  839 OSWORD 7 over 300 frames = 7.0 key tests and 2.8 sound calls a frame.** One key test is a
-  `MosRegs` built on the stack → `jsr platform_mos_call_typed` → **virtual** `Platform::mosCall`
-  (468 instructions) → `switch(0xFFF4)` → `osbyte()` → `switch(0x81)` → **virtual**
-  `platform->keyDown()` → a **33-entry linear scan** (~760 cycles), with the struct copied by value
-  at three frames. The BBC paid an OS call because it had to scan a keyboard matrix; this port is
-  asking a byte array the input ISR already maintains. **Two independent fixes, both Amiga-local and
-  observably identical: a 256-byte BBC-code→rawkey reverse map inside `RevsInput`, and a direct
-  `platform_key_down()` entry that skips the OSBYTE dispatch.** Not yet built.
+- ✅ **Phase 3 (`read_driving_controls`) — the key tests are DONE, in three steps.** It was ~7 OSBYTE
+  129s a frame through a `MosRegs` round trip, two virtual calls and a 33-entry linear scan. The
+  reverse map and the direct `platform_key_down` answer took ~4 ms out; what remained was still
+  ~50 instructions a poll behind the virtual `Platform::keyDown` chain — **74% of the routine's 660
+  instructions a call**, single-stepped — so the race's answer is now IN LINE (`revs_keys.h`):
+  **660 → 247 instructions a call**, ~11 a poll, with the front end's tap latch, unmapped codes and
+  the autorun scaffolding still routed through `RevsInput::keyDown`. `make KEYSTIM=1
+  STRAIGHT_TO_RACE=1` + `straight_to_race.gdb` is its end-to-end proof (road speed must rise).
+  ⚠ The "~1.7 ms a step" once quoted for the controls was traced on an AUTORUN build, where the
+  script's per-poll `pressBbcKey` is a third of the cost; the shipping step was ~0.9 ms.
 - The rest, unexamined: phase 4 `apply_driving_model` 3.60 (real 6502 arithmetic, the BBC paid it
   too), **phases 14+15 `build_road_sign` + `draw_track_object` 5.15 ms for ONE billboard** — the
   next thing to read here — phase 23 `check_crash` 0.50, phases 9/12/20 `engine_sound_update` 1.79.
@@ -1101,8 +1101,8 @@ frame: ~2.8 steps of ~3.1 ms (controls ~1.7 ms a step, driving model ~3.5). It i
 time (25 steps/s ≈ 13% of the CPU), so it costs about the same fraction at any render speed.
 ⇒ At today's ~10 fps render, 25 Hz steps buy physics accuracy, not visible smoothness: a step
 finer than the display frame is not seen. Levers, cheapest first:
-- **the controls' key polling per step** (~1.7 ms a step for a keyboard that changes at the render
-  rate at most);
+- ✅ the controls' key polling per step — in line now (`revs_keys.h`, 660 → 247 instructions a
+  step); the ~1.7 ms once quoted here was an AUTORUN build's figure;
 - a slower 68000 step until the render is near 40 ms (a user decision);
 - the driving model itself.
 

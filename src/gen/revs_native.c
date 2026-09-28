@@ -34,6 +34,9 @@
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 #include "../platform/view_span.h"    /* ViewSpan / view_span_line: the span record */
 #include "../platform/track.h"        /* TRACK_GEN_ARGS(): the generator's two per-circuit constants */
+#ifdef REVS_PLATFORM_AMIGA
+#include "../platform/amiga/revs_keys.h"   /* revs_key_down: kbd_test_key's answer, in line */
+#endif
 
 /* ⚠ Seed sites ONLY.  draw_road writes the three low bytes and interp_edge the three pages, so
    between them the pointer is half-built and a whole-word store would invent a high byte the 6502
@@ -12285,8 +12288,10 @@ MosRegs kbd_test_key_regs(uint8_t keyCode)
        X = Y = $FF held / $00 not, carry as handed in (0) — so no caller can tell the difference.
        ⚠ Amiga only: the host keeps the MOS call because REVS_HW_TRACE logs it and `make
        validate` diffs that log between twin and oracle (docs/faithfulness-seam.md: a faithful
-       routine that needs a small Amiga variation stays here, under the platform guard). */
-    const uint8_t v = platform_key_down(keyCode) ? 0xFFu : 0x00u;
+       routine that needs a small Amiga variation stays here, under the platform guard).
+       ⭐ And the race's answer is IN LINE (revs_keys.h): the call chain behind platform_key_down
+       was still ~50 instructions to read one byte, 74% of read_driving_controls a step. */
+    const uint8_t v = revs_key_down(keyCode) ? 0xFFu : 0x00u;   /* revs_keys.h: in line on the race path */
     MosRegs r = { 0x81u, v, v, 0u };
     return r;
 #else

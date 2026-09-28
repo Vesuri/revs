@@ -482,6 +482,15 @@ ifdef HOLD_THROTTLE
 EXTRA_DEFINES += -DREVS_HOLD_THROTTLE
 endif
 
+# `make KEYSTIM=1 STRAIGHT_TO_RACE=1` — the stimulus for revs_keys.h's in-line key answer, which
+# no autorun build otherwise reaches (the script answers through RevsInput until it hands over).
+# At the handover it holds the UP-arrow rawkey — the throttle's SECOND slot — in g_keyDown, where
+# the CIA-A handler puts a real press; `amiga/straight_to_race.gdb` must then see road speed rise.
+# (A gdb `set var` cannot reach the emulated machine, so the stimulus lives in the binary.)
+ifdef KEYSTIM
+EXTRA_DEFINES += -DREVS_KEY_STIM
+endif
+
 # ⭐ `make HOLD_STEER=l` / `HOLD_STEER=r` — hold a STEERING key beside the throttle, so an
 # unattended run actually TURNS THE WHEEL.  Compile-time here because the target has no
 # environment to read; the host takes the same thing at run time as REVS_HOLD_STEER.  It exists

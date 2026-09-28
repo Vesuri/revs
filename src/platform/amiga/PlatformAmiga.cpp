@@ -35,6 +35,13 @@
 #include "../../cpu/mem_decl.h"
 extern "C" MEM_QUAL uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
 extern "C" volatile uint8_t g_keyDown[128];  // RevsInput's rawkey state, for the quit chord
+// revs_keys.h: may kbd_test_key answer in line?  Not in an autorun build until its script hands
+// over, because every scripted answer must go through keyDown() below to reach the rawkey state.
+#ifdef REVS_AUTORUN_BUILD
+extern "C" { volatile uint8_t g_keyDirect = 0; }
+#else
+extern "C" { volatile uint8_t g_keyDirect = 1; }
+#endif
 
 // GfxBase is opened in the constructor (GCCRuntime.cpp defines the global).
 extern struct GfxBase* GfxBase;
@@ -348,7 +355,13 @@ bool PlatformAmiga::keyDown(uint8_t x)
         // ⚠ Measurement builds never reach this (done() is false forever there), so it cannot
         // disturb an FPS window; it fires exactly at the straight-to-race handover.
         if (autoRun.done()) input.releaseAllKeys();
+#ifdef REVS_KEY_STIM
+        // `make KEYSTIM=1`: hold UP (rawkey $4C, the throttle's second slot) from the handover on,
+        // so the in-line answer in revs_keys.h is exercised by a headless run.
+        if (autoRun.done()) g_keyDown[0x4C] = 1u;
+#endif
     }
+    if (autoRun.done()) g_keyDirect = 1;    // the script is finished: revs_keys.h may answer
     return input.keyDown(x);
 #else
     return input.keyDown(x);

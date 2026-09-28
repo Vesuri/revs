@@ -151,15 +151,15 @@ static const KeyMap kKeys[] = {
    g_keyMapOverflow, which must read 0 — a third rawkey on one code would otherwise be silently
    dropped and that key would simply stop working. */
 enum { RK_NONE = 0xFF };
-static uint8_t s_rk[256][2];
+extern "C" { uint8_t g_keyRawMap[256][2]; }   /* revs_keys.h reads it in line */
 static bool    s_rkBuilt = false;
 extern "C" { volatile uint8_t g_keyMapOverflow = 0; }
 
 static void buildReverseMap()
 {
-    for (unsigned c = 0; c < 256; c++) { s_rk[c][0] = RK_NONE; s_rk[c][1] = RK_NONE; }
+    for (unsigned c = 0; c < 256; c++) { g_keyRawMap[c][0] = RK_NONE; g_keyRawMap[c][1] = RK_NONE; }
     for (unsigned i = 0; i < KEY_COUNT; i++) {
-        uint8_t* r = s_rk[kKeys[i].bbc];
+        uint8_t* r = g_keyRawMap[kKeys[i].bbc];
         if      (r[0] == RK_NONE) r[0] = kKeys[i].rawkey;
         else if (r[1] == RK_NONE) r[1] = kKeys[i].rawkey;
         else g_keyMapOverflow++;
@@ -170,7 +170,7 @@ static void buildReverseMap()
 static inline const uint8_t* rawkeysFor(uint8_t bbc)
 {
     if (!s_rkBuilt) buildReverseMap();
-    return s_rk[bbc];
+    return g_keyRawMap[bbc];
 }
 
 /* ---------------------------------------------------------------------------
@@ -436,7 +436,7 @@ bool RevsInput::keyDown(uint8_t x) const
     /* ⭐ The hot path is one or two table loads and a test: the reverse map is built by
        initialize(), and the two rawkey slots are tested in line rather than by a bounded loop
        (a row's second slot is RK_NONE for all but the doubly-mapped keys). */
-    const uint8_t* const r = s_rk[x];
+    const uint8_t* const r = g_keyRawMap[x];
     const uint8_t k0 = r[0], k1 = r[1];
     if (x == 0x9Du) g_spacePolls++;                     /* SPACE — the instrument above */
     if (k0 == RK_NONE) { g_keyUnmappedCode = x; g_keyUnmapped++; return false; }
