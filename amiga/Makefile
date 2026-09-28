@@ -440,10 +440,17 @@ ASM_SRCS += $(AMIGA_SRC)/teletext_m68k.s
 endif
 # ⭐ `make TTTIME=1` — the MODE 7 decode's cost in raster lines, read in-program
 # (`amiga/tttime.gdb`): last / max / total over the decodes that painted anything.
+# `TTSPLIT=1` adds the worst call's split — decode, painter calls, blitter clears — at ~170 beam
+# reads a page change, so quote a page change's TOTAL from a build without it.
 ifdef TTTIME
 EXTRA_DEFINES += -DREVS_TT_TIME
+ifdef TTSPLIT
+EXTRA_DEFINES += -DREVS_TT_SPLIT
+endif
 PROBE_SYMS_TTTIME = g_ttTimeLast g_ttTimeMax g_ttTimeTotal g_ttTimeCalls g_ttTimeCells \
-                    g_ttTimeMaxDecode g_ttTimeMaxRows g_ttTimeMaxCells
+                    g_ttTimeMaxDecode g_ttTimeMaxRows g_ttTimeMaxCells \
+                    g_ttMaxRun g_ttMaxSame g_ttMaxGeneral g_ttMaxGenBlank \
+                    g_ttMaxBlit g_ttMaxBlitCalls g_ttMaxPaint
 endif
 
 # `make STRAIGHT_TO_RACE=1` — boot straight into a Silverstone PRACTICE session with the

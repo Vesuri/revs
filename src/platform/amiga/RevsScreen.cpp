@@ -853,6 +853,11 @@ volatile uint32_t g_ttTimeLast = 0, g_ttTimeMax = 0, g_ttTimeTotal = 0, g_ttTime
 volatile uint16_t g_ttTimeCells = 0;
 /* The worst call split: its decode (tt_decode_row_keys) lines, its rows decoded, its cells painted. */
 volatile uint32_t g_ttTimeMaxDecode = 0, g_ttTimeMaxRows = 0, g_ttTimeMaxCells = 0;
+/* ...and what that page is made of, from the key shadow: pairs a blitter run takes (blank on
+   black), pairs of one colour on black (the per-foreground routines), and every other pair (the
+   general painter), of which blank-on-colour.  Read after the timer, so it costs the call nothing. */
+volatile uint32_t g_ttMaxRun = 0, g_ttMaxSame = 0, g_ttMaxGeneral = 0, g_ttMaxGenBlank = 0;
+volatile uint32_t g_ttMaxBlit = 0, g_ttMaxBlitCalls = 0, g_ttMaxPaint = 0;   /* its lines in the blitter clears (wait + issue) */
 }
 static inline uint32_t tt_beam_lines(void)
 {
@@ -974,11 +979,21 @@ void tt_paint_pair(uint16_t* d, uint32_t ka, uint32_t kb, unsigned half)
 static inline void tt_blit_wait(void) { AmigaHardware::blitterWait(); }
 /* ⚠ The wait first is what makes blitterClear take its DIRECT arm: that arm needs the blitter idle
    and the queue empty, and nothing in the port ever queues. */
+#ifdef REVS_TT_SPLIT
+static uint32_t s_ttBlitLines = 0, s_ttBlitCalls = 0;   /* this decode's: in tt_blit_clear, + the final wait */
+#endif
 static void tt_blit_clear(uint8_t* dst, unsigned words)
 {
+#ifdef REVS_TT_SPLIT
+    const uint32_t tb = tt_beam_lines();
+    s_ttBlitCalls++;
+#endif
     AmigaHardware::blitterWait();
     AmigaHardware::blitterClear((uint16_t*)(void*)dst, (uint16_t)words,
                                 (uint16_t)(TT_CELL_H * kTtBP), (int16_t)(kTtPlaneGap - 2u * words));
+#ifdef REVS_TT_SPLIT
+    s_ttBlitLines += tt_beam_lines() - tb;
+#endif
 }
 
 #ifdef REVS_TT_ASM
@@ -1029,7 +1044,10 @@ void RevsScreen::decodeTeletext()
     if (!m_ttBitmap) return;
 #ifdef REVS_TT_TIME
     const uint32_t t0 = tt_beam_lines();
-    uint32_t tDecode = 0;
+#endif
+#ifdef REVS_TT_SPLIT
+    uint32_t tDecode = 0, tPaint = 0;
+    s_ttBlitLines = 0; s_ttBlitCalls = 0;
 #endif
     tt_blit_wait();                       /* the last decode's final run, normally long done */
 
@@ -1073,17 +1091,20 @@ void RevsScreen::decodeTeletext()
 
         const unsigned char* src = mem + TT_SCREEN_BASE + row * TT_COLS;
         uint32_t cells[TT_COLS];
-#ifdef REVS_TT_TIME
+#ifdef REVS_TT_SPLIT
         const uint32_t td = tt_beam_lines();
 #endif
         const int flags = tt_decode_row_keys(src, cells, (int)phase);
-#ifdef REVS_TT_TIME
+#ifdef REVS_TT_SPLIT
         tDecode += tt_beam_lines() - td;
 #endif
         const int dbl   = flags & 1;
         if (flags & 2) s_ttRowFlash |= bit; else s_ttRowFlash &= ~bit;
         decoded++;
 
+#ifdef REVS_TT_SPLIT
+        const uint32_t tp = tt_beam_lines();
+#endif
         painted += TT_PAINT_ROW(rowTop, keys, cells, dbl ? 1u : 0u);
         if (dbl) {
             newDbl |= bit;
@@ -1093,12 +1114,21 @@ void RevsScreen::decodeTeletext()
         } else if (oldDbl & bit) {
             force |= bit << 1;           /* lost double height: the row below shows itself again */
         }
+#ifdef REVS_TT_SPLIT
+        tPaint += tt_beam_lines() - tp;
+#endif
     }
 
     m_ttRowDbl     = newDbl;
     g_ttRowsDrawn  = decoded;
     g_ttCellsDrawn = painted;
+#ifdef REVS_TT_SPLIT
+    const uint32_t tw = tt_beam_lines();
+#endif
     tt_blit_wait();   /* a decode is FINISHED when its blits are: the timer and the check both mean that */
+#ifdef REVS_TT_SPLIT
+    s_ttBlitLines += tt_beam_lines() - tw;
+#endif
 #ifdef REVS_TT_CHECK
     ttCheck();
 #endif
@@ -1107,7 +1137,19 @@ void RevsScreen::decodeTeletext()
         const uint32_t dt = tt_beam_lines() - t0;
         g_ttTimeLast = dt; g_ttTimeCells = painted; g_ttTimeTotal += dt; g_ttTimeCalls++;
         if (dt > g_ttTimeMax) {
-            g_ttTimeMax = dt; g_ttTimeMaxDecode = tDecode; g_ttTimeMaxRows = decoded; g_ttTimeMaxCells = painted;
+            g_ttTimeMax = dt; g_ttTimeMaxRows = decoded; g_ttTimeMaxCells = painted;
+#ifdef REVS_TT_SPLIT
+            g_ttTimeMaxDecode = tDecode; g_ttMaxBlit = s_ttBlitLines; g_ttMaxBlitCalls = s_ttBlitCalls; g_ttMaxPaint = tPaint;
+#endif
+            uint32_t run = 0, same = 0, gen = 0, genBlank = 0;
+            for (unsigned i = 0; i < TT_ROWS * TT_COLS; i += 2u) {
+                const uint32_t ka = s_ttKey[i], kb = s_ttKey[i + 1u];
+                const int blank = (ka & 0x7Fu) <= 0x20u && (kb & 0x7Fu) <= 0x20u;
+                if (blank && !((ka | kb) & TT_KEY(0u, 0u, 0u, 7u))) run++;
+                else if (TT_KEY_COLOUR(ka) == TT_KEY_COLOUR(kb) && TT_KEY_COLOUR(ka) < 8u) same++;
+                else { gen++; genBlank += (uint32_t)blank; }
+            }
+            g_ttMaxRun = run; g_ttMaxSame = same; g_ttMaxGeneral = gen; g_ttMaxGenBlank = genBlank;
         }
     }
 #endif

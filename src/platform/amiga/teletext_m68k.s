@@ -23,14 +23,16 @@
 |   low word) : cells painted (high word), d7 = half << 12.
 | Painters: d0/d1 = the two keys, a2 = destination, a4 = glyph A's words, a5 = glyph B's bytes;
 |   d2/d3/d5 scratch (the general one saves d4/d6/d7 and uses d0-d7).
-| ⚠ BLANK is `code <= $20`, not a table lookup: the generated font's blank glyphs are exactly codes
-|   $00-$20 in all three sets (and the decoder never emits a code below $20) — the C painter's
+| ⚠ BLANK is `code == $20`, not a table lookup: the generated font's blank glyphs are exactly codes
+|   $00-$20 in all three sets, and the decoder never emits a code below $20 (a control cell shows
+|   $20 or the held mosaic) — so a pair is blank iff neither key has a bit in $5F.  The C painter's
 |   g_ttBlank says the same, and TTCHECK compares the result with it.
 
 	.equ	ROWB,    120                | kTtRowBytes: one display line, three interleaved planes
 	.equ	GAP,     40                 | kTtPlaneGap
 	.equ	BGMASK,  0x380000           | TT_KEY(0, 0, 0, 7): the background bits
 	.equ	GLYPH,   0x1FF              | TT_KEY_GLYPH
+	.equ	BLANKBG, 0x38005F           | BGMASK + the code bits a $20 lacks: zero = blank on black
 	.equ	PAIRS,   20                 | TT_COLS / 2
 	.equ	F_RUNAT,   0                | frame: the pending blitter run's first word
 	.equ	FRAME,     4
@@ -114,6 +116,76 @@ tt_fgd\f:
 	bra	.Lnext
 	.endm
 
+| The quad's plane longword: the four-cell glyph longword (d2) where F has bit P, else 0 (d5).
+	.macro	QPST f, p, y
+	.if SABOTAGE == 5 && \p == 2
+	move.l	d5,(\y)*ROWB+(\p)*GAP(a2)   | SABOTAGE 5: a quad's plane 2 is always clear
+	.else
+	.if (\f >> \p) & 1
+	move.l	d2,(\y)*ROWB+(\p)*GAP(a2)
+	.else
+	move.l	d5,(\y)*ROWB+(\p)*GAP(a2)
+	.endif
+	.endif
+	.endm
+
+| A | B in the high word, C | D in the low: A and C pre-shifted words (a4, a0), B and D bytes (a5, a1).
+	.macro	QGW
+	move.w	(a4)+,d2
+	or.b	(a5)+,d2
+	swap	d2
+	move.w	(a0)+,d2
+	or.b	(a1)+,d2
+	.endm
+
+	.macro	Q_LINE f, y
+	QGW
+	QPST	\f, 0, \y
+	QPST	\f, 1, \y
+	QPST	\f, 2, \y
+	.endm
+
+	.macro	Q_DLINE f, y
+	QGW
+	QPST	\f, 0, 2*\y
+	QPST	\f, 1, 2*\y
+	QPST	\f, 2, 2*\y
+	QPST	\f, 0, 2*\y+1
+	QPST	\f, 1, 2*\y+1
+	QPST	\f, 2, 2*\y+1
+	.endm
+
+	.macro	Q_ROUTINE f
+tt_q\f:
+	moveq	#0,d5
+	Q_LINE	\f, 0
+	Q_LINE	\f, 1
+	Q_LINE	\f, 2
+	Q_LINE	\f, 3
+	Q_LINE	\f, 4
+	Q_LINE	\f, 5
+	Q_LINE	\f, 6
+	Q_LINE	\f, 7
+	Q_LINE	\f, 8
+	Q_LINE	\f, 9
+	movem.l	(sp)+,a0-a1
+	addq.l	#2,a2                       | the second pair; .Lnext steps past the first
+	bra	.Lnext
+	.endm
+
+	.macro	Q_DROUTINE f
+tt_qd\f:
+	moveq	#0,d5
+	Q_DLINE	\f, 0
+	Q_DLINE	\f, 1
+	Q_DLINE	\f, 2
+	Q_DLINE	\f, 3
+	Q_DLINE	\f, 4
+	movem.l	(sp)+,a0-a1
+	addq.l	#2,a2
+	bra	.Lnext
+	.endm
+
 | One plane word of a general line: (glyph & M) ^ C; glyph in d0, temp d1.
 	.macro	GPST m, c, p, y
 	move.w	d0,d1
@@ -191,7 +263,7 @@ tt_paint_row_m68k:
 	lea	g_ttGlyphHi,a6
 	lea	g_ttFont,a3
 	cmpi.l	#2,d7                       | the bottom half starts at source line 5
-	bne.s	1f
+	bne	1f
 	lea	10(a6),a6
 	addq.l	#5,a3
 1:	moveq	#12,d0
@@ -205,18 +277,18 @@ tt_paint_row_m68k:
 	move.l	(a0)+,d1
 	or.l	d7,d1
 	cmp.l	(a1)+,d0
-	bne.s	.Lmoved_a
+	bne	.Lmoved_a
 	cmp.l	(a1)+,d1
-	bne.s	.Lmoved_b
+	bne	.Lmoved_b
 	tst.w	d4                          | an unchanged pair ends a run
-	beq.s	.Lnext
+	beq	.Lnext
 	bsr	tt_flush
 .Lnext:
 	addq.l	#2,a2
 	dbra	d6,.Lpair
 
 	tst.w	d4
-	beq.s	2f
+	beq	2f
 	bsr	tt_flush
 2:	move.l	d6,d0
 	clr.w	d0
@@ -233,39 +305,104 @@ tt_paint_row_m68k:
 	swap	d6
 	addq.w	#2,d6
 	swap	d6
-	move.l	d0,d2                       | blank on black: both codes <= $20, both backgrounds 0
-	or.l	d1,d2
-	andi.l	#BGMASK,d2
-	bne.s	.Lpaint
-	moveq	#0x7F,d2
-	and.b	d0,d2
-	cmpi.b	#0x20,d2
-	bhi.s	.Lpaint
-	moveq	#0x7F,d2
-	and.b	d1,d2
-	cmpi.b	#0x20,d2
-	bhi.s	.Lpaint
+	move.l	d0,d2                       | blank on black: both codes $20, both backgrounds 0 —
+	or.l	d1,d2                       | one mask test for the pair (see BLANK above)
+	andi.l	#BLANKBG,d2
+	bne	.Lpaint
 	tst.w	d4                          | ...extends the run (or starts one here)
-	bne.s	3f
+	bne	3f
 	move.l	a2,F_RUNAT(sp)
 3:	addq.w	#1,d4
-	bra.s	.Lnext
+	bra	.Lnext
 
 .Lpaint:
 	tst.w	d4
-	beq.s	4f
+	beq	4f
 	bsr	tt_flush
 4:	move.l	d0,d2                       | one colour for both cells, on black?
 	swap	d2
 	move.l	d1,d3
 	swap	d3
 	cmp.w	d2,d3
-	bne.s	.Lgeneral
+	bne	.Lgeneral
 	cmpi.w	#8,d2
-	bcc.s	.Lgeneral
+	bcc	.Lgeneral
 	.if SABOTAGE == 3
-	bra.s	.Lgeneral                   | SABOTAGE 3 is a CONTROL: every pair takes the general path
+	bra	.Lgeneral                   | SABOTAGE 3 is a CONTROL: every pair takes the general path
 	.endif
+| ⭐ FOUR CELLS A LONGWORD: when the NEXT pair shares this colour too (and is not two blanks, which
+| a blitter run takes more cheaply), both go through one QUAD routine — one dispatch for four
+| cells, and each plane line one `move.l` of two `swap`-joined glyph words (16 cycles against two
+| 12-cycle words).  Any even address takes a longword on the 68000, so no alignment is needed.
+| The next pair is painted whether or not it moved, which only costs time.
+	tst.w	d6                          | a next pair in this row?
+	beq	.Lsingle
+	move.l	(a0),d4                     | (d4, the run length, is 0 after the flush above)
+	or.l	d7,d4
+	move.l	4(a0),d5
+	or.l	d7,d5
+	move.l	d4,d3
+	swap	d3
+	cmp.w	d2,d3
+	bne	.Lsingle0
+	move.l	d5,d3
+	swap	d3
+	cmp.w	d2,d3
+	bne	.Lsingle0
+	move.l	d4,d3                       | not two blanks (both codes $20)
+	or.l	d5,d3
+	andi.w	#0x5F,d3
+	beq	.Lsingle0
+
+	move.l	d4,(a1)+
+	move.l	d5,(a1)+
+	addq.l	#8,a0
+	subq.w	#1,d6
+	swap	d6
+	addq.w	#2,d6
+	swap	d6
+	movem.l	a0-a1,-(sp)                 | the quad borrows them for glyphs C and D
+	andi.w	#GLYPH,d0
+	lsl.w	#5,d0
+	lea	(a6,d0.w),a4
+	andi.w	#GLYPH,d1
+	lsl.w	#4,d1
+	lea	(a3,d1.w),a5
+	andi.w	#GLYPH,d4
+	lsl.w	#5,d4
+	lea	(a6,d4.w),a0
+	andi.w	#GLYPH,d5
+	lsl.w	#4,d5
+	lea	(a3,d5.w),a1
+	moveq	#0,d4
+	add.w	d2,d2
+	add.w	d2,d2
+	tst.l	d7
+	bne	6f
+	jmp	tt_qtab_n(pc,d2.w)
+6:	jmp	tt_qtab_d(pc,d2.w)
+	.even
+tt_qtab_n:
+	bra.w	tt_q0
+	bra.w	tt_q1
+	bra.w	tt_q2
+	bra.w	tt_q3
+	bra.w	tt_q4
+	bra.w	tt_q5
+	bra.w	tt_q6
+	bra.w	tt_q7
+tt_qtab_d:
+	bra.w	tt_qd0
+	bra.w	tt_qd1
+	bra.w	tt_qd2
+	bra.w	tt_qd3
+	bra.w	tt_qd4
+	bra.w	tt_qd5
+	bra.w	tt_qd6
+	bra.w	tt_qd7
+.Lsingle0:
+	moveq	#0,d4
+.Lsingle:
 	add.w	d2,d2
 	add.w	d2,d2
 	andi.w	#GLYPH,d0                   | the glyph pointers
@@ -275,7 +412,7 @@ tt_paint_row_m68k:
 	lsl.w	#4,d1
 	lea	(a3,d1.w),a5
 	tst.l	d7
-	bne.s	5f
+	bne	5f
 	jmp	tt_tab_n(pc,d2.w)
 5:	jmp	tt_tab_d(pc,d2.w)
 .Lgeneral:
@@ -338,6 +475,23 @@ tt_flush:
 	FG_DROUTINE 5
 	FG_DROUTINE 6
 	FG_DROUTINE 7
+
+	Q_ROUTINE 0
+	Q_ROUTINE 1
+	Q_ROUTINE 2
+	Q_ROUTINE 3
+	Q_ROUTINE 4
+	Q_ROUTINE 5
+	Q_ROUTINE 6
+	Q_ROUTINE 7
+	Q_DROUTINE 0
+	Q_DROUTINE 1
+	Q_DROUTINE 2
+	Q_DROUTINE 3
+	Q_DROUTINE 4
+	Q_DROUTINE 5
+	Q_DROUTINE 6
+	Q_DROUTINE 7
 
 tt_gen:
 	GEN_SETUP

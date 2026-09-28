@@ -11,5 +11,8 @@ printf "TT last=%u lines (%u cells)  max=%u  total=%u over %u painting decodes  
   g_ttTimeLast, g_ttTimeCells, g_ttTimeMax, g_ttTimeTotal, g_ttTimeCalls, g_vbiCount
 printf "TT worst: %u lines = decode %u over %u rows + the rest, %u cells painted\n", \
   g_ttTimeMax, g_ttTimeMaxDecode, g_ttTimeMaxRows, g_ttTimeMaxCells
+printf "TT worst page pairs: %u blank-on-black (runs), %u one colour on black, %u general (%u of them blank on colour)\n", \
+  g_ttMaxRun, g_ttMaxSame, g_ttMaxGeneral, g_ttMaxGenBlank
+printf "TT worst page blits: %u lines in %u clears (waits + issues, and the final wait); painter calls %u lines\n", g_ttMaxBlit, g_ttMaxBlitCalls, g_ttMaxPaint
 detach
 quit
