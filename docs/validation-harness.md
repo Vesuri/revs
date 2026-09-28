@@ -1409,7 +1409,7 @@ each invisible to every other gate:
   the target the terrain rows are painted from the scan's EVENT LISTS straight into the bitplanes,
   so an Amiga-only defect there passes every host gate and the lockstep by construction. Found
   that way (2026-09-28): Brands Hatch started with no road above the cockpit for ~22 sweeps on an
-  A500 (~120 on an A1200) — `view_low_build` fails and retries there, and the scan's per-cell floor
+  A500 (~120 on an A1200) — `view_low_build` failed and retried there, and the scan's per-cell floor
   `s_lowConsume` was `$FF` until it succeeded, a value from when the scan covered the low block
   alone that also skipped phase 1 once it covered 0..79. `SCANCHECK` could not see it (asm and C
   read the same floor — a SHARED INPUT, CLAUDE.md §sabotage). ⭐ **The target-side gate is cheap:**
@@ -1418,3 +1418,15 @@ each invisible to every other gate:
   frame (`REVS_SCREEN_COUNT` + `REVS_MEM_DUMP`, which the lockstep has proven equal to a real BBC's).
   That separates "the events are wrong" (scan/sources) from "the pixels are wrong" (painter,
   signatures, flip) in one run.
+- ⭐⭐ **AN ASSERTION NOTHING GATES ON IS A MEASUREMENT NOBODY READS — AND A FALLBACK THAT PAINTS
+  CORRECTLY HIDES A SLOW PATH FROM EVERY PICTURE GATE.** `g_terrainClipBad` was documented "MUST BE
+  0" and read non-zero on every circuit: `view_low_build` classified a phase-2 line by the byte at
+  `view_run_right_end + line`, which the driver never reads there because it is column 1's LIVE
+  SOURCE (`revs_native.c` §s_lowClipped). Zero at Silverstone's start (2 failed sweeps), non-zero on
+  Brands' grid for as long as the car stood still — **5.07 fps parked where the fix runs 12.50** —
+  and 602 rejected lines on Oulton under the autopilot. The chain painted every rejected sweep
+  byte-correctly, so determinism, the lockstep and the picture were all green; the user's "choppy
+  until the car moves" was the only report. ⇒ `make lap` now FAILS on any rejected line (the
+  `[autopilot] low-block build rejects:` line). ⭐ **Derive a table's domain from its READER's index
+  range, never from the value found in it** — a byte outside the range the driver indexes belongs
+  to whatever else shares the page.

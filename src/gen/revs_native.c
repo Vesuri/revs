@@ -1225,7 +1225,8 @@ ViewSpan*      g_viewEvEnd[VIEW_EV_LINES];   /* the append cursor, and the paint
    derives it and asserts the contiguity rather than assuming it.
    ⚠⚠ UNTIL THE TABLE IS BUILT EVERY CELL'S FLOOR IS THE LOW BLOCK'S TOP + 1 (44) — the value the
    build itself gives a cell the runs never visit.  The build needs the boundary tables
-   `fill_dash_edge_columns` writes, and it can fail and retry (Brands Hatch: its first ~22 sweeps);
+   `fill_dash_edge_columns` writes, and it can fail and retry (it succeeds on sweep 1 on all six
+   circuits since it stopped reading column 1's source as a stop table — see s_lowClipped);
    until it succeeds `paint_lines_clipped` paints the low block, so lines 0..43 keep their sources
    for it.  Lines 44..79 are NOT the chain's either way: the terrain painter owns them whenever
    there is a plot target, and they must be scanned.
@@ -2728,8 +2729,26 @@ static unsigned char s_lowB0[VIEW_EV_LINES], s_lowB1[VIEW_EV_LINES];
    Phase 3's lines (3..27) are clipped at BOTH ends by the dash, so all four boundary cells are
    composed at pixel precision.  Phase 2's (28..43) reach the SCREEN EDGE on the outside: the left
    run starts at cell 0 with the line's plain background byte and no entry composite, and the
-   right run ends at cell 39 with no exit composite.  The tables say which: a phase-2 line plants
-   no chain-B stop, so `view_run_right_end` reads $00 there. */
+   right run ends at cell 39 with no exit composite.
+   ⚠⚠ THE LINE NUMBER SAYS WHICH, NOT THE TABLE: phase 2 is `line >= VIEW_P2_LAST` because that is
+   the driver's own `line_is_last(line, 0x1C)`.  This used to read "a phase-2 line plants no chain-B
+   stop, so `view_run_right_end` reads $00 there" — but the driver never reads that table above
+   line $1B, and above it the bytes are COLUMN 1'S LIVE SOURCE (view_paint_lines' §THE CONTROL
+   TABLES LIVE INSIDE THE SOURCE BLOCKS).  They were zero at Silverstone's start and non-zero on
+   Brands' grid ($55/$55/$EE on lines 34..36), so the build failed on every sweep until the car
+   moved the view — the low block ran the slow fallback, and the game was visibly choppy there.
+   (Silverstone failed its first TWO sweeps the same way, on 12 lines.)
+   ⭐ READER AUDIT for what that changed in `mem[]` (docs/validation-harness.md §THE RESULTS RULE):
+   with the build succeeding on sweep 1 the chain never paints lines 3..43, so twelve bytes keep
+   their disc values instead of those two sweeps' plants — the stop records $7D24/$7F24/$7F7D, the
+   restore operands $7BD4/$7BD7/$7BDA, and the stop/entry operands of view_p2_stop_a_site,
+   view_p2_enter_b_site, view_p3_stop_a_site, view_p3_enter_a_site, view_p3_stop_b_site and
+   view_p3_enter_b_site.  Their only readers are `paint_lines_clipped`, `paint_lines_short` and
+   `unplant_stops`, which run only while `!s_lowBuilt` (never cleared); `copy_dash_data`'s stow and
+   restore is a copy, one hop, back to the same readers.  Measured: those 12 bytes are the WHOLE
+   64 KB difference on all five determinism trajectories, and the disc's $0F record names cell 0's
+   own stop site, so a stale un-plant would write STA over STA. */
+#define VIEW_P2_LAST       0x1Cu  /* phase 2's last line (its driver's line_is_last), phase 3 below */
 static unsigned char s_lowClipped[VIEW_EV_LINES];   /* 1 = phase 3's doubly-clipped shape */
 static int           s_lowBuilt = 0;
 volatile unsigned long g_terrainClipBad = 0;   /* ⚠ MUST BE 0 — see view_low_build */
@@ -2773,11 +2792,11 @@ static void view_low_build(void)
     unsigned line, bad = 0;
 
     for (line = VIEW_LOW_LO; line <= VIEW_LOW_HI; line++) {
-        const unsigned stopB = mem[MEM_view_run_right_end + line];
+        const int clipped = line < VIEW_P2_LAST;       /* phase 3: see s_lowClipped */
         const int a1 = view_low_cell(mem[MEM_view_run_left_end    + line], 0x75u,  6);
         const int b0 = view_low_cell(mem[MEM_view_run_right_start + line], 0x7Cu, 33);
-        /* $00 = no stop planted: phase 2's lines run to the screen edge on both sides. */
-        const int b1 = (stopB == 0u) ? 39 : view_low_cell(stopB, 0x97u, 34);
+        /* phase 2's lines run to the screen edge on both sides, and read no chain-B stop */
+        const int b1 = clipped ? view_low_cell(mem[MEM_view_run_right_end + line], 0x97u, 34) : 39;
         const int a0 = 39 - b1;
 
         if (a1 < 0 || b0 < 0 || b1 < 0 || a1 + b0 != 39
@@ -2785,7 +2804,7 @@ static void view_low_build(void)
 
         s_lowA0[line] = (unsigned char)a0;  s_lowA1[line] = (unsigned char)a1;
         s_lowB0[line] = (unsigned char)b0;  s_lowB1[line] = (unsigned char)b1;
-        s_lowClipped[line] = (unsigned char)(stopB != 0u);
+        s_lowClipped[line] = (unsigned char)clipped;
     }
 
     /* the per-cell consume floor, plus its contiguity assertion — see s_lowConsume */
