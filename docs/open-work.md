@@ -975,7 +975,11 @@ bugs the lockstep found).  The autopilot now races: `make lap` laps all six circ
 on ALL SIX circuits at that pace.  Open, in order:
 1. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — every
    lockstep so far is a practice session, alone on track.
-2. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
+2. **Why `view_low_build` fails for Brands Hatch's first ~22 sweeps** (A500; ~120 on an A1200) and
+   succeeds after: its line-table checks reject the boundary tables until then.  The picture is
+   right meanwhile (the low block falls back to the chain and the conversion), so this is a cold-
+   start cost and an unexplained difference from the other circuits, not a visible defect.
+3. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
    build's accepted true-ratio ±1 LSB, byte-identical before and after this work.  Decide whether it
    should run `EXACTRATIO=1` (then it is a pass/fail gate again) or compare against a recorded HEAD.
 

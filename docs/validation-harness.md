@@ -1405,3 +1405,16 @@ each invisible to every other gate:
   entry, and not at its exit" names R — and then the in-process oracle of R, run on that frame,
   names the cell.
 - An oracle's report that nobody REGISTERS is no oracle: `revs_report_low` had never printed.
+- ⚠⚠ **THE LOCKSTEP'S SCOPE IS THE HOST'S `mem[]`, AND THE AMIGA'S OWNED ROWS NEVER REACH IT.** On
+  the target the terrain rows are painted from the scan's EVENT LISTS straight into the bitplanes,
+  so an Amiga-only defect there passes every host gate and the lockstep by construction. Found
+  that way (2026-09-28): Brands Hatch started with no road above the cockpit for ~22 sweeps on an
+  A500 (~120 on an A1200) — `view_low_build` fails and retries there, and the scan's per-cell floor
+  `s_lowConsume` was `$FF` until it succeeded, a value from when the scan covered the low block
+  alone that also skipped phase 1 once it covered 0..79. `SCANCHECK` could not see it (asm and C
+  read the same floor — a SHARED INPUT, CLAUDE.md §sabotage). ⭐ **The target-side gate is cheap:**
+  break at `revs_plot_terrain`, dump `g_viewEv` / `g_viewRowBg` / `g_viewRowAddr` and the displayed
+  buffer, rebuild each row from its events and diff it against the HOST's frame buffer at the same
+  frame (`REVS_SCREEN_COUNT` + `REVS_MEM_DUMP`, which the lockstep has proven equal to a real BBC's).
+  That separates "the events are wrong" (scan/sources) from "the pixels are wrong" (painter,
+  signatures, flip) in one run.
