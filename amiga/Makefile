@@ -429,6 +429,15 @@ ifdef TTCHECK
 EXTRA_DEFINES += -DREVS_TT_CHECK
 PROBE_SYMS_TTCHECK = g_ttCheckRuns g_ttCheckMismatch g_ttCheckFirst
 endif
+# ⭐⭐ `TTASM=1` (the DEFAULT) — the MODE 7 row painter in 68000 assembly
+# (src/platform/amiga/teletext_m68k.s).  `make TTASM=0` is the C control; `make TTCHECK=1` gates
+# either, and `TTASM_SABOTAGE=N` assembles defect N for it to catch (3 is a CONTROL: all pairs general).
+TTASM ?= 1
+TTASM_SABOTAGE ?= 0
+ifeq ($(TTASM),1)
+EXTRA_DEFINES += -DREVS_TT_ASM
+ASM_SRCS += $(AMIGA_SRC)/teletext_m68k.s
+endif
 # ⭐ `make TTTIME=1` — the MODE 7 decode's cost in raster lines, read in-program
 # (`amiga/tttime.gdb`): last / max / total over the decodes that painted anything.
 ifdef TTTIME
@@ -1794,6 +1803,10 @@ obj/edge_m68k.o : $(AMIGA_SRC)/edge_m68k.s
 obj/needle_m68k.o : $(AMIGA_SRC)/needle_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(NDLASM_SABOTAGE) -o $@ "$<"
+
+obj/teletext_m68k.o : $(AMIGA_SRC)/teletext_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(TTASM_SABOTAGE) -o $@ "$<"
 
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk

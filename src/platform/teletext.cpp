@@ -254,24 +254,30 @@ int tt_decode_row_keys(const unsigned char* row, uint32_t out[TT_COLS], int flas
            the frame and it was ~14 instructions a cell (objdump).  In graphics mode $40-$5F stay
            alphanumeric, and the generated font already holds the alpha glyphs in those slots of
            both mosaic sets, so there is no range test here — that is what the three full
-           128-entry sets buy; only hold-mosaics has to tell them apart. */
+           128-entry sets buy; only hold-mosaics has to tell them apart.
+           Each loop reads with a post-increment and leaves with P already past the control code
+           that ended the run: GCC otherwise kept a second copy of the pointer to back up to it
+           (11 instructions a character, objdump). */
         unsigned c;
         if (set == TT_SET_ALPHA) {
-            while ((c = *p & 0x7Fu) >= 0x20u) {
+            for (;;) {
+                c = *p++ & 0x7Fu;
+                if (c < 0x20u) break;
                 *o++ = attr | c;
-                if (++p == end) return flags;
+                if (p == end) return flags;
             }
         } else {
             unsigned held = 0;             /* no displayable code is below $20: "none in this run" */
-            while ((c = *p & 0x7Fu) >= 0x20u) {
+            for (;;) {
+                c = *p++ & 0x7Fu;
+                if (c < 0x20u) break;
                 *o++ = attr | c;
                 if ((c & 0x60u) != 0x40u) held = c;
-                if (++p == end) break;
+                if (p == end) break;
             }
             if (held) { heldCode = (unsigned char)held; heldSet = useSet; }
-            if (p == end) return flags;
+            if (c >= 0x20u) return flags;  /* the row ended on a displayable character */
         }
-        p++;
 
         /* A control code.  Apply the set-at ones first, then decide what the cell displays, then
            apply the set-after ones — that ordering IS the set-at/set-after rule. */

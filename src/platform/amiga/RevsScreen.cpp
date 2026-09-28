@@ -871,15 +871,19 @@ static uint32_t      s_ttSrc[TT_ROWS * TT_COLS / 4];   /* the page bytes the bit
 static uint32_t      s_ttKey[TT_ROWS * TT_COLS];       /* per DISPLAY cell: what is drawn there */
 static unsigned long s_ttRowFlash = 0;                 /* rows carrying a flash code */
 static unsigned char s_ttPrimed   = 0;
-static unsigned char s_ttBlank[TT_SETS * 128u];        /* 1 = the glyph has no set pixel */
+/* ⚠ The painter's tables are EXTERNAL (extern "C", g_ names) because the asm row painter
+   (teletext_m68k.s, `make TTASM=1`) reads them by name. */
+extern "C" {
+unsigned char g_ttBlank[TT_SETS * 128u];               /* 1 = the glyph has no set pixel */
 /* ⭐ CELLS ARE PAINTED IN PAIRS, ONE WORD PER PLANE PER LINE: a cell is one byte of a plane row,
    so an even column and the next share an aligned word, and pairing halves the store count
    (a 68000 word store costs what a byte store does).  The left cell is the HIGH byte — the
    bitmap is big-endian memory the display reads, not mem[].  Two tables make the pair cheap:
    every glyph line pre-shifted into the high byte (a `lsl.w #8` is 22 cycles a line), and each
    (fg, bg)'s plane masks, high and low. */
-static uint16_t s_ttGlyphHi[TT_SETS * 128u << TT_GLYPH_SHIFT];
-static uint16_t s_ttMaskHi[64][6], s_ttMaskLo[64][6];  /* [fg | bg << 3] -> m0 m1 m2 c0 c1 c2 */
+uint16_t g_ttGlyphHi[TT_SETS * 128u << TT_GLYPH_SHIFT];
+uint16_t g_ttMaskHi[64][6], g_ttMaskLo[64][6];         /* [fg | bg << 3] -> m0 m1 m2 c0 c1 c2 */
+}
 
 static void tt_build_tables(void)
 {
@@ -888,9 +892,9 @@ static void tt_build_tables(void)
         uint8_t any = 0;
         for (unsigned y = 0; y < TT_CELL_H; y++) {
             any |= g[y];
-            s_ttGlyphHi[(gi << TT_GLYPH_SHIFT) + y] = (uint16_t)((unsigned)g[y] << 8);
+            g_ttGlyphHi[(gi << TT_GLYPH_SHIFT) + y] = (uint16_t)((unsigned)g[y] << 8);
         }
-        s_ttBlank[gi] = (unsigned char)(any == 0);
+        g_ttBlank[gi] = (unsigned char)(any == 0);
     }
     /* With fg/bg as per-plane 0x00/0xFF masks, plane p is the glyph where the foreground has
        bit p and its complement where the background does: `(bits & (f ^ b)) ^ b` — two
@@ -899,8 +903,8 @@ static void tt_build_tables(void)
         const unsigned fg = cb & 7u, bg = cb >> 3;
         for (unsigned p = 0; p < 3u; p++) {
             const unsigned f = (fg >> p) & 1u ? 0xFFu : 0u, b = (bg >> p) & 1u ? 0xFFu : 0u;
-            s_ttMaskLo[cb][p]      = (uint16_t)(f ^ b);  s_ttMaskHi[cb][p]      = (uint16_t)((f ^ b) << 8);
-            s_ttMaskLo[cb][3u + p] = (uint16_t)b;        s_ttMaskHi[cb][3u + p] = (uint16_t)(b << 8);
+            g_ttMaskLo[cb][p]      = (uint16_t)(f ^ b);  g_ttMaskHi[cb][p]      = (uint16_t)((f ^ b) << 8);
+            g_ttMaskLo[cb][3u + p] = (uint16_t)b;        g_ttMaskHi[cb][3u + p] = (uint16_t)(b << 8);
         }
     }
     for (unsigned i = 0; i < TT_ROWS * TT_COLS; i++) s_ttKey[i] = 0xFFFFFFFFu;  /* no TT_KEY sets bits 22-31 */
@@ -926,19 +930,19 @@ static void tt_build_tables(void)
 static __attribute__((noinline))
 void tt_paint_pair(uint16_t* d, uint32_t ka, uint32_t kb, unsigned half)
 {
-    const uint16_t* ma = s_ttMaskHi[TT_KEY_COLOUR(ka)];
-    const uint16_t* mb = s_ttMaskLo[TT_KEY_COLOUR(kb)];
+    const uint16_t* ma = g_ttMaskHi[TT_KEY_COLOUR(ka)];
+    const uint16_t* mb = g_ttMaskLo[TT_KEY_COLOUR(kb)];
     const uint16_t M0 = (uint16_t)(ma[0] | mb[0]), M1 = (uint16_t)(ma[1] | mb[1]);
     const uint16_t M2 = (uint16_t)(ma[2] | mb[2]), C0 = (uint16_t)(ma[3] | mb[3]);
     const uint16_t C1 = (uint16_t)(ma[4] | mb[4]), C2 = (uint16_t)(ma[5] | mb[5]);
     const unsigned ga = TT_KEY_GLYPH(ka), gb = TT_KEY_GLYPH(kb);
 
-    if (s_ttBlank[ga] && s_ttBlank[gb]) {     /* the backgrounds alone: thirty constant stores */
+    if (g_ttBlank[ga] && g_ttBlank[gb]) {     /* the backgrounds alone: thirty constant stores */
         TT_LINE(0, 0); TT_LINE(1, 0); TT_LINE(2, 0); TT_LINE(3, 0); TT_LINE(4, 0);
         TT_LINE(5, 0); TT_LINE(6, 0); TT_LINE(7, 0); TT_LINE(8, 0); TT_LINE(9, 0);
         return;
     }
-    const uint16_t* h = &s_ttGlyphHi[ga << TT_GLYPH_SHIFT];
+    const uint16_t* h = &g_ttGlyphHi[ga << TT_GLYPH_SHIFT];
     const uint8_t*  l = &g_ttFont[gb << TT_GLYPH_SHIFT];
     if (!half) {
         TT_LINE(0, TT_GW(0)); TT_LINE(1, TT_GW(1)); TT_LINE(2, TT_GW(2)); TT_LINE(3, TT_GW(3));
@@ -977,6 +981,17 @@ static void tt_blit_clear(uint8_t* dst, unsigned words)
                                 (uint16_t)(TT_CELL_H * kTtBP), (int16_t)(kTtPlaneGap - 2u * words));
 }
 
+#ifdef REVS_TT_ASM
+/* ⭐ `make TTASM=1` (the DEFAULT): the row painter below in 68000 registers (teletext_m68k.s), with
+   one routine per foreground for the pairs that share a colour on black.  This C stays the
+   reference and the TTASM=0 control; `make TTCHECK=1` gates either against the old row loop. */
+extern "C" unsigned tt_paint_row_m68k(uint8_t* rowTop, uint32_t* keys, const uint32_t* cells, unsigned half);
+extern "C" void tt_blit_clear_c(uint8_t* dst, unsigned words) { tt_blit_clear(dst, words); }
+#define TT_PAINT_ROW tt_paint_row_m68k
+#else
+#define TT_PAINT_ROW tt_paint_row
+#endif
+
 /* One DISPLAY row from 40 decoded keys (teletext.h: TT_KEY): paint every PAIR in which either key
    moved.  HALF goes into the key's free bits 12-13, so a double-height half is a different key
    from the same glyph drawn normally.  Returns the cells painted.
@@ -996,7 +1011,7 @@ static unsigned tt_paint_row(uint8_t* rowTop, uint32_t* keys, const uint32_t* ce
         }
         keys[col] = ka; keys[col + 1u] = kb;
         painted += 2u;
-        if ((s_ttBlank[TT_KEY_GLYPH(ka)] & s_ttBlank[TT_KEY_GLYPH(kb)])
+        if ((g_ttBlank[TT_KEY_GLYPH(ka)] & g_ttBlank[TT_KEY_GLYPH(kb)])
             && !((ka | kb) & TT_KEY(0u, 0u, 0u, 7u))) {             /* blank on black: a run */
             if (!runLen) runAt = col;
             runLen++;
@@ -1069,12 +1084,12 @@ void RevsScreen::decodeTeletext()
         if (flags & 2) s_ttRowFlash |= bit; else s_ttRowFlash &= ~bit;
         decoded++;
 
-        painted += tt_paint_row(rowTop, keys, cells, dbl ? 1u : 0u);
+        painted += TT_PAINT_ROW(rowTop, keys, cells, dbl ? 1u : 0u);
         if (dbl) {
             newDbl |= bit;
             hidden  = 1;
             if (row + 1u < TT_ROWS)
-                painted += tt_paint_row(rowTop + kRowStride, keys + TT_COLS, cells, 2u);
+                painted += TT_PAINT_ROW(rowTop + kRowStride, keys + TT_COLS, cells, 2u);
         } else if (oldDbl & bit) {
             force |= bit << 1;           /* lost double height: the row below shows itself again */
         }
