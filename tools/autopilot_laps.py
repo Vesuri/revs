@@ -15,7 +15,7 @@ import argparse, os, re, subprocess, sys, concurrent.futures as cf
 NAMES = {0: 'Silverstone', 1: 'Brands Hatch', 2: 'Donington', 3: 'Oulton Park',
          4: 'Snetterton', 5: 'Nurburgring'}
 LINE = re.compile(r'\[autopilot\] (\d+) frames: (\d+) laps, (\d+) crashes, (\d+) stalls, '
-                  r'(\d+) airborne frames \(max height (\d+)\)')
+                  r'(\d+) airborne frames \(max height (\d+)\); top speed (\d+) in gear index (\d+)')
 
 def run(circuit, frames, trace, outdir):
     env = dict(os.environ, REVS_AUTOPILOT='1', REVS_FIXED_RNG='1', REVS_TRACK=str(circuit),
@@ -46,13 +46,14 @@ def main():
         if r is None:
             print(f'  {name:13s} FAIL — no [autopilot] line (the run never reached the race?)')
             bad += 1; continue
-        frames, laps, crashes, stalls, air, maxh = r
+        frames, laps, crashes, stalls, air, maxh, top, gear = r
         ok = crashes == 0 and stalls == 0 and air == 0 and laps >= a.min_laps and not refused
         why = [] if ok else [w for w, c in (('crashed', crashes), ('stalled', stalls),
                                              ('airborne', air), ('too few laps', laps < a.min_laps),
                                              ('circuit refused', refused)) if c]
         print(f'  {name:13s} {"PASS" if ok else "FAIL"}  {laps:2d} laps, {crashes} crashes, '
-              f'{stalls} stalls, {air} airborne frames (max height {maxh}) over {frames} frames'
+              f'{stalls} stalls, {air} airborne frames (max height {maxh}) over {frames} frames, '
+              f'top speed {top} in gear {gear - 1}'
               + ('' if ok else '  <- ' + ', '.join(why)))
         if not ok:
             bad += 1

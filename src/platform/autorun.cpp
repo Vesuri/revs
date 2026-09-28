@@ -3,6 +3,7 @@
 #if !defined(REVS_PLATFORM_AMIGA)
 #include <cstdlib>
 #include <cstdio>
+#include <cmath>
 #endif
 
 /* The game's own state, for AutoStep::until — a scripted key that waits on a PROBABILISTIC
@@ -327,43 +328,58 @@ static const AutoStep s_script[] = {
 static const unsigned S_SCRIPT_LEN = sizeof(s_script) / sizeof(s_script[0]);
 
 #if !defined(REVS_PLATFORM_AMIGA)
-/* ⭐⭐ THE AUTOPILOT (host, `REVS_AUTOPILOT=1`) — a test driver that stays on the road, so a run
-   can cover whole laps of every circuit instead of "drive straight and crash" (`make lap`).
-   It reads only what the game itself draws from and answers the same keys a player presses:
-   no engine code changes and nothing is written to mem[], so under FIXED_RNG it is
-   deterministic, and the same controller can later drive a real BBC in lockstep.
-     STEERING  the aim is the road's centre line at a look-ahead window of edge points
-               (edge_x_lo/hi: the angle from the car's heading to each point, two 40-slot halves
-               one per road side, slot 6 the first the walk emits and a higher slot farther).
-               A held key winds the wheel ~64 units a frame and the car then integrates the
-               heading, so bang-bang on the aim oscillates: the WHEEL is steered to a target
-               proportional to the aim plus a damping term on its rate, with SPACE (the game's
-               steering amplifier) held while the wheel is far behind.
-     SPEED     a target speed from how far the road bends at a far window, so the braking point
-               comes before the bend; throttle / coast / brake towards it.
+/* ⭐⭐ THE AUTOPILOT (host, `REVS_AUTOPILOT=1`) — a test driver that races every circuit, so a run
+   can cover whole laps at speed instead of "drive straight and crash" (`make lap`).
+   It reads only the game's own state and answers the same keys a player presses: no engine code
+   changes and nothing is written to mem[], so under FIXED_RNG it is deterministic, and the same
+   run replays on a real BBC (`make lockstep`).  Everything it steers and brakes by is the TRACK:
+   the live section ring (section_coord_lo/hi — 40 sections, their two road edges, ~32 of them
+   ahead of the car) relative to the camera (view_origin_16), from which it takes the road
+   centre as a path starting at the section behind the car.
+     STEERING  pure pursuit.  Measured, the car is kinematic up to its grip: its yaw a frame is
+               wheel x ground speed / 100 (heading units, road_speed units), so the wheel that
+               puts it on the circle through a point L world units ahead at angle a is a*400/L.
+               L grows with speed (REVS_AP_AIM + REVS_AP_AIMK/10 per unit), plus a damping term on
+               the aim's rate.  A held key winds the wheel ~64 units a frame, so it is steered to
+               that target with SPACE (the game's steering amplifier) while it is far behind.
+     SPEED     the lowest of sqrt(lat*R + 2*decel*s) over every bend ahead (R from the net turn
+               over one to three sections, s the distance to it less REVS_AP_LEAD, where the bend
+               is already under way): the corner speed the grip allows, raised by the braking
+               the distance leaves room for.  Compared with the GROUND speed (the camera's own
+               step a frame) — road_speed falls away from it whenever the car slides or the
+               wheels lock, so braking waits while they differ by REVS_AP_SLIP (the brake is a
+               key, so this is ABS).
+     TRACTION  a yaw more than REVS_AP_YAWTOL away from the kinematic one is the car sliding: off
+               both pedals until it grips.  Without this, throttle or brake with the wheel turned
+               spun the car at 25 on the Nurburgring, and a slower speed target did not help.
      ENGINE    stalled -> down to neutral, starter; neutral -> up to first.  A gear key counts
                only on a PRESS, so a shift is a tap on alternate frames.
-     ⚠ RACING SPEED IS NOT SOLVED: REVS_AP_TOPGEAR > 2 shifts on revs and REVS_AP_GAINREF scales
-               the steering gain down above that speed, but no setting above a 40 cap is
-               crash-free yet (braking distance grows with speed², and the far window is a fixed
-               number of edge points) — docs/open-work.md §THE AUTOPILOT, STEP 2.
-   Defaults are tuned (a sweep over all six circuits, 20000 frames each: 0 crashes, 0 stalls,
-   0 airborne frames); every one can be overridden by REVS_AP_<NAME>.
+     GEARS     up on revs under throttle, down on low revs (REVS_AP_TOPGEAR caps it).
+   Defaults are tuned: a sweep over all six circuits, 20000 frames each, 0 crashes, 0 stalls and 0
+   airborne frames, and each knob moved alone by ~10% either side stays clean; every one can be
+   overridden by REVS_AP_<NAME>.  (The picture's edge points were the first steering input and
+   are not a usable one at speed: the look-ahead point is a SLOT, whose distance jumps as the
+   walk's point count changes, and on the Nurburgring it swung 40 degrees in four frames.)
    THE CHECKS, printed at exit as one `[autopilot]` line that `make lap` parses:
      laps      the player's distance counter wrapping after real progress
      crashes   the car put back on the grid (a distance jump that is not a lap wrap) — the
                game RESETS the car on a crash, so a single one invalidates the run
      stalls    the engine dying where it stands
-     airborne  frames with car_height >= 2 — a clean lap has none on any circuit */
+     airborne  frames with car_height >= 2 — a clean lap has none on any circuit
+   and the top ground speed and gear index reached, which say what the run exercised. */
 extern "C" uint16_t car_distance_16[];
 extern "C" uint16_t car_angle_16[];
+extern "C" uint16_t view_origin_16[9];
 
-static int s_apOn = -1, s_apTrace, s_apLook = 4, s_apWin = 2, s_apDead = 32, s_apKp = 45,
-           s_apKd = 50, s_apAmpAt = 600, s_apFar = 9, s_apVmax = 30, s_apVk = 5, s_apVmin = 20,
-           s_apTopGear = 2, s_apUpRevs = 150, s_apDownRevs = 70,
-           s_apGainRef = 30, s_apFarMax = 9;
+/* Speeds are in road_speed units: the ground moves 2 world units a frame per unit (measured).
+   REVS_AP_LAT and REVS_AP_DECEL are hundredths of a world unit per frame squared. */
+static int s_apOn = -1, s_apTrace, s_apAim = 400, s_apAimK = 100, s_apPursuit = 400, s_apKd = 50,
+           s_apDead = 32, s_apAmpAt = 600, s_apVmax = 120, s_apVmin = 10, s_apLat = 200,
+           s_apDecel = 300, s_apVend = 60, s_apLead = 150, s_apSlip = 4, s_apYawTol = 50,
+           s_apTopGear = 6, s_apUpRevs = 120, s_apDownRevs = 70;
 static uint8_t s_apSteer, s_apPedal = KEY_S, s_apAmp;   /* the frame's decision */
-static int s_apPrevMid, s_apTspeed;
+static int s_apPrevAim, s_apPrevHeading, s_apTspeed, s_apGround, s_apTopSpeed, s_apTopGearSeen;
+static int16_t s_apPrevOx, s_apPrevOz;
 static unsigned long s_apFrames, s_apLaps, s_apCrashes, s_apStalls, s_apAir, s_apMaxH, s_apRun;
 static unsigned s_apPrevDist = 0xFFFFu;
 static int s_apPrevRun;
@@ -371,26 +387,102 @@ static char s_apRing[64][160];                 /* the last frames, dumped on a c
 static unsigned s_apRingAt;
 static unsigned long s_apAirGap = 1000;
 
-static int16_t apAzimuth(unsigned slot)
-{
-    return (int16_t)(mem[MEM_edge_x_lo + slot] | (mem[MEM_edge_x_lo + 0x50u + slot] << 8));
-}
 /* The wheel: car_angle_16[2], sign in bit 0 and magnitude above it (steer_angle_lo's note). */
 static int apWheel(void)
 {
     const unsigned w = car_angle_16[2];
     return (w & 1u) ? -(int)(w >> 1) : (int)(w >> 1);
 }
-/* The road's centre line over `win` slots from `first`, or `fallback` if none is live. */
-static int apCentre(unsigned first, unsigned win, int fallback)
+static int apHeading(void)
 {
-    const unsigned endA = mem[MEM_edge_end_side0], endB = mem[MEM_edge_cursor];
-    int a = 0, b = 0, n = 0;
-    for (unsigned k = first; k < first + win; k++) {
-        if (k >= endA || k + 0x28u >= endB) break;
-        a += apAzimuth(k); b += apAzimuth(k + 0x28u); n++;
+    return mem[MEM_car_heading_lo] | (mem[MEM_car_heading_hi] << 8);
+}
+/* The road centre at ring section m (0..39) relative to the camera: the mean of the section's two
+   edges, section_coord byte index 3m and 3m + $78 (section_coord_lo's note). */
+struct ApPt { float x, z; };
+static ApPt s_apPath[40];                       /* the road centre ahead, from the section behind */
+static unsigned s_apPathLen;
+static ApPt apSection(unsigned m)
+{
+    auto rel = [](unsigned b, unsigned o) {
+        const int v = mem[MEM_section_coord_lo + b + o] | (mem[MEM_section_coord_hi + b + o] << 8);
+        return (float)(int16_t)(v - view_origin_16[o]);
+    };
+    const unsigned i = 3u * m, j = i + 0x78u;
+    return { (rel(i, 0) + rel(j, 0)) * 0.5f, (rel(i, 2) + rel(j, 2)) * 0.5f };
+}
+/* The path: the last section behind the car, then on round the ring the way the car is going
+   (or facing, when it is still) until the seam, where a step far longer than a section is the
+   ring's far end meeting its near one.  q[0] is BEHIND so that the first bend ahead is measured
+   between two sections — the car's own offset across the road is no bend. */
+static void apBuildPath(float vx, float vz)
+{
+    ApPt p[40];
+    unsigned m0 = 0;
+    for (unsigned m = 0; m < 40u; m++) {
+        p[m] = apSection(m);
+        if (std::hypot(p[m].x, p[m].z) < std::hypot(p[m0].x, p[m0].z)) m0 = m;
     }
-    return n ? (a + b) / 2 / n : fallback;
+    if (vx * vx + vz * vz < 16.0f) {
+        const float th = (float)apHeading() * (float)(2.0 * M_PI / 65536.0);
+        vx = std::sin(th); vz = std::cos(th);
+    }
+    const unsigned up = (m0 + 1u) % 40u, down = (m0 + 39u) % 40u;
+    const unsigned step = (p[up].x - p[m0].x) * vx + (p[up].z - p[m0].z) * vz
+                        >= (p[down].x - p[m0].x) * vx + (p[down].z - p[m0].z) * vz ? 1u : 39u;
+    ApPt* const q = s_apPath;
+    unsigned n = 0, m = p[m0].x * vx + p[m0].z * vz > 0 ? (m0 + 40u - step) % 40u : m0;
+    for (unsigned k = 0; k < 40u; k++, m = (m + step) % 40u) {
+        if (n > 1 && std::hypot(p[m].x - q[n - 1].x, p[m].z - q[n - 1].z) > 400.0f) break;
+        q[n++] = p[m];
+    }
+    s_apPathLen = n;
+}
+/* The angle from where the car points to the road centre `ahead` world units along the path, in
+   the game's own angle units ($10000 a turn, the sense of edge_x: bearing minus car_heading). */
+static int apAim(float ahead)
+{
+    const ApPt* q = s_apPath;
+    ApPt at = q[s_apPathLen - 1];
+    float s = 0;
+    for (unsigned i = 1; i < s_apPathLen; i++) {
+        const float seg = std::hypot(q[i].x - q[i - 1].x, q[i].z - q[i - 1].z);
+        const float from = i == 1u ? std::hypot(q[1].x, q[1].z) : seg;   /* the car to q[1] */
+        if (s + from >= ahead) {
+            const float t = seg > 0 ? 1.0f - (s + from - ahead) / seg : 1.0f;
+            at = { q[i - 1].x + (q[i].x - q[i - 1].x) * t, q[i - 1].z + (q[i].z - q[i - 1].z) * t };
+            break;
+        }
+        s += from;
+    }
+    const int bearing = (int)std::lround(std::atan2(at.x, at.z) * (65536.0 / (2.0 * M_PI)));
+    return (int16_t)(bearing - apHeading());
+}
+/* The target ground speed from the bends ahead (THE AUTOPILOT's SPEED), in road_speed units. */
+static int apPlan(void)
+{
+    const ApPt* q = s_apPath;
+    const unsigned n = s_apPathLen;
+    const float lat = s_apLat / 100.0f, twoB = 2.0f * s_apDecel / 100.0f;
+    float s = std::hypot(q[1].x, q[1].z), best = 4.0f * s_apVmax * s_apVmax;   /* car to q[1] */
+    for (unsigned i = 1; i + 1 < n; i++) {
+        if (i > 1u) s += std::hypot(q[i].x - q[i - 1].x, q[i].z - q[i - 1].z);
+        const float room = s > s_apLead ? s - s_apLead : 0.0f;
+        const float h0 = std::atan2(q[i].x - q[i - 1].x, q[i].z - q[i - 1].z);
+        float len = 0;
+        for (unsigned w = 1; w <= 3u && i + w < n; w++) {
+            len += std::hypot(q[i + w].x - q[i + w - 1].x, q[i + w].z - q[i + w - 1].z);
+            float turn = std::atan2(q[i + w].x - q[i + w - 1].x, q[i + w].z - q[i + w - 1].z) - h0;
+            turn = std::fabs(std::remainder(turn, (float)(2.0 * M_PI)));
+            if (turn < 1e-3f) continue;
+            const float v2 = lat * len / turn + twoB * room;
+            if (v2 < best) best = v2;
+        }
+    }
+    const float end = 4.0f * s_apVend * s_apVend + twoB * s;   /* beyond the ring: unknown */
+    if (end < best) best = end;
+    const int t = (int)(std::sqrt(best) * 0.5f);
+    return t < s_apVmin ? s_apVmin : t;
 }
 static void apDump(const char* what)
 {
@@ -400,7 +492,7 @@ static void apDump(const char* what)
     for (unsigned i = 0; i < (unsigned)-s_apTrace && i < 64u; i++)
         std::fprintf(stderr, "%s\n", s_apRing[(s_apRingAt - (unsigned)-s_apTrace + i) & 63u]);
 }
-static void apChecks(int wheel, int target, int mid)
+static void apChecks(int wheel, int target, int aim)
 {
     const unsigned dist   = car_distance_16[mem[MEM_player_car]];
     const unsigned lapLen = mem[MEM_lap_length_lo] | (mem[MEM_lap_length_lo + 1] << 8);
@@ -412,17 +504,18 @@ static void apChecks(int wheel, int target, int mid)
 
     s_apFrames++;
     std::snprintf(s_apRing[s_apRingAt++ & 63u], 160,
-                  "  f%lu dist %u speed %u/%d gear %u revs %u wheel %d tgt %d mid %d h %u dir %02X",
-                  s_apFrames, dist, mem[MEM_road_speed], s_apTspeed, mem[MEM_gear_index],
-                  mem[MEM_engine_revs], wheel, target, mid, mem[MEM_car_height],
-                  mem[MEM_track_direction]);
+                  "  f%lu dist %u speed %u ground %d target %d gear %u revs %u wheel %d tgt %d "
+                  "aim %d h %u dir %02X pedal %02X",
+                  s_apFrames, dist, mem[MEM_road_speed], s_apGround, s_apTspeed,
+                  mem[MEM_gear_index], mem[MEM_engine_revs], wheel, target, aim,
+                  mem[MEM_car_height], mem[MEM_track_direction], s_apPedal);
     if (have && !wrapped && dist > s_apPrevDist && !jumped) s_apRun += dist - s_apPrevDist;
     if (wrapped) {
         s_apRun += dist + lapLen - s_apPrevDist;
         if (s_apRun >= lapLen / 2u) s_apLaps++;          /* a wrap after real progress */
     }
     if (jumped) { s_apCrashes++; s_apRun = 0; apDump("CRASH"); }
-    else if (s_apPrevRun && !run) s_apStalls++;
+    else if (s_apPrevRun && !run) { s_apStalls++; apDump("STALL"); }
     if (mem[MEM_car_height] >= 2) {
         if (s_apAirGap > 50) apDump("AIRBORNE");
         s_apAir++; s_apAirGap = 0;
@@ -432,40 +525,50 @@ static void apChecks(int wheel, int target, int mid)
 }
 static void apDecide(void)
 {
-    const int mid    = apCentre(6u + (unsigned)s_apLook, (unsigned)s_apWin,
-                                apCentre(6u, 1u, 0));
-    /* the car's yaw per unit of wheel grows with speed, so the gains fall with it above
-       REVS_AP_GAINREF (the speed they were tuned at) */
+    /* the ground speed: the camera's step since the last decision (one a frame); a step no car
+       can make is the first frame or a reset, and the wheels stand in for it */
+    const int16_t ox = (int16_t)view_origin_16[0], oz = (int16_t)view_origin_16[2];
+    const float vx = (int16_t)(ox - s_apPrevOx), vz = (int16_t)(oz - s_apPrevOz);
+    s_apPrevOx = ox; s_apPrevOz = oz;
     const int speed  = mem[MEM_road_speed];
-    const int sched  = speed > s_apGainRef ? speed : s_apGainRef;
-    const int target = (mid * s_apKp + (mid - s_apPrevMid) * s_apKd) / 100 * s_apGainRef / sched;
-    const int wheel  = apWheel();
-    s_apPrevMid = mid;
+    const int step   = (int)(std::hypot(vx, vz) * 0.5f + 0.5f);
+    const int ground = step > 250 ? speed : step;
+    if (ground > s_apTopSpeed) s_apTopSpeed = ground;
+    if (mem[MEM_gear_index] > s_apTopGearSeen) s_apTopGearSeen = mem[MEM_gear_index];
+
+    apBuildPath(vx, vz);
+    const int wheel = apWheel();
+    int aim = 0, target = wheel, tspeed = s_apVmin;
+    if (s_apPathLen >= 3u) {
+        const int ahead = s_apAim + s_apAimK * ground / 10;
+        aim    = apAim((float)ahead);
+        target = aim * s_apPursuit / ahead + (aim - s_apPrevAim) * s_apKd / 100;
+        tspeed = apPlan();
+    }
+    s_apPrevAim = aim;
     s_apSteer = wheel < target - s_apDead ? KEY_SEMI : wheel > target + s_apDead ? KEY_L : KEY_NONE;
     s_apAmp   = (target - wheel > s_apAmpAt || wheel - target > s_apAmpAt) ? 1 : 0;
 
-    /* the worst bend over the whole far range, window by window, so braking for a bend starts
-       as soon as any part of it is visible */
-    int worst = mid < 0 ? -mid : mid;
-    for (unsigned w = (unsigned)s_apFar; w <= (unsigned)s_apFarMax; w += 2u) {
-        const int far = apCentre(6u + w, 2u, 0);
-        const int bend = far < 0 ? -far : far;
-        if (bend > worst) worst = bend;
-    }
-    int tspeed = s_apVmax - worst * s_apVk / 1000;
-    if (tspeed < s_apVmin) tspeed = s_apVmin;
-    s_apPedal  = speed < tspeed ? KEY_S : speed > tspeed + 4 ? KEY_A : KEY_NONE;
-    s_apTspeed = tspeed;
+    const int heading = apHeading();
+    const int yaw     = s_apFrames ? (int16_t)(heading - s_apPrevHeading) : 0;
+    const int yawErr  = yaw - wheel * ground / 100;
+    s_apPrevHeading = heading;
+    const bool slide = (yawErr < 0 ? -yawErr : yawErr) > s_apYawTol;
+    s_apPedal  = slide ? KEY_NONE
+               : ground < tspeed ? KEY_S
+               : ground > tspeed + 2 && speed + s_apSlip >= ground ? KEY_A : KEY_NONE;
+    s_apTspeed = tspeed; s_apGround = ground;
 
-    apChecks(wheel, target, mid);
+    apChecks(wheel, target, aim);
     if (s_apTrace > 0 && (s_apFrames % (unsigned)s_apTrace) == 0)
         std::fprintf(stderr, "[ap]%s\n", s_apRing[(s_apRingAt - 1u) & 63u]);
 }
 static void apReport(void)
 {
     std::fprintf(stderr, "[autopilot] %lu frames: %lu laps, %lu crashes, %lu stalls, "
-                 "%lu airborne frames (max height %lu)\n",
-                 s_apFrames, s_apLaps, s_apCrashes, s_apStalls, s_apAir, s_apMaxH);
+                 "%lu airborne frames (max height %lu); top speed %d in gear index %d\n",
+                 s_apFrames, s_apLaps, s_apCrashes, s_apStalls, s_apAir, s_apMaxH,
+                 s_apTopSpeed, s_apTopGearSeen);
 }
 static void apInit(void)
 {
@@ -473,13 +576,13 @@ static void apInit(void)
     s_apOn = e && e[0] == '1';
     if (!s_apOn) return;
     static const struct { const char* name; int* v; } knobs[] = {
-        {"REVS_AP_TRACE", &s_apTrace}, {"REVS_AP_LOOK", &s_apLook}, {"REVS_AP_WIN", &s_apWin},
-        {"REVS_AP_DEAD", &s_apDead},   {"REVS_AP_KP", &s_apKp},     {"REVS_AP_KD", &s_apKd},
-        {"REVS_AP_AMP", &s_apAmpAt},   {"REVS_AP_FAR", &s_apFar},   {"REVS_AP_VMAX", &s_apVmax},
-        {"REVS_AP_VK", &s_apVk},       {"REVS_AP_VMIN", &s_apVmin},
+        {"REVS_AP_TRACE", &s_apTrace},   {"REVS_AP_AIM", &s_apAim},     {"REVS_AP_AIMK", &s_apAimK},
+        {"REVS_AP_PURSUIT", &s_apPursuit}, {"REVS_AP_KD", &s_apKd},     {"REVS_AP_DEAD", &s_apDead},
+        {"REVS_AP_AMP", &s_apAmpAt},     {"REVS_AP_VMAX", &s_apVmax},   {"REVS_AP_VMIN", &s_apVmin},
+        {"REVS_AP_LAT", &s_apLat},       {"REVS_AP_DECEL", &s_apDecel}, {"REVS_AP_VEND", &s_apVend},
+        {"REVS_AP_LEAD", &s_apLead},     {"REVS_AP_SLIP", &s_apSlip},   {"REVS_AP_YAWTOL", &s_apYawTol},
         {"REVS_AP_TOPGEAR", &s_apTopGear}, {"REVS_AP_UPREVS", &s_apUpRevs},
-        {"REVS_AP_DOWNREVS", &s_apDownRevs}, {"REVS_AP_GAINREF", &s_apGainRef},
-        {"REVS_AP_FARMAX", &s_apFarMax},
+        {"REVS_AP_DOWNREVS", &s_apDownRevs},
     };
     for (const auto& k : knobs)
         if ((e = std::getenv(k.name))) *k.v = std::atoi(e);
@@ -492,8 +595,7 @@ static bool apKey(uint8_t x)
     if (mem[MEM_engine_running] == 0)
         return mem[MEM_gear_index] > 1 ? (tap && x == KEY_TAB) : x == KEY_T;
     if (mem[MEM_gear_index] < 2)      return tap && x == KEY_Q;
-    /* racing: up on high revs, down on low (gear_index 2 = first; REVS_AP_TOPGEAR caps it, and
-       the default 2 keeps the baseline in first gear) */
+    /* racing: up on high revs under throttle, down on low (gear_index 2 = first, 6 = top) */
     {
         const unsigned g = mem[MEM_gear_index], revs = mem[MEM_engine_revs];
         if (g < (unsigned)s_apTopGear && revs > (unsigned)s_apUpRevs && s_apPedal == KEY_S)

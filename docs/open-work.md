@@ -967,18 +967,15 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ▶ THE AUTOPILOT: racing speed, and the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
+### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
 The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
 under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it and the three other
-bugs the lockstep found).  `make lap` laps all six circuits clean in first gear; `make lockstep`
-matches a real BBC in physics and picture over 2995 frames (~1.2 laps) on ALL SIX circuits.
-Open, in order:
-1. **Racing speed** — the autopilot crashes above a 40 cap (braking distance grows with speed², the
-   far window is a fixed number of edge points); needed before the lockstep can cover a fast lap.
-2. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — its
-   3000 frames already cover ~1.2 laps of practice at first-gear pace, and racing speed (item 1)
-   widens what the physics sees.
-3. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
+bugs the lockstep found).  The autopilot now races: `make lap` laps all six circuits clean at up to
+~73 in fourth gear, and `make lockstep` matches a real BBC in physics and picture over 2995 frames
+on ALL SIX circuits at that pace.  Open, in order:
+1. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — every
+   lockstep so far is a practice session, alone on track.
+2. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
    build's accepted true-ratio ±1 LSB, byte-identical before and after this work.  Decide whether it
    should run `EXACTRATIO=1` (then it is a pass/fail gate again) or compare against a recorded HEAD.
 

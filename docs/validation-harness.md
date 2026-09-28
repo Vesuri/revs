@@ -1265,7 +1265,7 @@ all five circuits, the change 1/5/17/0/3 bytes, every one an edge transition dis
 line — 20 of 26 lines by one pixel, one shallow kerb by one scan line (2..6 px sideways on a ~3:1
 slope). Quote that classification in the commit that re-records `make determinism*`.
 
-## ⭐⭐⭐ WHOLE LAPS — `make lap`, the autopilot that stays on the road (2026-09-26)
+## ⭐⭐⭐ WHOLE LAPS — `make lap`, the autopilot that races every circuit (2026-09-26, racing speed 2026-09-28)
 
 **The gap it closes.** Every determinism trajectory is *drive straight until the car leaves the
 road* (or parked, or one held steering key): ~225 frames of one straight, then a crash reset to the
@@ -1274,38 +1274,60 @@ user found a physics jump-and-crash on the Nurburgring that none of them could r
 
 **The driver** (`src/platform/autorun.cpp` §THE AUTOPILOT, host, `REVS_AUTOPILOT=1`) reads only the
 game's own state and answers the player's own keys, so it changes no engine code and is
-deterministic under `FIXED_RNG`:
-- *steering* — the aim is the road's centre line (the mean of the two sides' `edge_x` azimuths) at
-  a look-ahead window of edge points; the WHEEL (`car_angle_16[2]`) is steered to a target
-  proportional to the aim plus a damping term, with SPACE (the steering amplifier) held while the
-  wheel lags. ⚠ Bang-bang on the aim itself oscillates to a crash: a held key winds the wheel ~64
-  units a frame and the car then integrates the heading — a rate-limited double integrator;
-- *speed* — a target from how far the road bends at a far window, so braking starts before the
-  bend; throttle / coast / brake towards it, first gear, top speed 30;
-- *engine* — a stalled engine will not catch in gear, so drop to neutral first; a gear key counts
-  only on a PRESS, so shifts are taps on alternate frames (a held TAB then a held Q never shifted).
+deterministic under `FIXED_RNG`. ⭐ It drives by the TRACK, not the picture: the live section ring
+(`section_coord_lo/hi`, 40 sections × two road edges, ~32 ahead of the car) relative to the camera
+(`view_origin_16`) is the road centre as a path.
+- *steering* — **pure pursuit**. Measured, the car is kinematic up to its grip: yaw per frame =
+  wheel × ground speed / 100 (heading units, `road_speed` units), so the wheel for the circle through
+  a point `L` ahead at angle `a` is `a·400/L` (the old hand-tuned Kp 0.45 at ~800 ahead was exactly
+  that). `L` = 400 + 10 per speed unit, a damping term on the aim's rate, SPACE (the steering
+  amplifier) while the wheel lags. ⚠ Bang-bang on the aim oscillates to a crash: a held key winds the
+  wheel ~64 units a frame — the lag is the wheel's slew, not yaw inertia;
+- *speed* — the lowest `sqrt(lat·R + 2·decel·s)` over every bend on the path (R from the net turn over
+  one to three sections, s its distance less a 150-unit lead), against the GROUND speed (the camera's
+  step a frame: 2 world units per `road_speed` unit). `road_speed` falls away from it when the car
+  slides or the wheels lock (measured: 0 against 72 units a frame braking from 63), so braking waits
+  while they differ — the brake is a key, so this is ABS;
+- *traction* — a yaw more than 50 away from the kinematic one is a slide: off both pedals until it grips;
+- *engine and gears* — a stalled engine will not catch in gear, so drop to neutral first; a gear key
+  counts only on a PRESS, so shifts are taps on alternate frames; up at revs 120 under throttle, down
+  at 70.
 - ⚠ The game's own Computer Assisted Steering was tried as the steering and does NOT do this: it
   shapes a demand only while a key is held and only for `track_direction` positive; with direction
   chosen by the aim it held Silverstone and failed on every expansion circuit.
 
-**Tuning was a sweep, not a guess** (every knob is a `REVS_AP_<NAME>` variable; a host run is ~0.35 s per 2000 frames, so hundreds of settings × six circuits take a minute): look-ahead
-4, Kp 0.45, Kd 0.5, top speed 30. At top speed 40 five circuits still pass and the Nurburgring fails
-at a hairpin whose azimuths swing ~2000 a frame, faster than the wheel can follow — the car ends up
-facing backwards and `track_direction` flips. That is the DRIVER's limit, not an engine defect.
+**What racing speed took, in the order the traces showed it** (every knob is a `REVS_AP_<NAME>`
+variable and a host run is ~0.1 s per 1000 frames, so each question was a six-circuit sweep):
+1. ⛔ **The picture is not a usable steering input at speed.** The first driver aimed at an EDGE-POINT
+   SLOT (`edge_x`), whose distance ahead jumps as the walk's point count changes: on the Nurburgring
+   the aim swung 40° in four frames at speed 26 and the car was steered into a spin. The same point
+   taken from the section ring moves smoothly.
+2. **Brake by distance, not by bend angle.** A target from "how far the road bends at a far window"
+   has no braking distance in it, so above 40 it saw a bend ~4 frames out.
+3. ⭐ **The spins were TRACTION, not corner speed**: throttle in first gear with the wheel turned, or
+   braking into a bend, made the car rotate faster than its wheel could explain — and every SLOWER
+   corner target made it worse, because it put more lift-off and braking inside the bends. A slide
+   test on yaw against the kinematic prediction fixed the Nurburgring where no speed setting did.
+4. Two first-frame bugs, both reading a previous-frame value that was zero: ground speed (a 10960
+   step, so it braked at the start) and yaw (a spin on frame 1, so it lifted off and stalled).
+Every knob moved alone ~10% either side stays at zero crashes on all six circuits.
 
 **The checks** (`tools/autopilot_laps.py`, one `[autopilot]` summary line per run): per circuit,
 20000 frames, **zero crashes** (a crash resets the car to the grid — detected as a distance jump
 that is not a lap wrap — so one crash voids the run), **zero stalls**, **zero airborne frames**
 (`car_height >= 2`; a clean lap has none on any circuit, hilly ones included) and at least 5 laps.
-Baseline: 8-12 laps on every circuit, all zeros. `LAPARGS=--trace` prints the 40 frames before any
-crash or jump (distance, speed/target, gear, revs, wheel, aim, height, direction).
+Each line also reports the top ground speed and gear reached. Baseline: **12-18 laps on every
+circuit** (it was 8-12 at first-gear pace), top speed 63-73 in third or fourth gear, all zeros.
+`LAPARGS=--trace` prints the 40 frames before any crash, stall or jump (distance, speed, ground
+speed, target, gear, revs, wheel, aim, height, direction, pedal).
 
-**Sabotaged, and the result is the point:** doubling the gradient term in the height model
-(`scale_by_track_gradient_core` at `$457F`) FAILS Brands (42 airborne frames, height 13) and the
-Nurburgring (a jump to height 11, then a crash) while flat Silverstone passes — the user's reported
-symptom class, which no other gate can see. Lowering the touchdown-rebound threshold fails all six.
-⚠ Scope: first gear, ≤30 speed. A defect that only shows at racing speed needs the autopilot to
-change gear (`docs/open-work.md`).
+**Sabotaged, and the result is the point** (re-run at racing speed): doubling the gradient term in
+the height model (`scale_by_track_gradient_core` at `$457F`) FAILS Brands (31 airborne frames,
+height 51), Oulton Park (86, height 29) and the Nurburgring (14, height 22) while flat Silverstone,
+Donington and Snetterton pass — the user's reported symptom class, which no other gate can see.
+Lowering the touchdown-rebound threshold (5 → 2) fails all six.
+⚠ Scope: PRACTICE, alone on track, up to ~73 and fourth gear. The corner speeds are the driver's
+(a lateral limit of 2 world units a frame², cautious by design), not the car's.
 
 ## ⭐⭐⭐ THE LOCKSTEP — the autopilot's run replayed on a REAL BBC, frame for frame (`make lockstep`, 2026-09-27)
 
@@ -1354,7 +1376,8 @@ turn in the 50 Hz interrupt — ~5 times a BBC frame, once a host frame) and the
 glyph is this project's own font (`src/platform/mos_font.h`), as are `vdu_char_block`'s rows
 (`FONT`) in the physics set.
 
-**Results (practice, first gear, the autopilot's line, 2995 frames ≈ 1.2 laps each):** ALL SIX
+**Results (practice, the autopilot's line, 2995 frames each — ≈1.2 laps at first-gear pace, and
+re-run at racing speed, 1-2 laps up to ~73 in fourth gear):** ALL SIX
 circuits are **identical to a real BBC in the physics AND the picture**. It took four port bugs,
 each invisible to every other gate:
 1. **`EXACTRATIO`'s width routines divided by a distance the projection had already shifted in
