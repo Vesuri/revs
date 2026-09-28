@@ -223,7 +223,13 @@ void tt_tick_flash(void)
     }
 }
 
-int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
+/* ⭐ The decoder proper.  Returns bit 0 = the row carries double height, bit 1 = it carries a
+   FLASH code (so the backend knows which rows a flash-phase flip can change without scanning
+   them again).  `shown` is the foreground a displayable cell gets — conceal and the off phase of
+   flash show the background — and it is re-derived only when a control code changes one of its
+   inputs, because every other cell of the row just copies it (the per-cell ternary was a third
+   of the decode's instructions on the 68000, single-stepped). */
+int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
 {
     /* Row state, reset at the start of every row — the chip has no memory across rows, which is
        why a teletext page can be decoded a row at a time and why colour never bleeds downward. */
@@ -233,7 +239,8 @@ int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
     unsigned char holdOn = 0;
     unsigned char heldCode = 0x20, heldSet = TT_SET_ALPHA;
     unsigned char flashing = 0, conceal = 0;
-    int doubleHeight = 0;
+    unsigned char shown = fg;      /* == (conceal || (flashing && !flashOn)) ? bg : fg */
+    int flags = 0;
 
     for (unsigned x = 0; x < TT_COLS; x++) {
         unsigned char c = (unsigned char)(row[x] & 0x7F);
@@ -249,7 +256,7 @@ int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
             }
             out[x].code = c;
             out[x].set  = useSet;
-            out[x].fg   = (conceal || (flashing && !flashOn)) ? bg : fg;
+            out[x].fg   = shown;
             out[x].bg   = bg;
             continue;
         }
@@ -285,17 +292,23 @@ int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
         case 0x14: case 0x15: case 0x16: case 0x17:
             fg = (unsigned char)(c & 0x07); set = TT_SET_GFX; conceal = 0;
             break;
-        case 0x08: flashing = 1; break;                   /* flash              (set-after) */
+        case 0x08: flashing = 1; flags |= 2; break;       /* flash              (set-after) */
         case 0x09: flashing = 0; break;                   /* steady             (set-after) */
-        case 0x0C: doubleHeight |= 0; break;              /* normal height      (set-after) */
-        case 0x0D: doubleHeight = 1; break;               /* double height      (set-after) */
+        case 0x0C: break;                                 /* normal height      (set-after) */
+        case 0x0D: flags |= 1; break;                     /* double height      (set-after) */
         case 0x19: sepSet = 0; break;                     /* contiguous         (set-after) */
         case 0x1A: sepSet = 1; break;                     /* separated          (set-after) */
         case 0x1F: holdOn = 0; break;                     /* release mosaics    (set-after) */
         default: break;                                   /* $0A/$0B box, $0E/$0F, $1B ESC */
         }
+        shown = (conceal || (flashing && !flashOn)) ? bg : fg;
     }
-    return doubleHeight;
+    return flags;
+}
+
+int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
+{
+    return tt_decode_row_flags(row, out, flashOn) & 1;
 }
 
 } /* extern "C" */

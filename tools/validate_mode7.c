@@ -140,6 +140,123 @@ static int load_dump(const char *file, unsigned char *out)
     return 1;
 }
 
+
+/* ⭐⭐ THE DECODER'S OWN DIFFERENTIAL.  Nothing above can see the SAA5050 decode — the snapshots
+   compare screen RAM, and `render_ppm` is for a human to look at — so a change to
+   `tt_decode_row_flags` is gated here against the decoder it replaced, kept verbatim below
+   (`ref_decode_row`, the row loop before the flash flag and the carried foreground).  Every
+   snapshot page in both flash phases, then random rows weighted to CONTROL codes (colours, flash,
+   conceal, hold, double height, backgrounds), which is where every rule lives: cells, the double
+   height bit, and the flash bit against "a byte whose low seven bits are $08". */
+static int ref_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
+{
+    /* Row state, reset at the start of every row — the chip has no memory across rows, which is
+       why a teletext page can be decoded a row at a time and why colour never bleeds downward. */
+    unsigned char fg = TT_WHITE, bg = TT_BLACK;
+    unsigned char set = TT_SET_ALPHA;
+    unsigned char sepSet = 0;      /* separated rather than contiguous mosaics */
+    unsigned char holdOn = 0;
+    unsigned char heldCode = 0x20, heldSet = TT_SET_ALPHA;
+    unsigned char flashing = 0, conceal = 0;
+    int doubleHeight = 0;
+
+    for (unsigned x = 0; x < TT_COLS; x++) {
+        unsigned char c = (unsigned char)(row[x] & 0x7F);
+
+        if (c >= 0x20) {
+            /* A displayable character.  In graphics mode $40-$5F stay alphanumeric, and the
+               generated font already holds the alpha glyphs in those slots of both mosaic sets,
+               so there is no range test here — that is what the three full 128-entry sets buy. */
+            unsigned char useSet = set;
+            if (set != TT_SET_ALPHA) {
+                useSet = sepSet ? TT_SET_GFX_SEP : TT_SET_GFX;
+                if (!(c >= 0x40 && c < 0x60)) { heldCode = c; heldSet = useSet; }
+            }
+            out[x].code = c;
+            out[x].set  = useSet;
+            out[x].fg   = (conceal || (flashing && !flashOn)) ? bg : fg;
+            out[x].bg   = bg;
+            continue;
+        }
+
+        /* A control code.  Apply the set-at ones first, then decide what the cell displays, then
+           apply the set-after ones — that ordering IS the set-at/set-after rule. */
+        switch (c) {
+        case 0x1C: bg = TT_BLACK; break;                  /* black background   (set-at) */
+        case 0x1D: bg = fg;       break;                  /* new background     (set-at) */
+        case 0x18: conceal = 1;   break;                  /* conceal            (set-at) */
+        case 0x1E: holdOn = 1;    break;                  /* hold mosaics       (set-at) */
+        default: break;
+        }
+
+        /* While hold-mosaics is on, a control cell shows the last mosaic instead of a space. */
+        if (holdOn && set != TT_SET_ALPHA) {
+            out[x].code = heldCode;
+            out[x].set  = heldSet;
+        } else {
+            out[x].code = 0x20;
+            out[x].set  = TT_SET_ALPHA;
+        }
+        out[x].fg = (conceal || (flashing && !flashOn)) ? bg : fg;
+        out[x].bg = bg;
+
+        switch (c) {
+        case 0x00: case 0x01: case 0x02: case 0x03:       /* alpha colour       (set-after) */
+        case 0x04: case 0x05: case 0x06: case 0x07:
+            fg = c; set = TT_SET_ALPHA; conceal = 0;
+            holdOn = 0; heldCode = 0x20; heldSet = TT_SET_ALPHA;
+            break;
+        case 0x10: case 0x11: case 0x12: case 0x13:       /* graphics colour    (set-after) */
+        case 0x14: case 0x15: case 0x16: case 0x17:
+            fg = (unsigned char)(c & 0x07); set = TT_SET_GFX; conceal = 0;
+            break;
+        case 0x08: flashing = 1; break;                   /* flash              (set-after) */
+        case 0x09: flashing = 0; break;                   /* steady             (set-after) */
+        case 0x0C: doubleHeight |= 0; break;              /* normal height      (set-after) */
+        case 0x0D: doubleHeight = 1; break;               /* double height      (set-after) */
+        case 0x19: sepSet = 0; break;                     /* contiguous         (set-after) */
+        case 0x1A: sepSet = 1; break;                     /* separated          (set-after) */
+        case 0x1F: holdOn = 0; break;                     /* release mosaics    (set-after) */
+        default: break;                                   /* $0A/$0B box, $0E/$0F, $1B ESC */
+        }
+    }
+    return doubleHeight;
+}
+
+static int decode_check_row(const unsigned char* row, int flashOn)
+{
+    TtCell a[TT_COLS], b[TT_COLS];
+    int wantFlash = 0;
+    for (unsigned x = 0; x < TT_COLS; x++) if ((row[x] & 0x7F) == 0x08) wantFlash = 1;
+    const int want = ref_decode_row(row, a, flashOn) | (wantFlash << 1);
+    const int got  = tt_decode_row_flags(row, b, flashOn);
+    if (got != want) return 1;
+    for (unsigned x = 0; x < TT_COLS; x++)
+        if (a[x].code != b[x].code || a[x].set != b[x].set || a[x].fg != b[x].fg || a[x].bg != b[x].bg)
+            return 1;
+    return 0;
+}
+static int decode_differential(const unsigned char* pages, unsigned npages)
+{
+    unsigned rows = 0, bad = 0;
+    for (unsigned p = 0; p < npages; p++)
+        for (unsigned r = 0; r < TT_ROWS; r++)
+            for (int ph = 0; ph < 2; ph++) { bad += decode_check_row(pages + p * TT_SCREEN_SIZE + r * TT_COLS, ph); rows++; }
+    unsigned long seed = 0x2545F491u;
+    for (unsigned i = 0; i < 200000u; i++) {
+        unsigned char row[TT_COLS];
+        for (unsigned x = 0; x < TT_COLS; x++) {
+            seed = seed * 1103515245u + 12345u;
+            const unsigned v = (unsigned)(seed >> 16);
+            row[x] = (v & 3u) == 0u ? (unsigned char)(0x80u | ((v >> 2) & 0x1Fu))   /* control */
+                   : (unsigned char)(v >> 4);                                        /* anything */
+        }
+        bad += decode_check_row(row, (int)(i & 1u)); rows++;
+    }
+    printf("decoder differential: %u rows, %u differ from the reference decoder\n", rows, bad);
+    return bad != 0;
+}
+
 int main(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
@@ -166,6 +283,8 @@ int main(int argc, char **argv)
     unsigned long vdu = 0, pokes = 0;
     int inScope = 0;                 /* the engine's VDU 22,7 has been seen */
     int checked = 0, failed = 0, skipped = 0, notTeletext = 0;
+    static unsigned char pages[64 * TT_SCREEN_SIZE];
+    unsigned nPages = 0;
     char line[256];
 
     while (fgets(line, sizeof line, f)) {
@@ -211,6 +330,7 @@ int main(int argc, char **argv)
             }
         }
         checked++;
+        if (nPages < 64u) memcpy(pages + (nPages++) * TT_SCREEN_SIZE, mem + TT_SCREEN_BASE, TT_SCREEN_SIZE);
         if (bad == 0) {
             printf("PASS  snapshot %-2d %s   1024/1024 bytes identical\n", idx, file);
         } else {
@@ -255,6 +375,8 @@ int main(int argc, char **argv)
                "  look fine and be wrong later.  Add the arm.\n", g_ttUnknownVdu, g_ttLastUnknown);
         return 1;
     }
-    printf(failed ? "\nFAIL\n" : "\nPASS — the port's MODE 7 page is byte-identical to the BBC's\n");
+    if (decode_differential(pages, nPages)) failed++;
+    printf(failed ? "\nFAIL\n" : "\nPASS — the port's MODE 7 page is byte-identical to the BBC's, "
+                                  "and the decoder matches its reference\n");
     return failed ? 1 : 0;
 }

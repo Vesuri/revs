@@ -97,8 +97,9 @@ extern volatile unsigned char g_ttFlashPhase;   /* the SAA5050 flash phase, adva
 extern volatile unsigned long g_ttFlashToggles; /* ...and how many times it has flipped */
 /* ⭐ THE DIRTY-ROW SET: one bit per screen row (bit y = row y), set by every writer of the page
    (tt_poke/tt_cls/tt_scroll here, and the *LOAD bulk copy in trackmenu.c via tt_mark_all_dirty).
-   The backend's decode reads it, redraws only the marked rows, and clears it — so an unchanged
-   page costs nothing and there is no per-frame scan of screen RAM.  ⚠ Written ONLY from main-loop
+   ⚠ It is a HINT, not the record: the game also pokes screen RAM directly ($3A65, $65BA,
+   $659A — the menu highlight among them) without marking anything, so the Amiga decode compares
+   the page against the bytes it last drew (RevsScreen::decodeTeletext) and ORs this in.  ⚠ Written ONLY from main-loop
    context (the VDU stream and the menu paint both run there, never in the VBI), which is what
    makes the plain read-then-clear in decode race-free.  In PROBE_SYMS. */
 extern volatile unsigned long g_ttRowDirty;
@@ -129,6 +130,9 @@ unsigned tt_cursor_y(void);
    TOP halves on this row and the BOTTOM halves on the next, and skips that next row — which is
    what the chip does. */
 int  tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn);
+/* ...and the same decode reporting bit 0 = double height, bit 1 = the row carries a FLASH code
+   (the backend's flash-flip set, without a second pass over the row). */
+int  tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flashOn);
 /* The flash phase, advanced one display field at a time by the backend's VBI. */
 int  tt_flash_phase(void);
 void tt_tick_flash(void);
