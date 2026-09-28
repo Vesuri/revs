@@ -970,31 +970,29 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 ### ⭐⭐ THE MODE 7 FRONT END IS TOO SLOW ON THE A500 (user, 2026-09-28)
 "The rendering of the teletext screen menus is just too slow on the A500. That performance must be
 improved to the maximum since that's the initial impression the player gets when starting the
-game."  ⇒ **the target is the MAXIMUM, not a ratio**: every menu page should appear as fast as a real
-BBC draws it or faster, and no page change, keypress echo or flash flip should be visible as drawing.
-- **Nothing has ever measured it.** Every probe so far is a race window; the front end lands in
-  phase 0 (`ffe602f` moved its `decodeTeletext()` calls there on purpose), so no phase row sees it.
-  Step one is a front-end profile on the A500 config: `pcsample.sh` in a plain build sitting in
-  the menus and paging through them, and `steptrace.gdb` on one `decodeTeletext()` call, so the
-  split between the three candidates below is measured, not guessed.
-- **What renders a page** [DERIVED from the code, unpriced]: the engine's OSWRCH →
-  `src/platform/mos.cpp` → the VDU driver in `src/platform/teletext.cpp` writes screen RAM and marks
-  rows in `g_ttRowDirty`; `RevsScreen::decodeTeletext()` then re-decodes each dirty ROW whole
-  (`tt_decode_row` plus 40 cells × 10 lines × 3 planes = 1200 byte stores through a per-cell
-  colour-mask expression), and **a flash-phase flip re-dirties the whole page** (25 rows, 30 000
-  stores) whether or not a flashing cell is on it.  `g_ttRowsDrawn` counts rows per decode.
-- **Candidate levers** [INFERRED — rank them by the profile]:
-  - a per-CELL dirty record instead of per-row (a keypress echo dirties one cell, not 40);
-  - a flash flip that re-draws only the cells carrying the flash attribute;
-  - glyph rows pre-expanded per (fg, bg) pair, or the blitter, instead of three masked byte stores
-    a line;
-  - word or longword plane stores across cell pairs;
-  - how often the page is presented: every spin-wait is a presentation point
-    (CLAUDE.md §Amiga specifics), so check a print loop is not decoding per character.
-- **Gate**: `make mode7` (the page byte for byte against a real BBC) + `make trackmenu` for the
-  circuit menu, and `amiga/mode7_dump.gdb` for what the A500 actually shows; a cell-granular dirty
-  scheme is a CLASSIFICATION, so it needs the picture gate, not an in-process differential
-  (CLAUDE.md §an in-process differential cannot see a defect in how a shared input is classified).
+game."  ⇒ **the target is the MAXIMUM, not a ratio**: a page change should not be visible as drawing.
+**Where it stands** (A500, `make TTTIME=1` + `amiga/tttime.gdb`, raster lines of 64 µs; HEAD
+control measured the same way): the cell-granular decode took the idle menu from **44% of the CPU
+to 1.3%**, the `COMPETITION=1` menu walk's decode time **35 420 → 5 557 lines**, and its worst page
+change **4369 → 2078 lines (280 → 133 ms)**; a moved menu highlight now shows on the next field
+instead of the next flash flip (RevsScreen.cpp §THE PAGE -> THREE BITPLANES; gate `make TTCHECK=1`,
+`amiga/ttcheck.gdb`, and `make mode7`'s decoder differential).
+**What is left — a page change is still ~133 ms, a visible wipe:**
+- ⭐⭐ **CHIP-RAM STORES ARE THE FLOOR, AND THEY COST ~2× THEIR INSTRUCTION TIMING HERE.** Calibrated
+  split of a page change (timer cost subtracted): a blank pair — 30 word stores into the bitmap, no
+  glyph reads — measured ~1060 cycles against ~650 predicted, a glyph pair ~1810 against ~1200,
+  while the decode (fast RAM only) ran at its predicted rate.  Blank pairs are **74% of the pairs
+  painted and ~63% of the paint**.  ⇒ the lever is FEWER CPU WRITES TO CHIP RAM: a **blitter
+  clear** of the bitmap when most rows change (a CLS or a new page), with every key reset to
+  "blank on black", so the CPU paints only the non-blank cells; the blit runs beside the decode.
+  Price it first: how many of a page change's painted pairs are blank-on-black (the walk's are the
+  stimulus), and the WaitBlit before the first CPU store.
+- The decode is ~190 cycles a cell (~7.6k a row); a page change re-decodes every changed row.
+- The idle page compare is ~2.8 ms a field (2322 instructions single-stepped before the unroll) —
+  not visible, but it is 14% of an idle 68000.
+- Everything outside the decode is unmeasured: `pcsample.sh` over the `COMPETITION=1` walk once the
+  decode is done, for the text-script interpreter, the circuit menu and the key polling
+  (`RevsInput::anyKeyDown` was 3.6% of one stepped window).
 
 ### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
 The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
@@ -1142,6 +1140,8 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ **MODE 7: a blank glyph's key as its background alone** (2026-09-28) — painted cells 1836 → 1588 over the menu walk, paint **838k → 968k colour clocks**: the per-cell blank lookup it adds to every VISITED pair costs more than the pairs it skips. Only a scheme whose skip test is already paid (the blitter clear above) can use it.
+- ⛔ **MODE 7: passing the pair painter scalars instead of `TtCell`s, with a separate blank-fill routine** — 852k → 838k colour clocks (inside the noise); the call is not the pair's overhead, the chip-RAM stores are.
 - ⛔ **THE TERRAIN BY BLITTER AREA FILL** — exact (0 mismatches over 616k cells, seven sabotages
   caught) and **+5.25 ms** (84.43 → 89.68), in both shapes: a C toggle writer over the event lists
   (+12.3) and the toggles written by the scan itself (+5.25). The blits are nearly free — dropping
