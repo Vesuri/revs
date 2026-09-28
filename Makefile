@@ -1222,6 +1222,10 @@ bbcprof:
 # mattering.  Only display lines 82+ are gated — the text rows and the sky band above them carry
 # the clocks (which do differ) and, in the sky, live code.
 # ⚠ It leaves the tree in the default configuration for the same reason `track-run` does.
+# ⭐ EXACTRATIO=1, as `make lockstep` builds: the default build's true 68000 ratio is an accepted
+# ±1 LSB departure (gated by `set_tolerance` in `validate`), and against a real BBC it leaves a few
+# bytes on every circuit — so a byte diff of the default build cannot fail on a real defect without
+# failing on that too.  With the 6502's own divide this is a pass/fail gate again.
 BBCFRAMES ?= 40
 viewdiff:
 	@set -e; mkdir -p tmp; \
@@ -1234,7 +1238,7 @@ viewdiff:
 	      >tmp/viewdiff_$$t.log 2>&1 || { echo "  FAIL circuit $$t: the BBC run died (tmp/viewdiff_$$t.log)"; fails=1; continue; }; \
 	  bbc=$$(ls tmp/viewdiff_$$t/bbc_fb_*.bin | tail -1); \
 	  $(MAKE) --no-print-directory clean >/dev/null; \
-	  $(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 TRACK=$$t >/dev/null; \
+	  $(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 EXACTRATIO=1 TRACK=$$t >/dev/null; \
 	  REVS_SCREEN_DUMP=tmp/viewdiff_port_$$t.bin REVS_SCREEN_FRAME=$$frame \
 	      REVS_QUIT_AFTER_DUMP=1 timeout $(if $(TIMEOUT),$(TIMEOUT),300) ./build/revs 2>&1 | tail -1 | sed -n 's/^/  /p'; \
 	  echo "  circuit $$t:"; \

@@ -1013,9 +1013,6 @@ on ALL SIX circuits at that pace.  Open, in order:
    - **Gate**: `make lockstep CIRCUIT=1` and a Brands start dump as in b3be95a
      (`docs/validation-harness.md` §the target-side gate), plus `SCANCHECK` on Brands; the
      speed-up measured with `fps_series.gdb` parked on the Brands grid.
-3. ⚠ `make viewdiff` fails on HEAD (gated rows 1/5/17/0/3 bytes on circuits 0-4): the default
-   build's accepted true-ratio ±1 LSB, byte-identical before and after this work.  Decide whether it
-   should run `EXACTRATIO=1` (then it is a pass/fail gate again) or compare against a recorded HEAD.
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
