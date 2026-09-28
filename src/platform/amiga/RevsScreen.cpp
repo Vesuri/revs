@@ -1089,6 +1089,26 @@ void RevsScreen::decodeTeletext()
             continue;
         }
 
+        /* ⭐ A ROW OF SPACES — what CLS leaves, so most of a page change's rows — needs neither the
+           decoder nor the painter: every cell's key is the one blank key (white-on-black alpha
+           space; no control code, so no double height and no flash), and if any key differs one
+           blitter clear repaints the row.  ENDIAN-OK: equality with a byte-uniform constant.
+           Measured on the walk's worst page (421 of its 500 pairs blank): see open-work §MODE 7. */
+        if (page[0] == 0x20202020u && page[1] == 0x20202020u && page[2] == 0x20202020u &&
+            page[3] == 0x20202020u && page[4] == 0x20202020u && page[5] == 0x20202020u &&
+            page[6] == 0x20202020u && page[7] == 0x20202020u && page[8] == 0x20202020u &&
+            page[9] == 0x20202020u) {
+            const uint32_t kBlank = TT_KEY(0x20u, TT_SET_ALPHA, TT_WHITE, TT_BLACK);
+            unsigned moved = 0;
+            for (unsigned i = 0; i < TT_COLS; i++)
+                if (keys[i] != kBlank) { keys[i] = kBlank; moved++; }
+            if (moved) { tt_blit_clear(rowTop, TT_COLS / 2u); painted += (uint16_t)moved; }
+            s_ttRowFlash &= ~bit;
+            decoded++;
+            if (oldDbl & bit) force |= bit << 1;  /* lost double height: the row below shows itself */
+            continue;
+        }
+
         const unsigned char* src = mem + TT_SCREEN_BASE + row * TT_COLS;
         uint32_t cells[TT_COLS];
 #ifdef REVS_TT_SPLIT
