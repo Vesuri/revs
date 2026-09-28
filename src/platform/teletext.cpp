@@ -223,13 +223,15 @@ void tt_tick_flash(void)
     }
 }
 
-/* ⭐ The decoder proper.  Returns bit 0 = the row carries double height, bit 1 = it carries a
-   FLASH code (so the backend knows which rows a flash-phase flip can change without scanning
-   them again).  `shown` is the foreground a displayable cell gets — conceal and the off phase of
-   flash show the background — and it is re-derived only when a control code changes one of its
-   inputs, because every other cell of the row just copies it (the per-cell ternary was a third
-   of the decode's instructions on the 68000, single-stepped). */
-int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
+/* ⭐ The decoder proper, emitting each cell as a KEY (teletext.h: TT_KEY) — one longword built
+   arithmetically, so byte order never shows.  Returns bit 0 = the row carries double height,
+   bit 1 = it carries a FLASH code (so the backend knows which rows a flash-phase flip can change
+   without scanning them again).  `attr` is every field a displayable cell takes from the row
+   state — set, the foreground it SHOWS (conceal and the off phase of flash show the background)
+   and the background — re-derived only when a control code changes an input, so a character
+   costs one OR and one store (the four-byte TtCell form was ~19 instructions a cell and the
+   biggest single part of a page change on the 68000, single-stepped). */
+int tt_decode_row_keys(const unsigned char* row, uint32_t out[TT_COLS], int flashOn)
 {
     /* Row state, reset at the start of every row — the chip has no memory across rows, which is
        why a teletext page can be decoded a row at a time and why colour never bleeds downward. */
@@ -239,7 +241,8 @@ int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flash
     unsigned char holdOn = 0;
     unsigned char heldCode = 0x20, heldSet = TT_SET_ALPHA;
     unsigned char flashing = 0, conceal = 0;
-    unsigned char shown = fg;      /* == (conceal || (flashing && !flashOn)) ? bg : fg */
+    unsigned char useSet = TT_SET_ALPHA;   /* the set a displayable cell draws from */
+    uint32_t attr = TT_KEY(0u, TT_SET_ALPHA, TT_WHITE, TT_BLACK);
     int flags = 0;
 
     for (unsigned x = 0; x < TT_COLS; x++) {
@@ -249,15 +252,8 @@ int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flash
             /* A displayable character.  In graphics mode $40-$5F stay alphanumeric, and the
                generated font already holds the alpha glyphs in those slots of both mosaic sets,
                so there is no range test here — that is what the three full 128-entry sets buy. */
-            unsigned char useSet = set;
-            if (set != TT_SET_ALPHA) {
-                useSet = sepSet ? TT_SET_GFX_SEP : TT_SET_GFX;
-                if (!(c >= 0x40 && c < 0x60)) { heldCode = c; heldSet = useSet; }
-            }
-            out[x].code = c;
-            out[x].set  = useSet;
-            out[x].fg   = shown;
-            out[x].bg   = bg;
+            out[x] = attr | c;
+            if (set != TT_SET_ALPHA && !(c >= 0x40 && c < 0x60)) { heldCode = c; heldSet = useSet; }
             continue;
         }
 
@@ -272,15 +268,11 @@ int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flash
         }
 
         /* While hold-mosaics is on, a control cell shows the last mosaic instead of a space. */
-        if (holdOn && set != TT_SET_ALPHA) {
-            out[x].code = heldCode;
-            out[x].set  = heldSet;
-        } else {
-            out[x].code = 0x20;
-            out[x].set  = TT_SET_ALPHA;
+        {
+            const unsigned char shownNow = (conceal || (flashing && !flashOn)) ? bg : fg;
+            out[x] = (holdOn && set != TT_SET_ALPHA) ? TT_KEY(heldCode, heldSet, shownNow, bg)
+                                                     : TT_KEY(0x20u, TT_SET_ALPHA, shownNow, bg);
         }
-        out[x].fg = (conceal || (flashing && !flashOn)) ? bg : fg;
-        out[x].bg = bg;
 
         switch (c) {
         case 0x00: case 0x01: case 0x02: case 0x03:       /* alpha colour       (set-after) */
@@ -301,7 +293,22 @@ int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flash
         case 0x1F: holdOn = 0; break;                     /* release mosaics    (set-after) */
         default: break;                                   /* $0A/$0B box, $0E/$0F, $1B ESC */
         }
-        shown = (conceal || (flashing && !flashOn)) ? bg : fg;
+        useSet = (set == TT_SET_ALPHA) ? TT_SET_ALPHA : (sepSet ? TT_SET_GFX_SEP : TT_SET_GFX);
+        attr   = TT_KEY(0u, useSet, (conceal || (flashing && !flashOn)) ? bg : fg, bg);
+    }
+    return flags;
+}
+
+/* The same decode as TtCells, for the host tools (validate_mode7, validate_trackmenu). */
+int tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
+{
+    uint32_t keys[TT_COLS];
+    const int flags = tt_decode_row_keys(row, keys, flashOn);
+    for (unsigned x = 0; x < TT_COLS; x++) {
+        out[x].code = (unsigned char)TT_KEY_CODE(keys[x]);
+        out[x].set  = (unsigned char)TT_KEY_SET(keys[x]);
+        out[x].fg   = (unsigned char)TT_KEY_FG(keys[x]);
+        out[x].bg   = (unsigned char)TT_KEY_BG(keys[x]);
     }
     return flags;
 }

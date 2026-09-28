@@ -831,7 +831,7 @@ void RevsScreen::buildTeletextCopper()
  *     of the bytes the bitmap was drawn from (10 longword compares a row, ~1.3 ms a page, EQUALITY
  *     ONLY so byte order cannot be observed).  `g_ttRowDirty` stays as an extra hint.
  *  2. ⭐ A CHANGED ROW IS DECODED, AND ONLY ITS CHANGED CELLS ARE PAINTED: every DISPLAY cell keeps
- *     the key of what is drawn there (the decoded TtCell plus which half of a double-height glyph),
+ *     the key of what is drawn there (the decoded cell's TT_KEY plus which half of a double-height glyph),
  *     so a highlight repaints its attribute's cells and a flash flip its flashing ones.
  *  3. A flash flip re-decodes only the rows that CARRY a flash code (`s_ttRowFlash`).
  * The cells are painted in PAIRS, a word per plane per line, unrolled with constant displacements,
@@ -901,7 +901,7 @@ static void tt_build_tables(void)
             s_ttMaskLo[cb][3u + p] = (uint16_t)b;        s_ttMaskHi[cb][3u + p] = (uint16_t)(b << 8);
         }
     }
-    for (unsigned i = 0; i < TT_ROWS * TT_COLS; i++) s_ttKey[i] = 0xFFFFFFFFu;  /* code < 128 */
+    for (unsigned i = 0; i < TT_ROWS * TT_COLS; i++) s_ttKey[i] = 0xFFFFFFFFu;  /* no TT_KEY sets bits 22-31 */
 }
 
 /* One glyph line of the pair into the three planes; D is the pair's word, W the line's glyph
@@ -922,15 +922,14 @@ static void tt_build_tables(void)
    the destination is a plain pointer with constant displacements and the six masks, the glyph
    word and one temporary are exactly d0-d7. */
 static __attribute__((noinline))
-void tt_paint_pair(uint16_t* d, const TtCell* a, const TtCell* b, unsigned half)
+void tt_paint_pair(uint16_t* d, uint32_t ka, uint32_t kb, unsigned half)
 {
-    const uint16_t* ma = s_ttMaskHi[a->fg | (a->bg << 3)];
-    const uint16_t* mb = s_ttMaskLo[b->fg | (b->bg << 3)];
+    const uint16_t* ma = s_ttMaskHi[TT_KEY_COLOUR(ka)];
+    const uint16_t* mb = s_ttMaskLo[TT_KEY_COLOUR(kb)];
     const uint16_t M0 = (uint16_t)(ma[0] | mb[0]), M1 = (uint16_t)(ma[1] | mb[1]);
     const uint16_t M2 = (uint16_t)(ma[2] | mb[2]), C0 = (uint16_t)(ma[3] | mb[3]);
     const uint16_t C1 = (uint16_t)(ma[4] | mb[4]), C2 = (uint16_t)(ma[5] | mb[5]);
-    const unsigned ga = ((unsigned)a->set << 7) + a->code;
-    const unsigned gb = ((unsigned)b->set << 7) + b->code;
+    const unsigned ga = TT_KEY_GLYPH(ka), gb = TT_KEY_GLYPH(kb);
 
     if (s_ttBlank[ga] && s_ttBlank[gb]) {     /* the backgrounds alone: thirty constant stores */
         TT_LINE(0, 0); TT_LINE(1, 0); TT_LINE(2, 0); TT_LINE(3, 0); TT_LINE(4, 0);
@@ -976,17 +975,17 @@ static void tt_blit_clear(uint8_t* dst, unsigned words)
                                 (uint16_t)(TT_CELL_H * kTtBP), (int16_t)(kTtPlaneGap - 2u * words));
 }
 
-/* One DISPLAY row from 40 decoded cells: paint every PAIR in which either key moved.  CELLS is
-   the decode's output viewed as keys — a TtCell is four bytes, so one longword each — and HALF
-   goes into the `set` byte's high nibble (set is 0..2) through a TtCell too, so the key never
-   depends on which byte of the longword a field lands in.  Returns the cells painted. */
+/* One DISPLAY row from 40 decoded keys (teletext.h: TT_KEY): paint every PAIR in which either key
+   moved.  HALF goes into the key's free bits 12-13, so a double-height half is a different key
+   from the same glyph drawn normally.  Returns the cells painted.
+   ⭐ The unchanged pair is the common case — every pair of every changed row is visited — so it is
+   two longword compares and nothing else (reading the fields back out of TtCells was ~32
+   instructions a pair, single-stepped). */
 static unsigned tt_paint_row(uint8_t* rowTop, uint32_t* keys, const uint32_t* cells, unsigned half)
 {
-    TtCell    hc = { 0u, (unsigned char)(half << 4), 0u, 0u };
-    uint32_t  hk;
-    unsigned  painted = 0, runAt = 0, runLen = 0;
+    const uint32_t hk = (uint32_t)half << 12;
+    unsigned painted = 0, runAt = 0, runLen = 0;
 
-    __builtin_memcpy(&hk, &hc, sizeof hk);
     for (unsigned col = 0; col < TT_COLS; col += 2u) {
         const uint32_t ka = cells[col] | hk, kb = cells[col + 1u] | hk;
         if (ka == keys[col] && kb == keys[col + 1u]) {
@@ -994,17 +993,15 @@ static unsigned tt_paint_row(uint8_t* rowTop, uint32_t* keys, const uint32_t* ce
             continue;
         }
         keys[col] = ka; keys[col + 1u] = kb;
-        const TtCell* a = (const TtCell*)(const void*)&cells[col];
-        const TtCell* b = (const TtCell*)(const void*)&cells[col + 1u];
-        const unsigned ga = ((unsigned)a->set << 7) + a->code, gb = ((unsigned)b->set << 7) + b->code;
         painted += 2u;
-        if ((s_ttBlank[ga] & s_ttBlank[gb]) && !(a->bg | b->bg)) {   /* blank on black: a run */
+        if ((s_ttBlank[TT_KEY_GLYPH(ka)] & s_ttBlank[TT_KEY_GLYPH(kb)])
+            && !((ka | kb) & TT_KEY(0u, 0u, 0u, 7u))) {             /* blank on black: a run */
             if (!runLen) runAt = col;
             runLen++;
             continue;
         }
         if (runLen) { tt_blit_clear(rowTop + runAt, runLen); runLen = 0; }
-        tt_paint_pair((uint16_t*)(void*)(rowTop + col), a, b, half);
+        tt_paint_pair((uint16_t*)(void*)(rowTop + col), ka, kb, half);
     }
     if (runLen) tt_blit_clear(rowTop + runAt, runLen);
     return painted;
@@ -1058,7 +1055,7 @@ void RevsScreen::decodeTeletext()
 
         const unsigned char* src = mem + TT_SCREEN_BASE + row * TT_COLS;
         uint32_t cells[TT_COLS];
-        const int flags = tt_decode_row_flags(src, (TtCell*)(void*)cells, (int)phase);
+        const int flags = tt_decode_row_keys(src, cells, (int)phase);
         const int dbl   = flags & 1;
         if (flags & 2) s_ttRowFlash |= bit; else s_ttRowFlash &= ~bit;
         decoded++;

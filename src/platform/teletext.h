@@ -54,6 +54,12 @@
  * shifts the whole REVS logo one cell right, which is exactly the kind of off-by-one that looks
  * like a font bug.
  */
+/* ⚠ NOT <stdint.h> in the Amiga C++ build — the clash cpu.h documents: the force-included
+   framework/SASCCompat.h already brings the types and contradicts the compat header's int8_t.
+   Every other build (host C++, the C tools) needs the real header. */
+#if !(defined(__cplusplus) && defined(REVS_PLATFORM_AMIGA))
+#include <stdint.h>
+#endif
 #include "teletext_font.h"
 
 #define TT_SCREEN_BASE  0x7C00u   /* the MODE 7 screen: 25 rows of 40, 1 KB */
@@ -133,6 +139,19 @@ int  tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn);
 /* ...and the same decode reporting bit 0 = double height, bit 1 = the row carries a FLASH code
    (the backend's flash-flip set, without a second pass over the row). */
 int  tt_decode_row_flags(const unsigned char* row, TtCell out[TT_COLS], int flashOn);
+/* ⭐ ...and the form the Amiga painter uses: each cell as one KEY, built arithmetically so byte
+   order never shows.  Bits 0-6 code, 7-8 set, 12-13 FREE (the backend puts a double-height half
+   there), 16-18 fg, 19-21 bg — so `key & 0x1FF` is the glyph index (set << 7 | code) and
+   `key >> 16` the colour index (fg | bg << 3). */
+#define TT_KEY(code, set, fg, bg)  ((uint32_t)(code) | (uint32_t)(set) << 7 | \
+                                    (uint32_t)(fg) << 16 | (uint32_t)(bg) << 19)
+#define TT_KEY_CODE(k)  ((k) & 0x7Fu)
+#define TT_KEY_SET(k)   (((k) >> 7) & 3u)
+#define TT_KEY_FG(k)    (((k) >> 16) & 7u)
+#define TT_KEY_BG(k)    (((k) >> 19) & 7u)
+#define TT_KEY_GLYPH(k) ((k) & 0x1FFu)
+#define TT_KEY_COLOUR(k) ((k) >> 16)
+int  tt_decode_row_keys(const unsigned char* row, uint32_t out[TT_COLS], int flashOn);
 /* The flash phase, advanced one display field at a time by the backend's VBI. */
 int  tt_flash_phase(void);
 void tt_tick_flash(void);
