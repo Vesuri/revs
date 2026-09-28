@@ -482,3 +482,28 @@ cannot spell your way to a constant base register.
   end has the NEXT function's address, so objdump and the PC sampler name that function after it.
 - **A 256-byte decode table beats a compare chain** for a byte with ~17 legal values (the chains'
   entry offsets): `move.b (a4,d0.w),d0 / bmi trap`, with `$FF` as "cannot mean".
+
+**...and what the MODE 7 row painter added (`teletext_m68k.s`, 2026-09-28):**
+- ⭐⭐ **SPECIALISE PER COLOUR, NOT PER PIXEL RULE** (the user's font-copier idiom). The C painter
+  computed every plane word as `(glyph & M) ^ C`; with one foreground on black a plane is either
+  the glyph or zero, so eight unrolled routines make a glyph line one fetch and three plain stores.
+  Dispatch once per pair through a PC-relative `jmp tab(pc,d2.w)` of `bra.w` entries (the table
+  must sit within the 8-bit displacement, i.e. right after the dispatch).
+- ⭐ **Four cells a longword**: two pairs of one colour share one dispatch, and each plane line is
+  a `move.l` of two `swap`-joined glyph words. Any EVEN address takes a longword on the 68000, so
+  a quad needs no alignment.
+- ⚠⚠ **`|` IS THE COMMENT CHARACTER IN THIS SYNTAX**: `andi.l #A|B,d2` assembles as `andi.l #A`
+  and fails, or (worse) doesn't fail. Name the constant with `.equ`.
+- ⚠⚠ **PARENTHESISE MACRO ARGUMENTS IN EXPRESSIONS**: `\y*ROWB` with `y = 2*0+1` expands to
+  `2*0+1*ROWB`. It put every double-height odd line on the wrong row, and only the oracle's
+  self-test pages (which include double height) caught it.
+- A new short branch that stops reaching is an assembler error, not a silent `.w`. Leave
+  branches in a routine that will grow unsized (`bne`, not `bne.s`), and let GAS relax them.
+- ⭐⭐⭐ **THE LARGEST WIN WAS WORK NOT DONE, NOT A FASTER LOOP.** The walk's worst page was 421
+  blank pairs of 500 (CLS then a few lines). A row of ten `$20202020` longwords skips the decoder
+  AND the painter for one blitter clear, which took the page from 47 to 34 ms. The asm had taken it
+  from 64 to 47. ⇒ **Read what the worst case is made of (TTTIME's page census) before tightening
+  the loop that serves it.**
+- ⛔ **The blitter does not run BESIDE the CPU on this machine**: a whole-row blitter paint
+  (glyph mask + pen lines + three combine blits) was byte-exact and 2x slower. The CPU and the
+  blitter share one bus, so only a blit that REPLACES CPU work (a D-only clear) pays.

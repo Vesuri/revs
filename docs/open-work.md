@@ -967,37 +967,16 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ⭐⭐ THE MODE 7 FRONT END IS TOO SLOW ON THE A500 (user, 2026-09-28)
-"The rendering of the teletext screen menus is just too slow on the A500. That performance must be
-improved to the maximum since that's the initial impression the player gets when starting the
-game."  ⇒ **the target is the MAXIMUM, not a ratio**: a page change should not be visible as drawing.
-**Where it stands** (A500, `make TTTIME=1` + `amiga/tttime.gdb`, raster lines of 64 µs; HEAD
-control measured the same way): the cell-granular decode took the idle menu from **44% of the CPU
-to 1.3%**, and the `COMPETITION=1` menu walk's decode time **35 420 → 3 589 lines**, its worst page
-change **4369 → 1001 lines (280 → 64 ms)**; a moved menu highlight now shows on the next field
-instead of the next flash flip.  Runs of blank-on-black pairs — 74% of the pairs a page change
-paints — go to the BLITTER; the decoder emits one arithmetic uint32 KEY a cell (teletext.h
-`TT_KEY`) that the painter compares with one `cmp.l`, and runs of displayable characters decode in
-a loop that carries nothing else (RevsScreen.cpp §THE PAGE -> THREE BITPLANES; gate
-`make TTCHECK=1`, `amiga/ttcheck.gdb`, and `make mode7`'s decoder differential).
-**Stopped short of the 40 ms target (user: "stop at the 40 ms target … if it seems unreachable,
-you may stop earlier") — what is left, a page change still ~64 ms, ~3 fields of visible wipe:**
-- The worst walk page (all 1000 cells) is **decode 254 lines + painting ~776** (TTTIME's worst-call
-  split).  The title page, the first thing on screen, is **2287 lines = decode 379 + ~1900** — 361
-  of its 500 pairs carry mosaic glyphs, so it is almost all pair painting, ~2400 cycles a glyph pair
-  wall (the pair painter's objdump is ~100 cycles a glyph line: a 24-cycle fetch and three plane
-  words at 4+4+4+12).  ⇒ **The painter is the floor of both, and the remaining lever is an asm pair
-  painter** (the and/eor on a plane whose mask is 0 or $FFFF is 8 of every 24 cycles; four cells a
-  longword saves a `swap`'s worth) — a real project, not low-hanging fruit.
-- ⚠ **Chip-RAM stores are NOT slower than fast-RAM ones here** — calibrated: 15 000 word stores took
-  1354 raster lines into the bitmap and 1343 into a fast-RAM buffer, and the fast loop ran at its
-  68000 table timing to 1.6%.
-- The decode is ~10 lines a row; its run loops are 9-12 instructions a cell, so what is left is the
-  control-code path.
-- The idle page compare is ~2.8 ms a field — not visible, but it is 14% of an idle 68000.
-- Everything outside the decode is unmeasured: `pcsample.sh` over the `COMPETITION=1` walk, for the
-  text-script interpreter, the circuit menu and the key polling (`RevsInput::anyKeyDown` was 3.6%
-  of one stepped window).
+### ⬜ MODE 7: the TITLE page's first paint is 78 ms (residual of the front-end speed item)
+The front-end item is CLOSED (user target: a page change ≤ 40 ms): the menu walk's worst page
+change is **533 raster lines, 34.1 ms** (was 280 ms), and idle menus use 1.3% of the CPU
+(`make TTTIME=1` + `amiga/tttime.gdb`; the design is RevsScreen.cpp §THE PAGE -> THREE BITPLANES,
+`teletext_m68k.s`, and docs/m68k-optimisation.md §the MODE 7 row painter).  What is left is the
+one-shot first paint of the 5TRSCRN title page, **1224 lines (78 ms)**: 345 same-colour pairs and
+137 blank pairs, no blank rows.  It is shown once at boot, and nothing measured says it needs
+to move.  Levers if it ever does: the decoder in asm (~200 of a page change's lines are the C
+decoder), the blitter clears issued from the asm without the C/framework call (~38 a page), or
+painting the title during the load instead of after it.
 
 ### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
 The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
