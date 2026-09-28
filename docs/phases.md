@@ -725,7 +725,7 @@ picture — the remote debugger greys the display, so no dump this project owns 
 ⚠ It stayed open through several green measurements for exactly that reason.  **Watch for the
 shape: an item whose evidence is necessarily a human looking at the screen should be routed to the
 user early rather than accumulating more headless confirmation.**  Same class as the sound
-subsystem's still-owed by-ear pass.
+subsystem's by-ear pass (done by the user, 2026-09-28).
 
 ### ✅ 4. Sound — DONE (2026-08-15)
 
@@ -742,7 +742,7 @@ Three things left here, none of them blocking:
 - **the pitch ramps ~50× too slowly**, because `engine_sound_update` is a MAIN-LOOP call and the main
   loop paints at ~1 FPS.  It is a framerate consequence, not an audio bug, and it fixes itself as
   Phase 6 lands.
-- **the by-ear pass has not happened** (audio cannot be verified headlessly).
+- ✅ **the by-ear pass is done** (the user, 2026-09-28: "sound listening doesn't reveal any problems").
 - **sync/hold/queued sounds are unimplemented and counted**; Revs has never issued one.
 
 ### ✅ 5. Track selection — DONE, data path AND code path (`make tracks` + `make track-run`)

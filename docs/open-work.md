@@ -1045,7 +1045,7 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
   determinism family and remains the gate for every refactor. The new modes are gated by a host
   physical-equivalence suite against h = 1 in game time.
 
-**Status: stages 1–6 are DONE (2026-09-25); stage 7 (the user plays it) is open, and so is the price.**
+**Status: stages 1–7 are DONE** (1–6 on 2026-09-25; 7, the user's play-test on 2026-09-28: lap timer at real speed, the feel the original's, the A500 price accepted). **What is open is the price.**
 The default Amiga build steps at **25 Hz on a 68000 and 50 Hz on a 68020+**, measured at 24.93 and
 50.03 steps/s, with the race clock 1.000× / 1.003× real time. The written argument is
 `docs/faithfulness-seam.md` §THE FRAME-RATE-INDEPENDENT SIMULATION.
@@ -1091,14 +1091,6 @@ workload (84.80 → 85.39 bracketed, while the displayed rate fell 16%).
 5. The Amiga rate choice, and probes for steps a frame and dropped steps.
 6. Docs (CLAUDE.md's GAME SPEED rule).
 7. The user play-tests it.
-
-### 🔧 The sound BY-EAR pass (`docs/phases.md` §5.4)
-Owed since sound landed, and the one thing in the project that **cannot be verified headlessly**.
-`make sound` proves the scheduler tick-for-tick against a real MOS; it cannot prove it sounds right.
-The ENGINE DRONE has had its first listen (2026-09-26, A1200, 50 fps): the per-step slew budget fixed
-its semitone staircase, and the lag behind the needle is the BBC's own slew and stays
-(`docs/faithfulness-seam.md` §THE FRAME-RATE-INDEPENDENT SIMULATION). Still owed: the noise-channel
-idle, the squeal, the impact, and the volume keys.
 
 ### 🔧 The naming pass's residue (`docs/static-map.md` §Open items 5)
 Still unnamed: **the interior of the 3D pipeline below `project_point`, the front end's prompt
