@@ -245,17 +245,33 @@ int tt_decode_row_keys(const unsigned char* row, uint32_t out[TT_COLS], int flas
     uint32_t attr = TT_KEY(0u, TT_SET_ALPHA, TT_WHITE, TT_BLACK);
     int flags = 0;
 
-    for (unsigned x = 0; x < TT_COLS; x++) {
-        unsigned char c = (unsigned char)(row[x] & 0x7F);
-
-        if (c >= 0x20) {
-            /* A displayable character.  In graphics mode $40-$5F stay alphanumeric, and the
-               generated font already holds the alpha glyphs in those slots of both mosaic sets,
-               so there is no range test here — that is what the three full 128-entry sets buy. */
-            out[x] = attr | c;
-            if (set != TT_SET_ALPHA && !(c >= 0x40 && c < 0x60)) { heldCode = c; heldSet = useSet; }
-            continue;
+    const unsigned char* p = row;
+    const unsigned char* const end = row + TT_COLS;
+    uint32_t* o = out;
+    for (;;) {
+        /* ⭐ A RUN of displayable characters, in a loop that carries nothing but the pointers and
+           `attr` — inside the one loop that also carried the row state, GCC spilled the key to
+           the frame and it was ~14 instructions a cell (objdump).  In graphics mode $40-$5F stay
+           alphanumeric, and the generated font already holds the alpha glyphs in those slots of
+           both mosaic sets, so there is no range test here — that is what the three full
+           128-entry sets buy; only hold-mosaics has to tell them apart. */
+        unsigned c;
+        if (set == TT_SET_ALPHA) {
+            while ((c = *p & 0x7Fu) >= 0x20u) {
+                *o++ = attr | c;
+                if (++p == end) return flags;
+            }
+        } else {
+            unsigned held = 0;             /* no displayable code is below $20: "none in this run" */
+            while ((c = *p & 0x7Fu) >= 0x20u) {
+                *o++ = attr | c;
+                if ((c & 0x60u) != 0x40u) held = c;
+                if (++p == end) break;
+            }
+            if (held) { heldCode = (unsigned char)held; heldSet = useSet; }
+            if (p == end) return flags;
         }
+        p++;
 
         /* A control code.  Apply the set-at ones first, then decide what the cell displays, then
            apply the set-after ones — that ordering IS the set-at/set-after rule. */
@@ -270,8 +286,8 @@ int tt_decode_row_keys(const unsigned char* row, uint32_t out[TT_COLS], int flas
         /* While hold-mosaics is on, a control cell shows the last mosaic instead of a space. */
         {
             const unsigned char shownNow = (conceal || (flashing && !flashOn)) ? bg : fg;
-            out[x] = (holdOn && set != TT_SET_ALPHA) ? TT_KEY(heldCode, heldSet, shownNow, bg)
-                                                     : TT_KEY(0x20u, TT_SET_ALPHA, shownNow, bg);
+            *o++ = (holdOn && set != TT_SET_ALPHA) ? TT_KEY(heldCode, heldSet, shownNow, bg)
+                                                   : TT_KEY(0x20u, TT_SET_ALPHA, shownNow, bg);
         }
 
         switch (c) {
@@ -295,8 +311,8 @@ int tt_decode_row_keys(const unsigned char* row, uint32_t out[TT_COLS], int flas
         }
         useSet = (set == TT_SET_ALPHA) ? TT_SET_ALPHA : (sepSet ? TT_SET_GFX_SEP : TT_SET_GFX);
         attr   = TT_KEY(0u, useSet, (conceal || (flashing && !flashOn)) ? bg : fg, bg);
+        if (p == end) return flags;
     }
-    return flags;
 }
 
 /* The same decode as TtCells, for the host tools (validate_mode7, validate_trackmenu). */

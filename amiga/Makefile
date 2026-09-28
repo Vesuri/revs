@@ -433,7 +433,8 @@ endif
 # (`amiga/tttime.gdb`): last / max / total over the decodes that painted anything.
 ifdef TTTIME
 EXTRA_DEFINES += -DREVS_TT_TIME
-PROBE_SYMS_TTTIME = g_ttTimeLast g_ttTimeMax g_ttTimeTotal g_ttTimeCalls g_ttTimeCells
+PROBE_SYMS_TTTIME = g_ttTimeLast g_ttTimeMax g_ttTimeTotal g_ttTimeCalls g_ttTimeCells \
+                    g_ttTimeMaxDecode g_ttTimeMaxRows g_ttTimeMaxCells
 endif
 
 # `make STRAIGHT_TO_RACE=1` — boot straight into a Silverstone PRACTICE session with the

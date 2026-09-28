@@ -9,5 +9,7 @@ set confirm off
 continue
 printf "TT last=%u lines (%u cells)  max=%u  total=%u over %u painting decodes  vbi=%u\n", \
   g_ttTimeLast, g_ttTimeCells, g_ttTimeMax, g_ttTimeTotal, g_ttTimeCalls, g_vbiCount
+printf "TT worst: %u lines = decode %u over %u rows + the rest, %u cells painted\n", \
+  g_ttTimeMax, g_ttTimeMaxDecode, g_ttTimeMaxRows, g_ttTimeMaxCells
 detach
 quit

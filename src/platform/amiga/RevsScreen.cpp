@@ -851,6 +851,8 @@ extern "C" volatile uint16_t g_vbiCount;
 extern "C" {
 volatile uint32_t g_ttTimeLast = 0, g_ttTimeMax = 0, g_ttTimeTotal = 0, g_ttTimeCalls = 0;
 volatile uint16_t g_ttTimeCells = 0;
+/* The worst call split: its decode (tt_decode_row_keys) lines, its rows decoded, its cells painted. */
+volatile uint32_t g_ttTimeMaxDecode = 0, g_ttTimeMaxRows = 0, g_ttTimeMaxCells = 0;
 }
 static inline uint32_t tt_beam_lines(void)
 {
@@ -1012,6 +1014,7 @@ void RevsScreen::decodeTeletext()
     if (!m_ttBitmap) return;
 #ifdef REVS_TT_TIME
     const uint32_t t0 = tt_beam_lines();
+    uint32_t tDecode = 0;
 #endif
     tt_blit_wait();                       /* the last decode's final run, normally long done */
 
@@ -1055,7 +1058,13 @@ void RevsScreen::decodeTeletext()
 
         const unsigned char* src = mem + TT_SCREEN_BASE + row * TT_COLS;
         uint32_t cells[TT_COLS];
+#ifdef REVS_TT_TIME
+        const uint32_t td = tt_beam_lines();
+#endif
         const int flags = tt_decode_row_keys(src, cells, (int)phase);
+#ifdef REVS_TT_TIME
+        tDecode += tt_beam_lines() - td;
+#endif
         const int dbl   = flags & 1;
         if (flags & 2) s_ttRowFlash |= bit; else s_ttRowFlash &= ~bit;
         decoded++;
@@ -1082,7 +1091,9 @@ void RevsScreen::decodeTeletext()
     if (painted) {
         const uint32_t dt = tt_beam_lines() - t0;
         g_ttTimeLast = dt; g_ttTimeCells = painted; g_ttTimeTotal += dt; g_ttTimeCalls++;
-        if (dt > g_ttTimeMax) g_ttTimeMax = dt;
+        if (dt > g_ttTimeMax) {
+            g_ttTimeMax = dt; g_ttTimeMaxDecode = tDecode; g_ttTimeMaxRows = decoded; g_ttTimeMaxCells = painted;
+        }
     }
 #endif
 }
