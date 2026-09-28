@@ -2,6 +2,7 @@
    src/platform/bbc_screen.h; this file only re-hosts it. */
 #define ECS_SPECIFIC
 #include <hardware/custom.h>
+#include <hardware/dmabits.h>
 #include <graphics/display.h>
 #include <proto/exec.h>
 #include <exec/memory.h>
@@ -662,6 +663,9 @@ void RevsScreen::initialize()
        allocation inside a frame is the Atari port's 3.6-second freeze, and a FAILED one at a
        mode switch would blank the front end with no way to attribute it. */
     tt_build_tables();   /* the MODE 7 painter's glyph and mask tables — at start-up, not in a page */
+    /* ⚠ The MODE 7 painter blits (tt_blit_clear), and PlatformAmiga::run enables only copper,
+       raster and sprite DMA — the blitter's is whatever the OS left, so say it. */
+    AmigaHardware::setDMAChannels(DMAF_BLITTER, true);
     m_ttBitmap = Bitmap::allocate(kTtW, kTtH, kTtBP, /*interleaved*/true);
     m_ttCopper = CopperList::allocate(TT_LIST_LENGTH);
     if (!m_ttBitmap) g_ttAllocFailed |= 1u;
@@ -850,10 +854,13 @@ volatile uint16_t g_ttTimeCells = 0;
 }
 static inline uint32_t tt_beam_lines(void)
 {
-    volatile const uint32_t* vp = (volatile const uint32_t*)0xDFF004;   /* VPOSR:VHPOSR */
-    uint16_t v0, v1; uint32_t b;
-    do { v0 = g_vbiCount; b = *vp; v1 = g_vbiCount; } while (v0 != v1);
-    return revs_mulu16(v0, 313u) + ((b >> 8) & 0x1FFu);
+    uint16_t v0, v1, line;
+    do {                                  /* the framework's own beam read (AmigaHardware.cpp) */
+        v0   = g_vbiCount;
+        line = (uint16_t)(((*vposrPointer & 1u) << 8) | (*vhposrPointer >> 8));
+        v1   = g_vbiCount;
+    } while (v0 != v1);
+    return revs_mulu16(v0, 313u) + line;
 }
 #endif
 extern "C" { volatile uint16_t g_ttCellsDrawn = 0; }   /* cells painted by the last decode */
@@ -947,6 +954,28 @@ void tt_paint_pair(uint16_t* d, const TtCell* a, const TtCell* b, unsigned half)
 #undef TT_GW
 #undef TT_LINE
 
+/* ⭐⭐ BLANK-ON-BLACK RUNS GO TO THE BLITTER.  Measured over the COMPETITION=1 menu walk, 74% of the
+   pairs a page change paints are two blank glyphs, ~63% of the paint, and on a black background
+   every plane word is zero — a D-only blitter clear, which runs BESIDE the CPU (the program is in
+   fast RAM).  A run of such pairs along a display row is one blit: 10 lines x 3 interleaved plane
+   rows = height 30, `words` wide, modulo the rest of the 40-byte plane row.  The CPU paints the
+   other pairs of the row into different words, so the two never write the same word.
+   ⚠ DIRECT, NEVER QUEUED: the port masks blit-done (PlatformAmiga::run), so the framework's queue
+   would never advance; this waits for the previous blit (AmigaHardware::blitterWait) instead,
+   which the CPU's own painting between two runs normally hides.  ⚠ And nothing may read or repaint the bitmap until the last
+   blit is done — decodeTeletext and ttCheck call tt_blit_wait() first.
+   ⚠ No OwnBlitter(): the port owns the machine in this window and nothing else blits (the
+   framework's routines make the same assumption). */
+static inline void tt_blit_wait(void) { AmigaHardware::blitterWait(); }
+/* ⚠ The wait first is what makes blitterClear take its DIRECT arm: that arm needs the blitter idle
+   and the queue empty, and nothing in the port ever queues. */
+static void tt_blit_clear(uint8_t* dst, unsigned words)
+{
+    AmigaHardware::blitterWait();
+    AmigaHardware::blitterClear((uint16_t*)(void*)dst, (uint16_t)words,
+                                (uint16_t)(TT_CELL_H * kTtBP), (int16_t)(kTtPlaneGap - 2u * words));
+}
+
 /* One DISPLAY row from 40 decoded cells: paint every PAIR in which either key moved.  CELLS is
    the decode's output viewed as keys — a TtCell is four bytes, so one longword each — and HALF
    goes into the `set` byte's high nibble (set is 0..2) through a TtCell too, so the key never
@@ -955,18 +984,29 @@ static unsigned tt_paint_row(uint8_t* rowTop, uint32_t* keys, const uint32_t* ce
 {
     TtCell    hc = { 0u, (unsigned char)(half << 4), 0u, 0u };
     uint32_t  hk;
-    unsigned  painted = 0;
+    unsigned  painted = 0, runAt = 0, runLen = 0;
 
     __builtin_memcpy(&hk, &hc, sizeof hk);
     for (unsigned col = 0; col < TT_COLS; col += 2u) {
         const uint32_t ka = cells[col] | hk, kb = cells[col + 1u] | hk;
-        if (ka == keys[col] && kb == keys[col + 1u]) continue;
+        if (ka == keys[col] && kb == keys[col + 1u]) {
+            if (runLen) { tt_blit_clear(rowTop + runAt, runLen); runLen = 0; }
+            continue;
+        }
         keys[col] = ka; keys[col + 1u] = kb;
-        tt_paint_pair((uint16_t*)(void*)(rowTop + col),
-                      (const TtCell*)(const void*)&cells[col],
-                      (const TtCell*)(const void*)&cells[col + 1u], half);
+        const TtCell* a = (const TtCell*)(const void*)&cells[col];
+        const TtCell* b = (const TtCell*)(const void*)&cells[col + 1u];
+        const unsigned ga = ((unsigned)a->set << 7) + a->code, gb = ((unsigned)b->set << 7) + b->code;
         painted += 2u;
+        if ((s_ttBlank[ga] & s_ttBlank[gb]) && !(a->bg | b->bg)) {   /* blank on black: a run */
+            if (!runLen) runAt = col;
+            runLen++;
+            continue;
+        }
+        if (runLen) { tt_blit_clear(rowTop + runAt, runLen); runLen = 0; }
+        tt_paint_pair((uint16_t*)(void*)(rowTop + col), a, b, half);
     }
+    if (runLen) tt_blit_clear(rowTop + runAt, runLen);
     return painted;
 }
 
@@ -976,6 +1016,7 @@ void RevsScreen::decodeTeletext()
 #ifdef REVS_TT_TIME
     const uint32_t t0 = tt_beam_lines();
 #endif
+    tt_blit_wait();                       /* the last decode's final run, normally long done */
 
     const unsigned char phase = (unsigned char)tt_flash_phase();
     unsigned long force = g_ttRowDirty;         /* the VDU driver's and *LOAD's marks: a hint */
@@ -1036,6 +1077,7 @@ void RevsScreen::decodeTeletext()
     m_ttRowDbl     = newDbl;
     g_ttRowsDrawn  = decoded;
     g_ttCellsDrawn = painted;
+    tt_blit_wait();   /* a decode is FINISHED when its blits are: the timer and the check both mean that */
 #ifdef REVS_TT_CHECK
     ttCheck();
 #endif

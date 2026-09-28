@@ -973,26 +973,25 @@ improved to the maximum since that's the initial impression the player gets when
 game."  ⇒ **the target is the MAXIMUM, not a ratio**: a page change should not be visible as drawing.
 **Where it stands** (A500, `make TTTIME=1` + `amiga/tttime.gdb`, raster lines of 64 µs; HEAD
 control measured the same way): the cell-granular decode took the idle menu from **44% of the CPU
-to 1.3%**, the `COMPETITION=1` menu walk's decode time **35 420 → 5 557 lines**, and its worst page
-change **4369 → 2078 lines (280 → 133 ms)**; a moved menu highlight now shows on the next field
-instead of the next flash flip (RevsScreen.cpp §THE PAGE -> THREE BITPLANES; gate `make TTCHECK=1`,
-`amiga/ttcheck.gdb`, and `make mode7`'s decoder differential).
-**What is left — a page change is still ~133 ms, a visible wipe:**
-- ⭐⭐ **CHIP-RAM STORES ARE THE FLOOR, AND THEY COST ~2× THEIR INSTRUCTION TIMING HERE.** Calibrated
-  split of a page change (timer cost subtracted): a blank pair — 30 word stores into the bitmap, no
-  glyph reads — measured ~1060 cycles against ~650 predicted, a glyph pair ~1810 against ~1200,
-  while the decode (fast RAM only) ran at its predicted rate.  Blank pairs are **74% of the pairs
-  painted and ~63% of the paint**.  ⇒ the lever is FEWER CPU WRITES TO CHIP RAM: a **blitter
-  clear** of the bitmap when most rows change (a CLS or a new page), with every key reset to
-  "blank on black", so the CPU paints only the non-blank cells; the blit runs beside the decode.
-  Price it first: how many of a page change's painted pairs are blank-on-black (the walk's are the
-  stimulus), and the WaitBlit before the first CPU store.
+to 1.3%**, and the `COMPETITION=1` menu walk's decode time **35 420 → 4 614 lines**, its worst page
+change **4369 → 1329 lines (280 → 85 ms)**; a moved menu highlight now shows on the next field
+instead of the next flash flip.  Runs of blank-on-black pairs — 74% of the pairs a page change
+paints — go to the BLITTER, which clears them beside the CPU (RevsScreen.cpp §THE PAGE -> THREE
+BITPLANES; gate `make TTCHECK=1`, `amiga/ttcheck.gdb`, and `make mode7`'s decoder differential).
+**What is left — a page change is still ~85 ms, ~4 fields of visible wipe:**
+- ⚠ **Chip-RAM stores are NOT slower than fast-RAM ones here** — calibrated: 15 000 word stores took
+  1354 raster lines into the bitmap and 1343 into a fast-RAM buffer, and the fast loop ran at its
+  68000 table timing to 1.6%.  (An earlier note here said "~2x"; that was a guess from pair costs
+  that simply exceeded a back-of-envelope estimate, retracted by the measurement.)
+- The glyph pairs (~1800 cycles a pair measured, ~100 instructions) are now the paint; the next
+  cut is FOUR cells a longword (a `swap` joins two pair words, ~17% fewer cycles a line) or an asm
+  row painter.
 - The decode is ~190 cycles a cell (~7.6k a row); a page change re-decodes every changed row.
 - The idle page compare is ~2.8 ms a field (2322 instructions single-stepped before the unroll) —
   not visible, but it is 14% of an idle 68000.
-- Everything outside the decode is unmeasured: `pcsample.sh` over the `COMPETITION=1` walk once the
-  decode is done, for the text-script interpreter, the circuit menu and the key polling
-  (`RevsInput::anyKeyDown` was 3.6% of one stepped window).
+- Everything outside the decode is unmeasured: `pcsample.sh` over the `COMPETITION=1` walk, for the
+  text-script interpreter, the circuit menu and the key polling (`RevsInput::anyKeyDown` was 3.6%
+  of one stepped window).
 
 ### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
 The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
@@ -1141,7 +1140,7 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
 - ⛔ **MODE 7: a blank glyph's key as its background alone** (2026-09-28) — painted cells 1836 → 1588 over the menu walk, paint **838k → 968k colour clocks**: the per-cell blank lookup it adds to every VISITED pair costs more than the pairs it skips. Only a scheme whose skip test is already paid (the blitter clear above) can use it.
-- ⛔ **MODE 7: passing the pair painter scalars instead of `TtCell`s, with a separate blank-fill routine** — 852k → 838k colour clocks (inside the noise); the call is not the pair's overhead, the chip-RAM stores are.
+- ⛔ **MODE 7: passing the pair painter scalars instead of `TtCell`s, with a separate blank-fill routine** — 852k → 838k colour clocks (inside the noise); the call is not the pair's overhead.
 - ⛔ **THE TERRAIN BY BLITTER AREA FILL** — exact (0 mismatches over 616k cells, seven sabotages
   caught) and **+5.25 ms** (84.43 → 89.68), in both shapes: a C toggle writer over the event lists
   (+12.3) and the toggles written by the scan itself (+5.25). The blits are nearly free — dropping
