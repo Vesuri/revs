@@ -1092,6 +1092,11 @@ Host physics against legacy, in game time (`tools/sim_equiv.py`, T2 pinned):
 - **throttle:** 0.5% (h = 0.43) and 0.7% (h = 0.21);
 - **AI:** all 20 cars within 1 speed unit and on the same segment for 20 s;
 - **steering:** tracks up to the spin, which happens at the same moment in every mode;
+  ⭐ timed to the frame (2026-09-28, the user asked whether the car loses grip too easily): the
+  first |lateral slip| > 2 under a held key comes at left/right **3.65/3.18 s legacy, 3.60/3.24
+  h400, 3.46/3.26 h200, 3.64/3.28 h200x2** — within ±0.2 s, i.e. ~two legacy frames — and the slip
+  before it is 3-10% LOWER decoupled, so no step size loses grip more easily than the engine's own
+  loop, which the lockstep holds byte-identical to a real BBC;
 - **jump:** peak 64 against 61, same airtime (with the launch-bias compensation);
 - **lap timer:** 0.9965–1.005× real time.
 
