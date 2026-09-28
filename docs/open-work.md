@@ -967,6 +967,35 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
+### ⭐⭐ THE MODE 7 FRONT END IS TOO SLOW ON THE A500 (user, 2026-09-28)
+"The rendering of the teletext screen menus is just too slow on the A500. That performance must be
+improved to the maximum since that's the initial impression the player gets when starting the
+game."  ⇒ **the target is the MAXIMUM, not a ratio**: every menu page should appear as fast as a real
+BBC draws it or faster, and no page change, keypress echo or flash flip should be visible as drawing.
+- **Nothing has ever measured it.** Every probe so far is a race window; the front end lands in
+  phase 0 (`ffe602f` moved its `decodeTeletext()` calls there on purpose), so no phase row sees it.
+  Step one is a front-end profile on the A500 config: `pcsample.sh` in a plain build sitting in
+  the menus and paging through them, and `steptrace.gdb` on one `decodeTeletext()` call, so the
+  split between the three candidates below is measured, not guessed.
+- **What renders a page** [DERIVED from the code, unpriced]: the engine's OSWRCH →
+  `src/platform/mos.cpp` → the VDU driver in `src/platform/teletext.cpp` writes screen RAM and marks
+  rows in `g_ttRowDirty`; `RevsScreen::decodeTeletext()` then re-decodes each dirty ROW whole
+  (`tt_decode_row` plus 40 cells × 10 lines × 3 planes = 1200 byte stores through a per-cell
+  colour-mask expression), and **a flash-phase flip re-dirties the whole page** (25 rows, 30 000
+  stores) whether or not a flashing cell is on it.  `g_ttRowsDrawn` counts rows per decode.
+- **Candidate levers** [INFERRED — rank them by the profile]:
+  - a per-CELL dirty record instead of per-row (a keypress echo dirties one cell, not 40);
+  - a flash flip that re-draws only the cells carrying the flash attribute;
+  - glyph rows pre-expanded per (fg, bg) pair, or the blitter, instead of three masked byte stores
+    a line;
+  - word or longword plane stores across cell pairs;
+  - how often the page is presented: every spin-wait is a presentation point
+    (CLAUDE.md §Amiga specifics), so check a print loop is not decoding per character.
+- **Gate**: `make mode7` (the page byte for byte against a real BBC) + `make trackmenu` for the
+  circuit menu, and `amiga/mode7_dump.gdb` for what the A500 actually shows; a cell-granular dirty
+  scheme is a CLASSIFICATION, so it needs the picture gate, not an in-process differential
+  (CLAUDE.md §an in-process differential cannot see a defect in how a shared input is classified).
+
 ### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
 The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
 under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it and the three other
