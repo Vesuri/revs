@@ -754,13 +754,13 @@ static void object_slot_exit_abi(void)
 
 void write_object_slot(void)
 {
-    write_object_slot_core(cpu.A, cpu.C);
+    write_object_slot_core(cpu.A, cpu.C, shared_counter_42);
     object_slot_exit_abi();               /* X/V/C: dead at every caller (the audit at the width) */
 }
 
 void reject_object_slot(void)
 {
-    reject_object_slot_core();
+    reject_object_slot_core(shared_counter_42);
     object_slot_exit_abi();
 }
 
@@ -769,7 +769,7 @@ void note_object_contact(void)
     hypot_max_marshal_in();               /* the hypot it runs takes the magnitude from mem[] */
     hypot_min_marshal_in();               /* ...both of its magnitudes */
     uint8_t threshold = cpu.Y;            /* Y exits unchanged: the caller's threshold */
-    note_object_contact_core(threshold);
+    note_object_contact_core(threshold, shared_counter_42);
     hypot_min_marshal_out();              /* the hypot inside it shifts the smaller one */
     /* the exit ($2AB6 LDA point_dist_hi / $2ABC CPY point_dist_lo / $2AC6 LDA the slot): */
     if (point_dist_hi != 0u) {                           /* far: A/N/Z from the LDA, C the caller's */
@@ -1517,8 +1517,10 @@ void car_gap_tail(void)
 void stage_nearby_car_at_core(uint8_t orderIndex)
 {
     uint8_t slot = mem[MEM_car_order + orderIndex];           /* $28F2 LDA $013C,X */
-    saved_slot_index = slot;                              /* $28F5 STA $45 */
-    shared_counter_42 = slot;                             /* $28F7 STA $42 */
+    /* $28F5 STA saved_slot_index / $28F7 STA shared_counter_42 hand the slot to the two tails
+       below, and nothing else reads either store (real-BBC def-use audit, competition, all five
+       circuits: reject_object_slot, place_car_world_coords and its projectors only), so it
+       travels as an argument instead. */
 
     /* $28F9-$28FD — how far the reference car ($17) is ahead of this one (SEC: no finer term) */
     car_distance_marshal_in_one(slot);         /* the two slots this gap is measured between */
@@ -1527,7 +1529,7 @@ void stage_nearby_car_at_core(uint8_t orderIndex)
 
     /* X is held from the $28F9 TAX through to the tail; both tails consume it as a value. */
     if (s.reject) {                                       /* $2911 reject_object_slot; return */
-        reject_object_slot_core();                        /* its A/Y/N/Z are dead here */
+        reject_object_slot_core(slot);                    /* its A/Y/N/Z are dead here */
         return;
     }
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
@@ -1574,10 +1576,7 @@ void check_car_pair(void)
 
 void section_coord_add_delta(void)
 {
-    const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
-    const uint8_t dhi[3] = { mem[MEM_point_delta_hi + 0], mem[MEM_point_delta_hi + 1],
-                             mem[MEM_point_delta_hi + 2] };
-    section_coord_add_delta_core(cpu.X, cpu.Y, dlo, dhi);
+    section_coord_add_delta_core(cpu.X, cpu.Y, step_delta_from_mem());
 }
 
 void derive_car_section_cursor(void)
@@ -1777,14 +1776,14 @@ void step_delta_halve(void)
 void project_object_slot(void)
 {
     view_origin_marshal_in();
-    project_object_slot_core(cpu.X, cpu.A);
+    project_object_slot_core(cpu.X, cpu.A, shared_counter_42);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 void project_object_coord(void)
 {
     view_origin_marshal_in();
-    project_object_slot_core(0xFDu, cpu.A);      /* $2A5D LDX #$FD — the object_coord pair */
+    project_object_slot_core(0xFDu, cpu.A, shared_counter_42);   /* $2A5D LDX #$FD — the object_coord pair */
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 

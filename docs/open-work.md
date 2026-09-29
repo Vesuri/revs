@@ -972,18 +972,12 @@ The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain
 under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it and the three other
 bugs the lockstep found).  The autopilot now races: `make lap` laps all six circuits clean at up to
 ~73 in fourth gear, and `make lockstep` matches a real BBC in physics and picture over 2995 frames
-on ALL SIX circuits at that pace.  Open, in order:
-1. **The race-proper lockstep on the EXPANSION circuits.**  `make lockstep-race` (Silverstone) is
+on ALL SIX circuits at that pace.  Open:
+- **The race-proper lockstep on the EXPANSION circuits.**  `make lockstep-race` (Silverstone) is
    identical to a real BBC over 11000 frames — qualifying plus ~4 laps of a 19-car race, physics,
    picture and all 20 cars' state (docs/validation-harness.md §THE RACE-PROPER LOCKSTEP).  The
    overtaking pass has a per-circuit SMC seam ($2771) and the object plotter per-circuit hooks, so
    run it on circuits 1-5 (the target needs a CIRCUIT variable and the jsbeeb track mapping).
-2. **The zero-page hand-off chain after `place_car_world_coords`** (user request, 2026-09-29: the
-   car pass must be real C).  ring_gap / check_car_pair / stage_nearby_car / car_order_swap are
-   done; place_car_world_coords still parks its inputs in $0C/$84-$88 and saved_slot_index/
-   shared_counter_42 for project_object_slot / build_section_step_delta / step_delta_halve /
-   section_coord_add_delta, which read them back out of mem[].  Convert as one chain (the readers
-   move with the writer), reader audit first (`rangeaudit --defuse` on a COMPETITION race).
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so

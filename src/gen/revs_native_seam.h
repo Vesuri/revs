@@ -815,7 +815,7 @@ Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
 void model_integrate_element_core(uint8_t slot);
 Mul8AccumExit mul8_accum_core(void);
 Wide16Exit    mul16_by_1_5_core(uint16_t x);
-void note_object_contact_core(uint8_t threshold);
+void note_object_contact_core(uint8_t threshold, uint8_t slot);
 #define SOUND_SLOT_IMPACT 0x04u  /* the bang: the scrape arm, the crash arm and begin_jump */
 
 /* check_crash_core's three arms — which tail the routine took, and so which exit ABI. */
@@ -828,7 +828,7 @@ void    sound_stop_all_core(uint8_t ambientY);
 void    build_player_car_core(void);
 void    step_delta_halve_core(void);
 uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor);
-void    project_object_slot_core(uint8_t coordIndex, uint8_t shape);
+void    project_object_slot_core(uint8_t coordIndex, uint8_t shape, uint8_t slot);
 uint8_t paint_fence_backdrop_core(uint8_t horizon);
 void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 uint8_t point_distance_hypot_apply(void);
@@ -840,7 +840,7 @@ uint8_t race_main_loop_core(RestartDepth depth);
    around it and exists for the oracle. */
 uint8_t race_main_loop_session(void);
 void rebase_edge_point_core(uint8_t slot);
-void reject_object_slot_core(void);
+void reject_object_slot_core(uint8_t slot);
 RoadSide road_edge_side_apply(uint8_t sideSelect);
 void road_edge_start_core(uint8_t nearSlotCount, uint8_t halfStride, uint8_t scratchSection, uint8_t pointLimit, uint8_t staleHorizonCap);
 uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
@@ -852,7 +852,13 @@ void    scale_by_track_gradient_tail_regs(HookRegs *r);  /* $461B, ditto — for
 int road_span_advance_core(uint8_t y);
 void rotate_velocity_by_steer_core(void);
 void rotate_pair_a_by_steer_core(void);
-void section_coord_add_delta_core(uint8_t dst, uint8_t src, const uint8_t dlo[3], const uint8_t dhi[3]);
+/* A section's direction step: three signed 16-bit components (docs/wide-value-cleanup.md, the
+   EIGHTH lesson — the 6502 spreads it over $74/$75/$76 + point_delta_hi[0..2]). */
+typedef struct { int16_t c[3]; } StepDelta;
+StepDelta section_step_delta(uint8_t dirIndex);
+void      step_delta_publish(StepDelta d);
+StepDelta step_delta_from_mem(void);
+void section_coord_add_delta_core(uint8_t dst, uint8_t src, StepDelta d);
 void plot_object_core(uint8_t slot);
 void build_section_step_delta_core(uint8_t y);
 void copy_section_height_to_side1_core(uint8_t x);
@@ -1019,7 +1025,7 @@ uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);
 void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entryCell);
-void write_object_slot_core(uint8_t projectedLine, uint8_t entryC);
+void write_object_slot_core(uint8_t projectedLine, uint8_t entryC, uint8_t slot);
 
 /* per-circuit hook twins (see revs_native.c's PER-CIRCUIT HOOK TWINS section) */
 extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterated bodies */

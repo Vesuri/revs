@@ -40,6 +40,7 @@ SCRATCH = {  # 6502 working cells the port deliberately does not reproduce (the 
     0x7C, 0x7D, 0x7E, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x8A, 0x8B,
     0x8D, 0x8E, 0x8F,
     0x76, 0x7F,   # check_car_pair's speed bit and flags byte: locals in the twin (race only)
+    0x0C, 0x45,   # place_car_world_coords' direction index and slot hand-off: arguments in the twin
 }
 TICK = {0x62CA, 0x62F7, 0x62FA}   # driven by the 50 Hz interrupt, whose count per frame differs
 FONT = set(range(0x62C4, 0x62CA))  # vdu_char_block's glyph rows: OSWORD 10's answer is this project's

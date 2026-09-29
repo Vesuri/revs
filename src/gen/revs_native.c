@@ -14359,7 +14359,7 @@ void build_sign_origin_core(uint8_t offset, uint8_t shift)
 
 /* Every native caller drops the 6502 exit (A/Y/N/Z/C); the note_object_contact shim rebuilds it
    from point_dist, the threshold and the slot, which is all it ever depended on. */
-void note_object_contact_core(uint8_t threshold)
+void note_object_contact_core(uint8_t threshold, uint8_t slot)
 {
     point_distance_hypot_apply();                        /* $2AB3 */
     object_dist_hi = point_dist_hi;                      /* $2AB6-$2AB8 */
@@ -14367,7 +14367,7 @@ void note_object_contact_core(uint8_t threshold)
         return;
     contact_pending  = (uint8_t)(contact_pending - 1u);  /* DEC $2AC0 */
     contact_distance = point_dist_lo;                     /* $2AC2-$2AC4 */
-    contact_slot     = shared_counter_42;                 /* $2AC6-$2AC8 */
+    contact_slot     = slot;                              /* $2AC6-$2AC8 LDA shared_counter_42 */
 }
 
 /* $2A76  write_object_slot — THE PROJECTION'S RESULT INTO AN OBJECT SLOT  (twin #89)
@@ -14403,25 +14403,23 @@ void note_object_contact_core(uint8_t threshold)
 /* ⭐ The slot writers' 6502 exit — A = the slot's flag byte as stored, Y = the slot, N/Z from A,
    and X/V/C passed through except on the line-reject arm (the SBC's) — is rebuilt by the shims
    from mem[] after the call.  No native caller reads it, so the cores return nothing. */
-void reject_object_slot_core(void)
+void reject_object_slot_core(uint8_t slot)
 {
-    uint8_t y = shared_counter_42;                       /* $2AA6 */
-    store_object_flags_core(y, (uint8_t)(mem[MEM_car_flags_shape + y] | 0x80u));  /* ORA #$80 — the slot-empty mark */
+    store_object_flags_core(slot, (uint8_t)(mem[MEM_car_flags_shape + slot] | 0x80u));  /* ORA #$80 — the slot-empty mark */
 }
 
-void write_object_slot_core(uint8_t projectedLine, uint8_t entryC)
+void write_object_slot_core(uint8_t projectedLine, uint8_t entryC, uint8_t slot)
 {
     unsigned width;
-    uint8_t  slot = shared_counter_42;                   /* $2A76 */
 
     if (entryC) {                                        /* $2A78 BCS — behind the near clip */
-        reject_object_slot_core();
+        reject_object_slot_core(slot);
         return;
     }
 
     uint8_t line = (uint8_t)(projectedLine - 0x01u);     /* $2A7A-$2A7B  SEC/SBC #1 */
     if (line & 0x80u) {                                  /* $2A7D BMI — a projected line of 0 */
-        reject_object_slot_core();
+        reject_object_slot_core(slot);
         return;
     }
     mem[MEM_object_line + slot] = line;                      /* $2A7F */
@@ -14511,8 +14509,10 @@ static void build_road_sign_core(void)
        projection and the slot write.  The CMP #$6E's carry is note_object_contact's entry C. */
     uint8_t offHeadingC = absOff >= 0x6Eu ? 1u : 0u;
     threshold = offHeadingC ? 0x50u : 0x25u;
-    shared_counter_42 = SIGN_SLOT;
-    note_object_contact_core(threshold);                 /* exit dead here (build_road_sign is mem-only) */
+    /* $4D13 STX shared_counter_42 is the slot hand-off to the two callees below and nothing
+       else reads it (real-BBC def-use audit, all five circuits: write_object_slot only), so the
+       slot travels as an argument. */
+    note_object_contact_core(threshold, SIGN_SLOT);      /* exit dead here (build_road_sign is mem-only) */
     /* $4D1B-$4D1E.  ⚠ The 6502 hands write_object_slot project_point's exit V here, and
        ProjPoint does not carry it — an argued 0, not an oversight: write_object_slot's own V
        reaches a reader only as draw_track_object's entry V one call later (the body's 15th),
@@ -14520,7 +14520,7 @@ static void build_road_sign_core(void)
        the empty-slot arm, which returns it without touching mem[], and overwritten at phase 18
        before the next reader.  The exit is dropped for the same reason. */
     { ProjPoint p = project_point_core(scratchX, VIEW_ORIGIN_STRIDE);
-      write_object_slot_core(p.line, p.clip); }
+      write_object_slot_core(p.line, p.clip, SIGN_SLOT); }
 }
 
 /* The 6502-ABI shims. */
@@ -16842,21 +16842,18 @@ RingGap ring_gap(uint8_t from, uint8_t to, unsigned borrow)
 
    The source section is the byte cursor in Y, the destination the byte cursor in X (both index
    section_coord_lo/hi, 40 sections x 3 bytes, plus the two scratch slots at $FA/$FD).  The step
-   delta[i] is the signed 16-bit value build_section_step_delta built for this section: its low bytes are the
-   shared math window (math_lo, math_hi, shared_temp_76 at $74/$75/$76) and its high bytes are
-   point_delta_hi[0..2] ($83/$84/$85).
+   delta is the StepDelta section_step_delta built for this section — three signed 16-bit
+   components, which the 6502 keeps as the low bytes math_lo/math_hi/shared_temp_76 ($74/$75/$76)
+   and the high bytes point_delta_hi[0..2] ($83/$84/$85).
 
    The 6502 does this as three ADC lo / ADC hi byte-pair chains (CLC before each low add); on the
    D=0 road/placement path that is exactly a binary uint16_t add, so it is written as one here.
    No flag escapes: build_road_section does LDX straight after, and place_car_world_coords' AI branch
    likewise — A/N/V/Z/C are all dead at both call sites. */
-void section_coord_add_delta_core(uint8_t dst, uint8_t src,
-                                         const uint8_t dlo[3], const uint8_t dhi[3])
+void section_coord_add_delta_core(uint8_t dst, uint8_t src, StepDelta delta)
 {
-    for (unsigned i = 0; i < 3; i++) {
-        uint16_t d = (uint16_t)(dlo[i] | (dhi[i] << 8));
-        section_word_set(dst + i, (uint16_t)(section_word(src + i) + d));
-    }
+    for (unsigned i = 0; i < 3; i++)
+        section_word_set(dst + i, (uint16_t)(section_word(src + i) + (uint16_t)delta.c[i]));
 }
 
 /* Forward declarations for the core-to-core calls below: these three are defined further down
@@ -16913,26 +16910,45 @@ void step_segment_dir_index(void)
 
 /* $1442  build_section_step_delta  (twin #141)
    Builds the signed 16-bit 3-component step delta that section_coord_add_delta then
-   integrates into a section's coordinate.  Sign-extends the track's three direction bytes
-   track_dir_0/1/2[Y] (ground plane c0/c2 scaled to |.|=$78, c1 the small gradient)
-   into 16-bit values, storing the low bytes in math_lo/math_hi/shared_temp_76 and
-   the high bytes in point_delta_hi[0..2].  When track_direction is set (running the
-   track backwards) each 16-bit component is two's-complement negated.  D=0 on this
-   path; the callers ($1335, $2A11) discard the exit registers/flags. */
+   integrates into a section's coordinate: the track's three direction bytes
+   track_dir_0/1/2[dir] (ground plane c0/c2 scaled to |.|=$78, c1 the small gradient),
+   sign-extended, and each negated when track_direction is set (running the track backwards).
+   D=0 on this path; the callers ($1335, $2A11) discard the exit registers/flags. */
+StepDelta section_step_delta(uint8_t dirIndex)
+{
+    StepDelta d;
+    d.c[0] = (int16_t)(int8_t)mem[MEM_track_dir_0 + dirIndex];
+    d.c[1] = (int16_t)(int8_t)mem[MEM_track_dir_1 + dirIndex];
+    d.c[2] = (int16_t)(int8_t)mem[MEM_track_dir_2 + dirIndex];
+    if (track_direction != 0)                   /* backwards: negate every component */
+        for (unsigned i = 0; i < 3; i++) d.c[i] = (int16_t)-d.c[i];
+    return d;
+}
+
+/* The 6502's home for the vector: low bytes $74/$75/$76, high bytes point_delta_hi[0..2].
+   ⚠ Only the ROAD BUILDER's delta is a result there: edge_x_offscreen's ROR reads the
+   shared_temp_76 build_road_section leaves, on circuits 2, 3 and 5 (a real-BBC def-use audit,
+   `--range-audit=0074-0076,0083-0088 --defuse`, competition, all five circuits, 2026-09-29).
+   The car path's delta is halved in place three times and read by nothing after it. */
+void step_delta_publish(StepDelta d)
+{
+    for (unsigned i = 0; i < 3; i++) {
+        mem[MEM_math_lo        + i] = (uint8_t)d.c[i];
+        mem[MEM_point_delta_hi + i] = (uint8_t)((uint16_t)d.c[i] >> 8);
+    }
+}
+
+StepDelta step_delta_from_mem(void)
+{
+    StepDelta d;
+    for (unsigned i = 0; i < 3; i++)
+        d.c[i] = (int16_t)(mem[MEM_math_lo + i] | (mem[MEM_point_delta_hi + i] << 8));
+    return d;
+}
+
 void build_section_step_delta_core(uint8_t y)
 {
-    int16_t d[3];
-    d[0] = (int16_t)(int8_t)mem[MEM_track_dir_0 + y];
-    d[1] = (int16_t)(int8_t)mem[MEM_track_dir_1 + y];
-    d[2] = (int16_t)(int8_t)mem[MEM_track_dir_2 + y];
-    if (track_direction != 0) {                 /* backwards: negate every component */
-        d[0] = (int16_t)-d[0];
-        d[1] = (int16_t)-d[1];
-        d[2] = (int16_t)-d[2];
-    }
-    math_lo               = (uint8_t)d[0];  mem[MEM_point_delta_hi + 0] = (uint8_t)(d[0] >> 8);
-    math_hi               = (uint8_t)d[1];  mem[MEM_point_delta_hi + 1] = (uint8_t)(d[1] >> 8);
-    shared_temp_76        = (uint8_t)d[2];  mem[MEM_point_delta_hi + 2] = (uint8_t)(d[2] >> 8);
+    step_delta_publish(section_step_delta(y));
 }
 
 /* $125A  derive_car_section_cursor  (twin #140)
@@ -17033,7 +17049,10 @@ void build_road_section(void)
     car_distance_marshal_out_one(0x17u);
     if (!forwardBoundary) {
         /* --- 3. build this section's flag byte --- */
-        build_section_step_delta_core(segment_dir_index);
+        /* ⚠ PUBLISHED, not just computed: edge_x_offscreen reads the shared_temp_76 this
+           leaves on three circuits (step_delta_publish). */
+        const StepDelta step = section_step_delta(segment_dir_index);
+        step_delta_publish(step);
 
         uint8_t x  = section_cursor;
         uint8_t cf = cur_segment_flags;
@@ -17064,12 +17083,8 @@ void build_road_section(void)
         mem[MEM_section_flags + x] = r;
 
         /* --- 4. integrate the step and build side-1's ground-plane pair --- */
-        {
-            const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
-            const uint8_t dhi[3] = { mem[MEM_point_delta_hi + 0], mem[MEM_point_delta_hi + 1],
-                                     mem[MEM_point_delta_hi + 2] };
-            section_coord_add_delta_core(section_cursor, section_cursor_prev, dlo, dhi);
-        }                                                   /* section N's point from N-1 + step */
+        section_coord_add_delta_core(section_cursor, section_cursor_prev, step);
+                                                            /* section N's point from N-1 + step */
         copy_section_height_to_side1_core(x);               /* share the height across */
 
         uint8_t dir = segment_dir_index;
@@ -17384,9 +17399,18 @@ void step_section_curve(void)
    unhandled case, faithfully reproduced.
 
    The tail (from $29F4) is the object queue: project_object_coord dispatches on object_dist_hi, and for a
-   near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve / section_coord_add_delta / project_object_slot.
-   Those are the real generated routines, called with the registers the transliteration set, so
-   they cancel in the differential — the twin's job is the two loops and the coordinate adds. */
+   near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve /
+   section_coord_add_delta / project_object_slot.
+
+   ⭐ NO ZERO-PAGE HAND-OFF.  The 6502 parks its inputs in the arithmetic window ($0C the direction
+   index, $84/$85 the two offsets, $86-$88 the direction bytes, $74-$76 the mul8 residue), the step
+   delta in $74-$76 + point_delta_hi, and the object slot in saved_slot_index ($45) and
+   shared_counter_42 ($42), and the tail reads them back out.  Here they are locals and arguments:
+   a real-BBC def-use audit (`bbc_refloop_race --competition --range-audit=000C,0074-0076,
+   0083-0088 --defuse` and `=0042,0045`, frames 20-490, all five circuits, 2026-09-29) finds no
+   reader of any of those stores outside this chain — the only foreign read of the window is
+   edge_x_offscreen's of the ROAD BUILDER's delta, which step_delta_publish keeps.  The fixtures
+   ignore those cells, citing this audit. */
 
 /* One axis of the staged object's world coordinate as the 16-bit value it is.  The 6502 keeps
    the three axes as two parallel byte rows a page apart, so every add there is a two-lane
@@ -17411,54 +17435,27 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    circuit.  That is exactly why the operand is read out of mem[] below instead of baked, and
    why the opcode test stays a TRAP on an unmodellable shape rather than a per-circuit table. */
 #define SMC_MASK_OPERAND  (MEM_smc_object_coord_mask + 1u)
-/* The zero-page arithmetic window as THIS routine's tenant uses it — the object-queue tail
-   reads its inputs back out of these cells, so they are an output of the twin, not scratch.
-   ($84 is shared_temp_84; $86-$88 are point_delta_sign's three cells under a different tenant;
-   $0C, $85 and $87 have no name yet — queued in docs/rename.md.) */
-#define PLACE_CAR_DIR     MEM_point_delta_sign   /* the three direction bytes at +0/+1/+2 */
-
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
-   optionally <<2 (the second loop's ASL/ROL pair).  ⚠ Also reproduces the mul8 residue the
-   object-queue tail reads back: math_lo ($74) = the product's low byte (mul8 never shifts it),
-   math_hi ($75) = the preserved multiplicand, shared_temp_76 ($76) = the term's high byte (which
-   the coord-high ADC also consumes).  Written on every call so the residue is faithful at the
-   SMC-trap exit inside loop 1 too. */
+   optionally <<2 (the second loop's ASL/ROL pair). */
 static int16_t place_car_axis_term(uint8_t dir, uint8_t factor, int shl2)
 {
     uint8_t mag   = abs8_value(dir);   /* EOR #$FF; ADC #1 on the neg arm */
     unsigned prod = revs_mulu16(mag, factor);                    /* mul8 */
     int16_t term  = (dir & 0x80u) ? (int16_t)(-(int)(prod >> 8)) : (int16_t)(prod >> 8);
-    if (shl2) term = (int16_t)(term << 2);
-
-    math_lo        = (uint8_t)prod;                  /* the product's low byte (mul8 never shifts it) */
-    math_hi        = factor;                         /* the preserved multiplicand */
-    shared_temp_76 = (uint8_t)((uint16_t)term >> 8); /* the (shifted) sign extension */
-    return term;
+    return shl2 ? (int16_t)(term << 2) : term;
 }
 
-/* Returns the exit X: saved_slot_index on every real path, 1 on the SMC trap.  Typed entry so
-   build_player_car (twin #170) can call it without routing its two arguments through cpu. */
+/* `slot` is the object slot, which every caller also hands the 6502 in saved_slot_index and
+   shared_counter_42 (stage_nearby_car at $28F5/$28F7, build_player_car at $11D0/$11D2 — the same
+   byte in all three).  Returns the exit X: the slot on every real path, 1 on the SMC trap. */
 uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 {
     uint8_t soi    = mem[MEM_section_dir_index  + sectionCursor];  /* indexes the direction tables */
     uint8_t along  = mem[MEM_car_section_along  + slot];
     uint8_t across = mem[MEM_car_section_across + slot];
 
-    /* ⚠ The oracle parks its inputs in the zero-page arithmetic window ($0C soi, $84 along,
-       $85 across, $86..$88 dir bytes) and the object-queue tail reads them back through those
-       cells.  Reproduce those writes exactly so the shared tail routines see identical memory;
-       only the mul8 product residue ($74/$75/$76) and the PHP stack byte then differ. */
-    car_section_dir_index    = soi;
-    shared_temp_84 = along;
-    shared_temp_85 = across;
-
-    uint8_t dir1[3];
-    dir1[0] = mem[MEM_track_dir_0 + soi];
-    dir1[1] = mem[MEM_track_dir_1 + soi];
-    dir1[2] = mem[MEM_track_dir_2 + soi];
-    mem[PLACE_CAR_DIR + 0] = dir1[0];
-    mem[PLACE_CAR_DIR + 1] = dir1[1];
-    mem[PLACE_CAR_DIR + 2] = dir1[2];
+    const uint8_t dir1[3] = { mem[MEM_track_dir_0 + soi], mem[MEM_track_dir_1 + soi],
+                              mem[MEM_track_dir_2 + soi] };
 
     /* First loop: origin + (along * dir) >> 8, per world axis.  ⚠ The section index is the 6502's
        8-bit Y (LDY the cursor then INY per axis), so it WRAPS at 256 — the sum is masked. */
@@ -17490,11 +17487,8 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     }
 
     /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
-    uint8_t dir2[3];
-    dir2[0] = mem[TRACK_NORMAL_X + soi];              /* the normal's X component */
-    dir2[2] = mem[MEM_track_normal_y + soi];                 /* dir[2] reloaded */
-    mem[PLACE_CAR_DIR + 0] = dir2[0];
-    mem[PLACE_CAR_DIR + 2] = dir2[2];
+    const uint8_t dir2[3] = { mem[TRACK_NORMAL_X + soi], 0u,   /* the normal's X component */
+                              mem[MEM_track_normal_y + soi] };  /* ...and its other one */
     for (int axis = 0; axis < 4; axis += 2) {
         int16_t sp = place_car_axis_term(dir2[axis], across, 1);
 
@@ -17509,52 +17503,32 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
        +$90 on the word, the high row's own wrap being the word's wrap. */
     object_coord_word_set(1, (uint16_t)(object_coord_word(1) + 0x0090u));
 
-    /* ---- The object-queue tail ($29F4).  ⭐ The projector is now project_object_slot_core
-       (twin #172), so the four calls pass their coordinate index and shape nibble as ARGUMENTS
-       rather than through cpu — X and A were the only registers those sites ever set, and the
-       entry C the old note threaded from the $90 nudge is dead (see above).  Y still travels in
-       cpu for build_section_step_delta / section_coord_add_delta, which are not split yet. ---- */
-    project_object_slot_core(0xFDu, 0x04u);                      /* $29F4-$29F6 */
-    /* The queue routines all restore X from saved_slot_index, so from here on the slot the tail
-       works on is that byte, not a register. */
-    uint8_t qslot = saved_slot_index;
+    /* ---- The object-queue tail ($29F4): the car's own point, then — for a near car just
+       ahead of car_behind — the AI's look-ahead, which walks three more points up the section. */
+    project_object_slot_core(0xFDu, 0x04u, slot);                /* $29F4-$29F6 */
     if (object_dist_hi >= 0x03) {
         if (object_dist_hi >= 0x05 &&
-            !(mem[MEM_car_flags_shape + qslot] & 0x80))
-            mem[MEM_car_flags_shape + qslot]++;
-        return saved_slot_index;                                 /* L_2a4d */
+            !(mem[MEM_car_flags_shape + slot] & 0x80))
+            mem[MEM_car_flags_shape + slot]++;
+        return slot;                                             /* L_2a4d */
     }
-    if (staging_order_index != car_behind) return saved_slot_index;  /* $1D — the ring position */
-    if (!(mem[MEM_car_flags_shape + qslot] & 0x80))                  /* $2A07 LDA / BPL: not yet flagged */
-        mem[MEM_car_flags_shape + qslot]--;
+    if (staging_order_index != car_behind) return slot;          /* $1D — the ring position */
+    if (!(mem[MEM_car_flags_shape + slot] & 0x80))               /* $2A07 LDA / BPL: not yet flagged */
+        mem[MEM_car_flags_shape + slot]--;
 
-    /* $2A0F LDY $0C: the segment index is build_section_step_delta's only input, and the
-       C/N/Z the 6502 leaves here are dead (fixture LIVE_X) now that the rest of this branch
-       is core-to-core. */
-    build_section_step_delta_core(soi);
-
-    /* ⭐ Core-to-core: the step delta is halved and integrated three times, each integration
-       reading the SAME three-component delta the halve just rewrote — so the descriptor is
-       rebuilt from its cells at each step rather than passed through cpu.X/cpu.Y.  The 6502
-       spelled the two cursors as X (destination) and Y (source); they are arguments here.
-       Nothing downstream reads the register residues these shims used to reconstruct:
-       project_object_slot_core is typed core-to-core, and the routine's exit X is its RETURN
-       value, marshalled by the shim (see place_car_world_coords below). */
-    for (int step = 0; step < 3; step++) {
-        static const uint8_t dstCursor[3] = { 0xFA, 0xF4, 0xFD };
-
-        step_delta_halve_core();        /* ...which REWRITES the delta, so read it after */
-        {
-            const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
-            const uint8_t dhi[3] = { mem[MEM_point_delta_hi + 0], mem[MEM_point_delta_hi + 1],
-                                     mem[MEM_point_delta_hi + 2] };
-            section_coord_add_delta_core(dstCursor[step], 0xFD, dlo, dhi);
-        }
+    /* $2A0F-$2A47 — this section's direction step, halved before each of three integrations
+       from the car's point ($FD) into the two neighbour points and back into its own. */
+    StepDelta step = section_step_delta(soi);                    /* $2A0F LDY $0C / $2A11 */
+    static const uint8_t dstCursor[3] = { 0xFA, 0xF4, 0xFD };
+    for (int i = 0; i < 3; i++) {
+        for (int c = 0; c < 3; c++)                              /* step_delta_halve: ASR.W */
+            step.c[c] = (int16_t)(step.c[c] >> 1);
+        section_coord_add_delta_core(dstCursor[i], 0xFD, step);
     }
-    shared_counter_42 = 0x14; project_object_slot_core(0xFDu, 0x02u);   /* the car itself */
-    shared_counter_42 = 0x15; project_object_slot_core(0xF4u, 0x01u);   /* ...and its two */
-    shared_counter_42 = 0x16; project_object_slot_core(0xFAu, 0x00u);   /*    staged neighbours */
-    return saved_slot_index;                                     /* L_2a4d */
+    project_object_slot_core(0xFDu, 0x02u, 0x14u);               /* the car itself */
+    project_object_slot_core(0xF4u, 0x01u, 0x15u);               /* ...and its two */
+    project_object_slot_core(0xFAu, 0x00u, 0x16u);               /*    staged neighbours */
+    return slot;                                                 /* L_2a4d */
 }
 
 /* 6502-ABI shim: slot in X, section byte cursor in Y; X comes back as the exit slot.
@@ -19295,9 +19269,10 @@ uint8_t check_crash_core(uint8_t savedX)
    this routine's own tail (docs/rename.md). */
 void build_player_car_core(void)
 {
+    /* $11D0 STX saved_slot_index / $11D2 STX shared_counter_42 are the slot hand-off to
+       place_car_world_coords and its projectors, read by nothing else (place_car_world_coords'
+       audit) — so the slot is an argument. */
     uint8_t slot = player_car;
-    saved_slot_index  = slot;                     /* $11D0 STX $45 */
-    shared_counter_42 = slot;                     /* $11D2 STX $42 — the slot the queue tail files */
 
     place_car_world_coords_core(slot, car_section_cursor);         /* $11D4-$11D6 */
 
@@ -19319,7 +19294,7 @@ void build_player_car_core(void)
        its per-circuit SMC trap, and the 6502 then indexes object_bearing with whatever came
        back.  Threading the returned byte (rather than re-reading saved_slot_index) is what
        makes the trap arm agree with the oracle. */
-    uint8_t x = place_car_world_coords_core(saved_slot_index, ahead);
+    uint8_t x = place_car_world_coords_core(slot, ahead);       /* $11F6 LDX saved_slot_index */
 
     /* $11FB-$1207 ⭐ WIDE VALUE: the heading is ONE 16-bit angle ($10000 = a full turn).  The
        object queue has just filed the bearing to that look-ahead point in object_bearing[slot];
@@ -19347,12 +19322,10 @@ void build_player_car_core(void)
    about math_lo (docs/wide-value-cleanup.md, the EIGHTH lesson). */
 void step_delta_halve_core(void)
 {
-    for (int c = 2; c >= 0; c--) {                    /* $2B0E LDX #2 ... $2B1A DEX / BPL */
-        int16_t v = (int16_t)(((unsigned)mem[MEM_point_delta_hi + c] << 8) | mem[MEM_math_lo + c]);
-        v = (int16_t)(v >> 1);                        /* ASR.W #1 — sign-propagating halve */
-        mem[MEM_math_lo    + c] = (uint8_t)v;
-        mem[MEM_point_delta_hi + c] = (uint8_t)((uint16_t)v >> 8);
-    }
+    StepDelta d = step_delta_from_mem();              /* $2B0E LDX #2 ... $2B1A DEX / BPL */
+    for (int c = 0; c < 3; c++)
+        d.c[c] = (int16_t)(d.c[c] >> 1);              /* ASR.W #1 — sign-propagating halve */
+    step_delta_publish(d);
 }
 
 /* $2A5D  project_object_coord  /  $2A5F  project_object_slot  (twin #172)
@@ -19384,17 +19357,16 @@ void step_delta_halve_core(void)
 
    ⚠ note_object_contact's exit is DEAD here — $2A73's project_point opens `LDY #0 / LDA`, so
    its entry C is not consumed and the twin passes 0. */
-void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
+void project_object_slot_core(uint8_t coordIndex, uint8_t shape, uint8_t slot)
 {
     plot_shape = shape;                                  /* $2A5F — the slot's shape nibble */
 
     bearing_to_section_core(coordIndex, 0x00u);          /* $2A61, from the camera (Y = 0) */
 
     /* $2A64-$2A6D ⭐ WIDE VALUE: the bearing is ONE 16-bit angle, filed whole. */
-    uint8_t slot = shared_counter_42;
     object_bearing_word_set(slot, bearing_v);
 
-    note_object_contact_core(0x25u);                     /* $2A70 — exit dead, see above */
+    note_object_contact_core(0x25u, slot);                     /* $2A70 — exit dead, see above */
 
     ProjPoint p = project_point_core(coordIndex, 0x00u); /* $2A73 */
 
@@ -19405,7 +19377,7 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
        not through a fixture gap (docs/validation-harness.md §FIFTEENTH).  The sibling case
        confirms it: perturbing the coordIndex that write_object_slot INDEXES WITH — the
        third queue projector's $FA — is caught at once. */
-    write_object_slot_core(p.line, p.clip);                  /* falls into $2A76 */
+    write_object_slot_core(p.line, p.clip, slot);            /* falls into $2A76 */
 }
 
 /* ---------------------------------------------------------------- wing mirrors */

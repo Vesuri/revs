@@ -4844,8 +4844,11 @@ static int test_stage_nearby_car(void)
     /* ⭐ car_gap_tail's working cells (math_lo/math_hi/hypot_min_hi) and the |gap| written back at
        $290B are read only inside this routine (def-use audit, a competition race on all five
        circuits, 2026-09-28) — so they are not results.  On the staging arm place_car_world_coords
-       rewrites $74/$75 as its own residue, which ITS fixture still compares. */
-    static const uint16_t IGN[] = { 0x0074, 0x0075, 0x0079 };
+       rewrites the arithmetic window as its own residue, and $28F5/$28F7's saved_slot_index /
+       shared_counter_42 are only the slot hand-off to the two tails — both are ignored on the
+       evidence in place_car_world_coords' fixture note. */
+    static const uint16_t IGN[] = { 0x000C, 0x0042, 0x0045, 0x0074, 0x0075, 0x0076, 0x0079,
+                                    0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088 };
     set_ignore(IGN, (int)(sizeof IGN / sizeof IGN[0]));
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
@@ -10287,9 +10290,27 @@ static int test_late_misc_trees(void)
      * The tail dispatches on object_dist_hi vs 3 and 5; object_dist_hi is swept 0..7 and the
        equality mem[$1D]==car_behind is forced half the time, so the AI branch and both early
        returns are all reached.  X escapes as saved_slot_index (build_player_car reads it back).
-     * The twin reproduces the oracle's zero-page scratch writes ($0C/$84/$85/$86..$88) so the
-       shared tail routines see identical memory; only the mul8 product residue ($74/$75/$76) and
-       the PHP stack byte ($01FF) then differ, and those are transient arithmetic scratch.
+     * ⭐ THE ZERO-PAGE HAND-OFF IS NOT A RESULT (the results rule).  The oracle parks the
+       direction index in $0C, the offsets in $84/$85, the direction bytes in $86-$88, the mul8
+       residue and the step delta in $74-$76 + $83-$85, and the slot in $42; the twin keeps them
+       in locals and arguments.  Reader audit on a real BBC: `bbc_refloop_race --competition
+       --drive --frames=500 --range-audit=000C-000C,0074-0076,0083-0088 --defuse` and
+       `=0042-0042,0045-0045`, frames 20-490, circuits 1-5 (2026-09-29) — no store this chain
+       makes to those cells is read outside it (mul8's own multiplicand reads and interrupt-time
+       reads charged to a non-reading PC aside).  The one foreign reader of the window,
+       edge_x_offscreen, reads the ROAD BUILDER's delta, which build_road_section still publishes
+       and its fixture still compares.  Ignoring the cells cannot hide a wrong delta or slot: both
+       land in section_coord / object_* results, which stay compared.
+     * The slot is ONE value: every caller hands the same byte in X, saved_slot_index ($45) and
+       shared_counter_42 ($42) — stage_nearby_car $28F5/$28F7, build_player_car $11D0/$11D2 — so
+       the fixture pins all three to one real object slot (THE DOMAIN RULE).
+     * SABOTAGE (2026-09-29, objects and binary removed before every build): no halve on the
+       first step, the second projector filed in slot $14, the first projector one slot off, the
+       halve as a logical shift, the AI arm integrating from $FA — all FAIL here.  ⚠ Negating
+       only two of section_step_delta's three components when running backwards PASSES here and
+       in build_road_section, and that is the shared-callee scope, not a gap: both oracles reach
+       $1442 through the native build_section_step_delta shim, so a defect inside it lands on both
+       sides.  build_section_step_delta's own fixture is its gate, and it FAILS that sabotage.
 
    tally_bcd_column:
      * X = the column 0..6; standings_mode ($5F38) is kept small (0..5) so the BCD repeat count —
@@ -10529,12 +10550,14 @@ static int test_crash_restart_subtree(void)
     /* ---- build_player_car --------------------------------------------------------- */
     register_fixture("build_player_car");
     if (want("build_player_car")) {
-        static const uint16_t ig[] = { 0x01FF };      /* the mul8 residue place_car_world_coords leaves */
+        static const uint16_t ig[] = { 0x01FF,        /* the PHP byte */
+            0x000C, 0x0042, 0x0045, 0x0074, 0x0075, 0x0076,   /* the zero-page hand-off: see */
+            0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088 }; /* place_car_world_coords' note */
         const int cases = 3000;
         int smcArm = 0, wrapArm = 0, nearArm = 0;
         unsigned long smcBefore = g_smcUnhandled;
         setenv("REVS_SMC_CONTINUE", "1", 1);
-        set_ignore(ig, 1);
+        set_ignore(ig, (int)(sizeof ig / sizeof ig[0]));
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
             c.X = (uint8_t)xs(); c.Y = (uint8_t)xs(); c.A = (uint8_t)xs();
@@ -10795,17 +10818,20 @@ static int test_last_shim_callers(void)
 
     /* ---- place_car_world_coords ---- */
     if (want("place_car_world_coords")) {
-        static const uint16_t ig[] = { 0x01FF };  /* mul8 residue + PHP byte */
+        static const uint16_t ig[] = { 0x01FF,   /* the PHP byte */
+            0x000C, 0x0042, 0x0074, 0x0075, 0x0076,  /* the zero-page hand-off (note above) */
+            0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088 };
         int cases = 4000 * scale;
         int smcArm = 0, nearArm = 0, incArm = 0;
         set_ignore(ig, (int)(sizeof(ig) / sizeof(ig[0])));
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
-            c.X = (uint8_t)xs();
+            c.X = (uint8_t)(xs() % 0x20);               /* the slot: car+scenery slots */
             c.Y = (uint8_t)xs();
             c.D = 0;                                    /* render/placement path is D=0 */
-            pre[0x0045] = (uint8_t)(xs() % 0x20);       /* saved_slot_index: car+scenery slots */
+            pre[0x0045] = c.X;                          /* saved_slot_index: the same slot */
+            pre[0x0042] = c.X;                          /* shared_counter_42: ...and again */
             pre[0x0055] = (uint8_t)(xs() % 8);          /* object_dist_hi: sweep the 3/5 splits */
             pre[0x004D] = (uint8_t)(xs() % 0x20);       /* car_behind */
             pre[0x001D] = (xs() & 1) ? pre[0x004D] : (uint8_t)(xs() % 0x20);  /* force == half */
@@ -11053,7 +11079,11 @@ static int test_road_sign(void)
            and the clean core does not.  Ignore that one dead residue byte; determinism's own
            $01B8..$01FF skip covers it in the whole-corpus path. */
         static const uint16_t signOriginIgnore[1] = { 0x01FF };
-        set_ignore(i == 3 ? signOriginIgnore : 0, i == 3 ? 1 : 0);
+        /* build_road_sign (i==5): $4D13's STX shared_counter_42 is only the slot hand-off to
+           note_object_contact / write_object_slot, which the twin passes as an argument — no
+           other reader (real-BBC def-use audit, place_car_world_coords' fixture note). */
+        static const uint16_t signSlotIgnore[1] = { 0x0042 };
+        set_ignore(i == 3 ? signOriginIgnore : i == 5 ? signSlotIgnore : 0, (i == 3 || i == 5) ? 1 : 0);
         set_tolerance(i == 4 ? tol_object : 0);
         g_objDiffs = 0; g_objColdCases = 0;
         for (t = 0; t < cases; t++) {
