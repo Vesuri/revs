@@ -35,6 +35,8 @@ enum { MOSLOG_MAX = 4096 };   /* ⚠ duplicated in tools/validate_native.c */
 extern "C" {
 volatile unsigned long g_mosUnknownCount = 0;   /* MOS calls that hit no handler */
 volatile uint16_t      g_mosUnknownEntry = 0;   /* ...the last such entry ($FFF4/$FFF1/...) */
+void (*g_rdchNote)(uint8_t) = 0;          /* host lockstep recorder: every OSRDCH answer */
+void (*g_sndYNote)(uint8_t) = 0;          /* ...and every sound OSWORD's exit Y */
 volatile uint16_t      g_mosUnknownA     = 0;   /* ...and its reason code (A) */
 /* OSWORD 10 reads a character definition — the race view's bitmap text (lap times and the
    like).  We have no MOS ROM and will not lift Acorn's font, so the 96 printable glyphs are
@@ -178,6 +180,59 @@ static MosRegs osbyte(MosRegs r)
     return r;
 }
 
+/* ⭐⭐ THE SOUND BUFFERS — what OSWORD 7 and 8 leave in X and Y.  [MEASURED 2026-09-29, jsbeeb
+   on the real MOS 1.20 ROM, 5130 SOUND calls over a race]  Queueing a SOUND inserts THREE bytes
+   into buffer 4 + channel, a 16-byte ring at offsets $F0-$FF: the MOS keeps its WRITE pointer at
+   $02E1 + buffer and its READ pointer at $02D8 + buffer.  Each byte takes Y = the write pointer,
+   which then advances ($FF wraps to $F0) — so the call returns Y = the third byte's offset and
+   X = the buffer number.  ENVELOPE returns X = $FF, Y = 0.
+   A FLUSH (channel bit 4 — Revs sets it on every SOUND) discards the notes still waiting by moving
+   the WRITE pointer back to the READ pointer, and the read pointer only moves when the 100 Hz
+   scheduler takes a note off the buffer — at its next tick, the channel having been silenced by
+   the flush.  So two SOUNDs on one channel inside one tick return the SAME Y (measured: channel 2
+   returned $F5 twice at frame 3777), and Y is a race between the engine and the interrupt — as
+   much a timing lottery as $FE68, and the lockstep replays it the same way.  The port runs the
+   same race against its own scheduler: a note counts as taken once snd_tick has run since it was
+   queued (snd_tick_epoch).  The host has no scheduler, so its notes are never taken.
+   ⚠⚠ THIS IS NOT BOOKKEEPING: Y LEAKS INTO THE GAME.  begin_jump_from_a queues a sound and its
+   caller, the camera block of apply_driving_model, goes on to index the gradient table with the
+   MOS's Y — so after a spin landing the camera height depends on the sound queue.  The port
+   returned the block's own Y ($0B) and the race-proper lockstep against a real BBC parted at
+   frame 4158, the first landing.
+   The pointers live in mem[] where the MOS keeps them, so the validate oracle and the twin see
+   one copy of them. */
+static uint8_t s_sndQueuedAt[4];     /* snd_tick_epoch when each channel's last note was queued */
+
+void mos_sound_exit(MosRegs* r, uint8_t chan)
+{
+    if (r->a != 0x07u) {                                          /* OSWORD 8 — ENVELOPE */
+        r->x = 0xFFu; r->y = 0x00u;
+        if (g_sndYNote) g_sndYNote(r->y);   /* it returns through the same $0B73 */
+        return;
+    }
+    const uint8_t c = chan & 3u, buf = (uint8_t)(4u + c);
+    uint8_t wp = mem[0x02E1u + buf], y = wp;
+    if (snd_tick_epoch != s_sndQueuedAt[c]) mem[0x02D8u + buf] = wp;   /* the last note was taken */
+    if (chan & 0x10u) wp = mem[0x02D8u + buf];                         /* flush: drop what waits */
+    for (int i = 0; i < 3; i++) {                                      /* three bytes a SOUND */
+        y  = wp;
+        wp = (wp == 0xFFu) ? 0xF0u : (uint8_t)(wp + 1u);
+    }
+    mem[0x02E1u + buf] = wp;
+    s_sndQueuedAt[c] = snd_tick_epoch;
+    r->x = buf;
+    r->y = y;
+    if (g_sndYNote) g_sndYNote(y);   /* the lockstep recorder logs it, like $FE68 */
+}
+
+/* The sound buffers as a real BBC hands them to the engine [MEASURED, the lockstep's frame 0]:
+   channels 0-2 empty at $FF, and channel 3 one note on, at $F2 — the power-on bell. */
+void mos_power_on(void)
+{
+    static const uint8_t wp[4] = { 0xFFu, 0xFFu, 0xFFu, 0xF2u };
+    for (unsigned c = 0; c < 4u; c++) mem[0x02D8u + 4u + c] = mem[0x02E1u + 4u + c] = wp[c];
+}
+
 /* --------------------------------------------------------------------------
    OSWORD ($FFF1) — A = reason code, (X,Y) = a control block in mem[].
    -------------------------------------------------------------------------- */
@@ -202,6 +257,7 @@ static MosRegs osword(MosRegs r)
         uint8_t b[8];
         for (int i = 0; i < 8; i++) b[i] = mem[(uint16_t)(blk + i)];
         snd_sound(b);
+        mos_sound_exit(&r, b[0]);
         break;
     }
 
@@ -209,6 +265,7 @@ static MosRegs osword(MosRegs r)
         uint8_t b[14];
         for (int i = 0; i < 14; i++) b[i] = mem[(uint16_t)(blk + i)];
         snd_envelope(b);
+        mos_sound_exit(&r, 0u);
         break;
     }
 
@@ -304,6 +361,7 @@ MosRegs Platform::mosCall(uint16_t entry, MosRegs in)
     case 0xFFE0:
         in.a = platform ? platform->rdch() : 0x0D;
         in.c = 0;
+        if (g_rdchNote) g_rdchNote(in.a);   /* the lockstep recorder logs every answer */
         return in;
 
     default:

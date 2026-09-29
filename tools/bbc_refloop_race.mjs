@@ -1110,6 +1110,7 @@ for (const spec of lockAtArg ? lockAtArg.split(",") : []) {
         return false;
     });
 }
+let lockPreReads = 0, lockPreExtra = 0;
 let lockRecs = null, lockRegions = null, lockIdx = 0, lockArmed = false, lockDone = false,
     lockFrame = 0, lockWhy = null;
 const lockOutBufs = [];
@@ -1124,7 +1125,7 @@ if (lockIn) {
     for (let o = 6 + 4 * n; o < b.length;) {
         const t = String.fromCharCode(b[o]);
         if (t === "P") { lockRecs.push({ t, x: b[o + 1], held: b[o + 2] }); o += 3; }
-        else if (t === "R") { lockRecs.push({ t, v: b[o + 1] }); o += 2; }
+        else if (t === "R" || t === "K" || t === "Y") { lockRecs.push({ t, v: b[o + 1] }); o += 2; }
         else if (t === "S") { lockRecs.push({ t, frame: b.readUInt32LE(o + 1) }); o += 5 + snapLen; }
         else throw new Error(`${lockIn}: bad record tag at ${o}`);
     }
@@ -1137,7 +1138,13 @@ if (lockIn) {
     tm.processor.debugInstruction.add((addr) => {
         if (addr !== 0x0e50 || lockDone) return false;
         const x = tm.processor.x;
-        if (!lockArmed) { if (x !== 0xa9) return false; lockArmed = true; }
+        if (!lockArmed) {
+            if (x !== 0xa9) return false;
+            lockArmed = true;
+            let left = 0;
+            while (lockRecs[lockIdx] && lockRecs[lockIdx].t === "R") { lockIdx++; left++; }
+            if (left) console.log(`   ⚠ --lockstep: ${left} host $FE68 reads before arming were never made on the BBC`);
+        }
         tm.processor.writemem(0x0009, 0);
         if (x === 0xff) {
             const r = lockRecs[lockIdx];
@@ -1169,12 +1176,59 @@ if (lockIn) {
         lockOutBufs.push(Buffer.from([0x50, x, r.held]));
         return false;
     });
+    // ⭐ OSRDCH ($FFE0) after arming takes the host's recorded answer ('K'): the pre-race wing
+    // prompt reads its line there (console_io, $6316) and the host's autorun answered it with no
+    // key poll to replay.  The MOS does the read itself — the key is held in the matrix from
+    // OSRDCH's entry and released at $6319, the instruction after that JSR — because jsbeeb has
+    // already FETCHED the opcode when this hook runs, so rewriting PC here would execute
+    // $FFE0's JMP (RDCHV) at the wrong address.  The host only ever answers CR (Platform::rdch).
+    // ⭐ $0B73 — the instruction after sound_osword's JSR OSWORD: the MOS's exit Y there is a race
+    // between the engine and the 100 Hz sound interrupt that no two machines share (mos.cpp §THE
+    // SOUND BUFFERS), and it leaks into the camera through begin_jump_from_a.  So, like $FE68,
+    // every one takes the host's value ('Y'), before arming as well as after.
+    let lockSndY = 0;
+    tm.processor.debugInstruction.add((addr) => {
+        if (addr !== 0x0b73 || lockDone) return false;
+        const r = lockRecs[lockIdx];
+        if (!r || r.t !== "Y") {
+            if (lockArmed) lockStop(`frame ${lockFrame}: CONTROL FLOW DIVERGED — the BBC returned from a sound OSWORD where the host ` +
+                (r ? (r.t === "P" ? `polled $${r.x.toString(16)}` : r.t === "R" ? "read $FE68" : "took a snapshot") : "log ended"));
+            return false;
+        }
+        lockIdx++; lockSndY++;
+        lockOutBufs.push(Buffer.from([0x59, r.v]));
+        tm.processor.y = r.v;
+        return false;
+    });
+    let lockRdchKey = null;
+    tm.processor.debugInstruction.add((addr) => {
+        if (addr === 0x6319 && lockRdchKey) { tm.processor.sysvia.keyUpRaw(lockRdchKey); lockRdchKey = null; return false; }
+        if (addr !== 0xffe0 || !lockArmed || lockDone || lockRdchKey) return false;
+        const r = lockRecs[lockIdx];
+        if (!r || r.t !== "K") return false;              // not a recorded read: leave it alone
+        if (r.v !== 0x0d) { lockStop(`frame ${lockFrame}: OSRDCH answer $${r.v.toString(16)} has no key mapping`); return false; }
+        lockIdx++;
+        lockOutBufs.push(Buffer.from([0x4b, r.v]));
+        lockRdchKey = utils.BBC.RETURN;
+        tm.processor.sysvia.keyDownRaw(lockRdchKey);
+        return false;
+    });
     // ⭐ $FE68 (User VIA T2 low): every read after arming returns the host's value.  The real
     // read still happens first, so the VIA's own side effect (clearing the T2 flag) is kept.
     const via = tm.processor.uservia, viaRead = via.read.bind(via);
     via.read = (addr) => {
         const real = viaRead(addr);
-        if ((addr & 0x0f) !== 0x08 || !lockArmed || lockDone) return real;
+        if ((addr & 0x0f) !== 0x08 || lockDone) return real;
+        // ⭐ BEFORE ARMING the host log leads with every $FE68 read since its first poll —
+        // seed_car_track_position ($635D) jitters the field's grid off it at session start, so
+        // a race needs them — and they are served in order.  A read past them is counted: the
+        // two machines then seeded differently and the race comparison means nothing.
+        if (!lockArmed) {
+            const r = lockRecs[lockIdx];
+            if (r && r.t === "R") { lockIdx++; lockPreReads++; lockOutBufs.push(Buffer.from([0x52, r.v])); return r.v; }
+            lockPreExtra++;
+            return real;
+        }
         const r = lockRecs[lockIdx];
         if (!r || r.t !== "R") {
             lockStop(`frame ${lockFrame}: CONTROL FLOW DIVERGED — the BBC read $FE68 where the host ` +
@@ -1190,9 +1244,32 @@ if (lockIn) {
     };
     process.on("exit", () => {
         flush();
+        console.log(`   --lockstep: ${lockSndY} sound-OSWORD Y values replayed`);
+        console.log(`   --lockstep: ${lockPreReads} pre-arm $FE68 reads replayed` +
+            (lockPreExtra ? `, ⚠ ${lockPreExtra} MORE read on the BBC than the host logged` : ""));
         console.log(`   --lockstep: ${lockFrame} frames replayed, ${lockIdx}/${lockRecs.length} records; ` +
             `stopped: ${lockWhy || "not stopped"}${lockOut ? "; wrote " + lockOut : ""}`);
     });
+}
+
+// --trace-regs=PC[,PC] : print A/X/Y/P and the lockstep frame every time the CPU reaches PC.
+{
+    const tr = opt("trace-regs", null);
+    if (tr) {
+        const pcs = new Set(tr.split(",").map((v) => parseInt(v, 16)));
+        // --trace-peek=lo-hi : also print those bytes (hex range) on each hit
+        const pk = opt("trace-peek", null);
+        var tracePeek = null;
+        if (pk) { const [lo, hi] = pk.split("-").map((v) => parseInt(v, 16)); tracePeek = []; for (let a = lo; a <= hi; a++) tracePeek.push(a); }
+        tm.processor.debugInstruction.add((addr) => {
+            if (!pcs.has(addr)) return false;
+            const p = tm.processor;
+            console.log(`   [regs] $${addr.toString(16)} frame ${typeof lockFrame === "number" ? lockFrame : "?"} ` +
+                `A=${p.a.toString(16)} X=${p.x.toString(16)} Y=${p.y.toString(16)} C=${+p.p.c} V=${+p.p.v}` +
+                (tracePeek ? "  " + tracePeek.map((a) => p.readmem(a).toString(16).padStart(2, "0")).join(" ") : ""));
+            return false;
+        });
+    }
 }
 
 // ── input ─────────────────────────────────────────────────────────────────────────────────
@@ -1500,10 +1577,24 @@ if (drive && !lockIn) {
 }
 
 const f0 = frames;
-let waited = 0;
+let waited = 0, lockLastIdx = -1;
 while (lockIn ? (!lockDone && waited < 4000 * CPS) : (frames - f0 < wantFrames && waited < 60 * CPS)) {
-    if (lockIn && waited % (20 * CPS) === 0 && waited)
+    if (lockIn && waited % (20 * CPS) === 0 && waited) {
         console.log(`   --lockstep: t=${waited / CPS}s ${lockFrame} frames, ${lockIdx}/${lockRecs.length} records`);
+        // ⚠ A replay that stops consuming records is STALLED (the BBC is waiting on something the
+        // log does not answer) — say where it is and stop, rather than spinning to the deadline.
+        if (lockIdx === lockLastIdx) {
+            const hist = new Map();
+            const hook = tm.processor.debugInstruction.add((a) => { hist.set(a, (hist.get(a) || 0) + 1); return false; });
+            await tm.runFor(CPS / 2);
+            hook.remove();
+            const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+            console.log(`   ⚠ --lockstep STALLED at record ${lockIdx} (next: ${JSON.stringify(lockRecs[lockIdx])}); PCs: ` +
+                top.map(([a, n]) => `$${a.toString(16)}x${n}`).join(" "));
+            lockDone = true; lockWhy = `stalled at record ${lockIdx}`;
+        }
+        lockLastIdx = lockIdx;
+    }
     await tm.runFor(CPS);
     waited += CPS;
     const t = waited / CPS;

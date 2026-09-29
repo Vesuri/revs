@@ -562,10 +562,12 @@ REVS_FLAG_OP MosRegs mos_sound_osword(uint8_t a, uint8_t x, uint8_t y)
         uint8_t b[8];
         for (int i = 0; i < 8; i++) b[i] = mem[(uint16_t)(blk + i)];
         snd_sound(b);
+        mos_sound_exit(&r, b[0]);
     } else {
         uint8_t b[14];
         for (int i = 0; i < 14; i++) b[i] = mem[(uint16_t)(blk + i)];
         snd_envelope(b);
+        mos_sound_exit(&r, 0u);
     }
     return r;
 }
@@ -887,11 +889,14 @@ static inline BlockCV sound_queue_block_cv(uint8_t slot)
 }
 
 void sound_queue_exit_abi(uint8_t slot);
+extern uint8_t sound_mos_y;      /* the MOS's exit Y after the last sound OSWORD */
 uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY);
 int state_flags_bit6(void);
 void store_slip_clamped_core(uint8_t valueHi);
 void store_slip_clamped_off_throttle_core(uint8_t valueHi);
 void store_slip_exit_abi(uint8_t sign);
+void store_slip_negate_flags(uint8_t sign);
+void steer_slip_negate_v(void);   /* the oracle ABI's exit V of steer_demand_from_slip's negate */
 void store_slip_signed_core(uint8_t valueHi);
 /* $1EAB's body -- cpu-free; `surface_colour_at` in revs_native_seam.c replays the exit ABI. */
 SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entryV);

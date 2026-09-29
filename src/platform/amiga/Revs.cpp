@@ -433,6 +433,7 @@ void Revs::run()
     //
     // ⚠ Not $1200: that is the loader stub, which overwrites itself.  And the image this
     // runs against is the POST-unpack one (docs/static-map.md).
+    mos_power_on();                 /* the MOS state a real BBC hands the engine */
     engine_main();
 
     // Reaching here means the engine returned, which it is not supposed to do.  Fall back

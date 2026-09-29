@@ -27,7 +27,7 @@ def load(path):
     while o < len(b):
         t = b[o:o + 1]
         if t == b'P': polls.append((len(frames), b[o + 1], b[o + 2])); o += 3
-        elif t == b'R': o += 2
+        elif t in (b'R', b'K', b'Y'): o += 2
         elif t == b'S':
             frames.append(b[o + 5:o + 5 + snap]); o += 5 + snap
         else: raise SystemExit(f'{path}: bad tag at {o}')

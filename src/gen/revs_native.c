@@ -4688,6 +4688,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
                explanation three (no change at all), which is the argument above, not a gap. */
             draw_track_object_core(0x17u);
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
+            platform_mem_snapshot_at(0x2637);
             PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars_steps(steps);
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18);
 #if defined(REVS_EDGE_START) && !defined(REVS_EDGE_START_CHECK)
@@ -12977,13 +12978,19 @@ static void slip_history_push(uint8_t axle, int over)
    That byte is a spare, NOT a self-modified operand — no instruction covers $0B46.
    ⚠ sound_queue's `ADC #$10` leaves C and V live all the way to the exit: nothing below it
    writes either flag. */
+/* The Y the MOS left after the last sound OSWORD (mos.cpp §THE SOUND BUFFERS): a buffer offset,
+   never the block's $0B — read by the exit rebuilds below and in the 6502-ABI shims. */
+uint8_t sound_mos_y;
+
 MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
 {
     /* OSWORD `oswordNum` on the block at $0B00 + blockLow; Y ($0B) is that address's high byte
        ($0B70-$0B73).  Returns the MOS's exit registers; the caller's X (in sound_saved_x) is
        restored by the exit ABI, not here.  mos_osword also leaves cpu.A/X/Y set, which the
        sound_osword / sound_queue shims read back as their exit A/Y. */
-    return mos_sound_osword(oswordNum, blockLow, 0x0Bu);
+    const MosRegs r = mos_sound_osword(oswordNum, blockLow, 0x0Bu);
+    sound_mos_y = r.y;         /* the exit Y the rebuilds of this call's register ABI hand on */
+    return r;
 }
 
 /* Returns the OSWORD's exit Y — begin_jump threads it out as the spin's yScale residue. */
@@ -13137,7 +13144,7 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
             /* sound_queue's exit ABI, mid-routine: A/Y are the OSWORD's, X comes back from
                sound_saved_x, and the block-index add leaves C and V. */
             BlockCV cv = sound_queue_block_cv(0x03u);
-            a = 0x07u; y = 0x0Bu; x = sound_saved_x;
+            a = 0x07u; y = sound_mos_y; x = sound_saved_x;
             n = (unsigned)(x >> 7); z = (x == 0u); c = cv.c; v = cv.v;
         }
     }
@@ -13200,7 +13207,7 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
 
     /* The last sound_queue's exit is the routine's. */
     BlockCV cv = sound_queue_block_cv(0x02u);
-    e.a = 0x07u; e.y = 0x0Bu; e.x = sound_saved_x;
+    e.a = 0x07u; e.y = sound_mos_y; e.x = sound_saved_x;
     e.n = (uint8_t)(e.x >> 7); e.z = (uint8_t)(e.x == 0u);
     e.c = cv.c; e.v = cv.v;
     return e;

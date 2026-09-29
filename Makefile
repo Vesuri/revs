@@ -376,7 +376,7 @@ TARGET   := build/revs
         sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
         determinism-drive determinism-drive-record \
         determinism-crash determinism-crash-record \
-        determinism-steer determinism-steer-record lap lockstep
+        determinism-steer determinism-steer-record lap lockstep lockstep-race
 
 all: $(TARGET)
 
@@ -496,6 +496,32 @@ lockstep:
 	@python3 tools/lockstep_diff.py tmp/lockstep/host$(CIRCUIT).rls tmp/lockstep/bbc$(CIRCUIT).rls; \
 	 python3 tools/lockstep_diff.py tmp/lockstep/host$(CIRCUIT).rls tmp/lockstep/bbc$(CIRCUIT).rls --view --all | tail -1; \
 	 $(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory $(TARGET) >/dev/null
+
+# ⭐⭐ `make lockstep-race` — THE RACE PROPER on a REAL BBC, poll for poll: the one lockstep with a
+# FIELD OF CARS (practice is the player alone, so `make lockstep` cannot see the other cars, the
+# overtaking pass, the mirrors' reflections or any `session_is_race & $80` arm).  The host qualifies
+# parked (RACEPROPER's script), then the autopilot races; jsbeeb takes the competition branch and
+# replays the host's answers.  Three things the practice lockstep never needed, each found by a
+# stall or a divergence: the field's grid is seeded from $FE68 BEFORE the first key poll (so $FE68 is
+# logged from engine entry), the pre-race wing prompt reads through OSRDCH ('K' records), and a sound
+# OSWORD's exit Y is a race against the 100 Hz sound interrupt that leaks into the camera ('Y'
+# records, forced at $0B73).  ~50 min: jsbeeb runs a 20-car race at ~5-10 frames a second.
+# docs/validation-harness.md §THE RACE-PROPER LOCKSTEP.  Silverstone only so far (CIRCUIT=0).
+RACEFRAMES ?= 11000
+lockstep-race:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory RELEASE=1 RACEPROPER=1 HOLD_THROTTLE=1 EXACTRATIO=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/lockstep
+	@rm -f tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls
+	@ulimit -f 2097152; REVS_LOCKSTEP_MAX=$(RACEFRAMES) REVS_TRACK=0 REVS_LOCKSTEP=tmp/lockstep/race_host.rls \
+	  REVS_AUTOPILOT=1 REVS_FIXED_RNG=1 ./$(TARGET) 2>&1 >/dev/null | grep -E '^\[(autopilot|lockstep)\]' | sed 's/^/  host: /'
+	@(cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs --competition --track=5 \
+	   --wing=0 --lockstep=../../tmp/lockstep/race_host.rls \
+	   --lockstep-out=../../tmp/lockstep/race_bbc.rls) 2>&1 | grep -E -- '--lockstep: [0-9]* frames|STALLED' | sed 's/^ */  bbc:  /'
+	@python3 tools/lockstep_diff.py tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls; r1=$$?; \
+	 python3 tools/lockstep_diff.py tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls --view | tail -1; r2=$$?; \
+	 python3 tools/lockstep_diff.py tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls --view >/dev/null; r2=$$?; \
+	 $(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory $(TARGET) >/dev/null; test $$r1 = 0 -a $$r2 = 0
 
 determinism-drive:
 	@test -f $(DET_DRIVE_REF) || \

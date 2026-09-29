@@ -1937,9 +1937,9 @@ void store_slip_exit_abi(uint8_t sign)
     cpu.V = (uint8_t)((sign >> 6) & 1u);             /* $4B51 BIT SLIP_SIGN sets V = bit 6 */
 }
 
-/* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD 7 on the $0Bxx block
-   (reason code 7 in A, block high byte $0B in Y — both constants at this call site now the cpu-free
-   wrapper no longer leaves them behind), X restored from sound_saved_x (its N/Z the exit), and the
+/* Reconstruct sound_queue / sound_queue_default's exit: A = the reason code 7 (the MOS preserves
+   it), Y = what the MOS left — a sound-buffer offset (mos.cpp §THE SOUND BUFFERS), NOT the block's
+   $0B, which is what this once assumed — X restored from sound_saved_x (its N/Z the exit), and the
    block-index ADD's C and V ($0B4D ADC #$10). */
 void sound_queue_exit_abi(uint8_t slot)
 {
@@ -1947,7 +1947,7 @@ void sound_queue_exit_abi(uint8_t slot)
     cpu.C = cv.c;
     cpu.V = cv.v;
     cpu.A = 0x07u;                                   /* OSWORD reason code, preserved through the call */
-    cpu.Y = 0x0Bu;                                   /* $0B — the sound block's high byte */
+    cpu.Y = sound_mos_y;                             /* the MOS's exit Y */
     cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x (inside sound_osword) */
     cpu.N = (uint8_t)(sound_saved_x >> 7);
     cpu.Z = (uint8_t)(sound_saved_x == 0u);

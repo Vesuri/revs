@@ -33,6 +33,12 @@ void platform_indirect_jmp(uint16_t addr);
    §MOS calls and docs/cpu-elimination-audit.md §the MOS boundary. */
 typedef struct { uint8_t a, x, y, c; } MosRegs;
 
+/* ⭐ What the MOS's SOUND / ENVELOPE OSWORD leaves in X and Y, and the buffer write pointers
+   behind it (mos.cpp §THE SOUND BUFFERS).  Call AFTER handing the block to the scheduler;
+   `chan` is the SOUND block's channel byte.  mos_power_on seeds the pointers a real MOS leaves. */
+void mos_sound_exit(MosRegs* r, uint8_t chan);
+void mos_power_on(void);
+
 /* Service an intercepted MOS entry ($FFCE-$FFF7): OSBYTE, OSWORD, OSRDCH, …
    Two ways in, ONE dispatcher (Platform::mosCall):
      - platform_mos_call marshals the global cpu struct in and out.  This is the

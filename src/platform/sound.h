@@ -93,6 +93,7 @@ extern "C" {
 #endif
 
 /* ── counters (⚠ every one of these must be in amiga/Makefile PROBE_SYMS) ───────────────── */
+extern volatile uint8_t snd_tick_epoch;          /* +1 every snd_tick — the MOS layer's dequeue clock */
 extern volatile unsigned long g_sndCommands;    /* OSWORD 7 blocks accepted */
 extern volatile unsigned long g_sndEnvelopes;   /* OSWORD 8 blocks accepted */
 extern volatile unsigned long g_sndFlushes;     /* OSBYTE 21 channel flushes */

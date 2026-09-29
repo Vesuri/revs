@@ -415,9 +415,15 @@ static int start_next(uint8_t chan)
     return 1;
 }
 
+/* ⭐ ALWAYS counted, unlike the SND_STAT counters: the MOS layer reads it to tell whether a
+   queued note has been taken off its buffer yet (mos.cpp §THE SOUND BUFFERS) — which decides the
+   Y a SOUND call returns.  One byte, one add a tick. */
+volatile uint8_t snd_tick_epoch = 0;
+
 void snd_tick(void)
 {
     uint8_t ch, busy = 0;
+    snd_tick_epoch++;
     SND_STAT(g_sndTicks);
     if (s_quiet) return;
 

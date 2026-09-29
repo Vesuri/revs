@@ -734,6 +734,8 @@ uint32_t PlatformHost::hwMicros()
    Format: "RLS1", u16 region count, (u16 start, u16 length)*; then records
      'P' code answer            one key poll
      'R' value                  one $FE68 read
+     'K' char                   one OSRDCH answer (after arming)
+     'Y' value                  one sound OSWORD's exit Y (from entry)
      'S' u32 frame  bytes...    a snapshot at the frame's SHIFT poll */
 static const uint16_t kLsRegions[][2] = {
     {0x0000, 0x0100}, {0x0100, 0x00A0}, {0x0500, 0x0300}, {0x0800, 0x0100},
@@ -745,9 +747,12 @@ static const uint16_t kLsRegions[][2] = {
                            149, cells 7 and 32) is inside it */
 };
 extern "C" void (*g_viaT2Note)(uint8_t);
+extern "C" void (*g_rdchNote)(uint8_t);
+extern "C" void (*g_sndYNote)(uint8_t);
 static FILE*    s_ls;
 static int      s_lsOn = -1, s_lsStarted;
-static void lsPoll(uint8_t x, bool held)
+/* Opened at engine entry (below), so the log's $FE68 reads start before the grid is seeded. */
+static void lsOpen(void)
 {
     if (s_lsOn < 0) {
         const char* e = std::getenv("REVS_LOCKSTEP");
@@ -758,28 +763,58 @@ static void lsPoll(uint8_t x, bool held)
             std::fwrite("RLS1", 1, 4, s_ls);
             std::fwrite(&n, 2, 1, s_ls);
             std::fwrite(kLsRegions, 4, n, s_ls);
+            /* ⭐ $FE68 is logged from ENGINE ENTRY, not from arming: seed_car_track_position
+               ($635D) jitters every car's grid slot off it before the first key poll of all, so a race replayed without these reads seeds a different field
+               (measured: car_track_position differed for 18 of 19 cars at frame 0).  The replay
+               serves them in order until it arms. */
+            /* ...and every OSRDCH answer once armed ('K'): the pre-race wing prompt reads its
+               line through console_io's OSRDCH, which this build answers with an instant CR —
+               a BBC replaying the key polls alone sits in the MOS read loop there forever. */
+            /* ...and every sound OSWORD's exit Y ('Y'), from entry like $FE68: on a real BBC it
+               is a race between the engine and the 100 Hz sound interrupt (mos.cpp §THE SOUND
+               BUFFERS), and it leaks into the camera, so the replay forces the host's value. */
+            g_sndYNote = [](uint8_t y) { std::fputc('Y', s_ls); std::fputc(y, s_ls); };
+            g_rdchNote = [](uint8_t c) {
+                if (s_lsStarted) { std::fputc('K', s_ls); std::fputc(c, s_ls); }
+            };
+            g_viaT2Note = [](uint8_t v) {
+                std::fputc('R', s_ls); std::fputc(v, s_ls);
+                /* REVS_LOCKSTEP_WHO=<frame>: name the native caller of every $FE68 read in that frame */
+                static long who = -2;
+                if (who == -2) { const char* e = std::getenv("REVS_LOCKSTEP_WHO"); who = e ? std::atol(e) : -1; }
+                if (who >= 0 && (long)s_lsFrame == who) {
+                    void* bt[8]; const int n = backtrace(bt, 8);
+                    char** sym = backtrace_symbols(bt, n);
+                    std::fprintf(stderr, "[lockstep] frame %ld $FE68 read:", who);
+                    for (int i = 1; i < n && i < 7; i++) std::fprintf(stderr, " <- %s", std::strrchr(sym[i], ' ') ? sym[i] + 59 : sym[i]);
+                    std::fprintf(stderr, "\n");
+                    std::free(sym);
+                }
+            };
         }
     }
+}
+static void lsPoll(uint8_t x, bool held)
+{
+    lsOpen();
     if (!s_lsOn) return;
     if (!s_lsStarted) {
         if (x != 0xA9) return;
         s_lsStarted = 1;
-        g_viaT2Note = [](uint8_t v) {
-            std::fputc('R', s_ls); std::fputc(v, s_ls);
-            /* REVS_LOCKSTEP_WHO=<frame>: name the native caller of every $FE68 read in that frame */
-            static long who = -2;
-            if (who == -2) { const char* e = std::getenv("REVS_LOCKSTEP_WHO"); who = e ? std::atol(e) : -1; }
-            if (who >= 0 && (long)s_lsFrame == who) {
-                void* bt[8]; const int n = backtrace(bt, 8);
-                char** sym = backtrace_symbols(bt, n);
-                std::fprintf(stderr, "[lockstep] frame %ld $FE68 read:", who);
-                for (int i = 1; i < n && i < 7; i++) std::fprintf(stderr, " <- %s", std::strrchr(sym[i], ' ') ? sym[i] + 59 : sym[i]);
-                std::fprintf(stderr, "\n");
-                std::free(sym);
-            }
-        };
     }
     mem[0x0009] = 0;                                /* starter_random_mask: catch on the first T */
+    /* ⚠⚠ A HARD STOP, because an unbounded log once filled 242 GB: after the race proper ends the
+       front end spins on pages that poll SHIFT (-1) with no frame advancing, and every -1 poll is
+       a snapshot.  REVS_LOCKSTEP_MAX=N ends the run after N snapshots (default 40000, ~430 MB);
+       and a spin that polls WITHOUT snapshotting ends it after 200000 polls. */
+    static long lsMax = -2, lsSince;
+    if (lsMax == -2) { const char* e = std::getenv("REVS_LOCKSTEP_MAX"); lsMax = e ? std::atol(e) : 40000; }
+    if ((lsMax >= 0 && (long)s_lsFrame >= lsMax) || ++lsSince > 200000) {
+        std::fprintf(stderr, "[lockstep] stopped at frame %lu: %s\n", (unsigned long)s_lsFrame,
+                     lsSince > 200000 ? "200000 polls without a frame (a front-end spin)" : "REVS_LOCKSTEP_MAX");
+        std::fclose(s_ls);
+        std::exit(0);
+    }
     if (x == 0xFF) {
         static uint8_t m[65536];
         ls_true_mem(m);
@@ -795,6 +830,7 @@ static void lsPoll(uint8_t x, bool held)
                 std::fclose(f);
             }
         s_lsFrame++;
+        lsSince = 0;
     }
     std::fputc('P', s_ls);
     std::fputc(x, s_ls);
@@ -826,6 +862,8 @@ void PlatformHost::run()
        which is the loader stub and overwrites itself (docs/static-map.md). */
     std::printf("PlatformHost: entering engine_main ($63BD)\n");
     std::fflush(stdout);
+    lsOpen();
+    mos_power_on();                 /* the MOS state a real BBC hands the engine */
     engine_main();
     std::printf("PlatformHost: engine_main returned after %lu frames\n", frames);
 }
