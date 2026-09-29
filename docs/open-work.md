@@ -967,17 +967,6 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ⬜ MODE 7: the TITLE page's first paint is 78 ms (residual of the front-end speed item)
-The front-end item is CLOSED (user target: a page change ≤ 40 ms): the menu walk's worst page
-change is **533 raster lines, 34.1 ms** (was 280 ms), and idle menus use 1.3% of the CPU
-(`make TTTIME=1` + `amiga/tttime.gdb`; the design is RevsScreen.cpp §THE PAGE -> THREE BITPLANES,
-`teletext_m68k.s`, and docs/m68k-optimisation.md §the MODE 7 row painter).  What is left is the
-one-shot first paint of the 5TRSCRN title page, **1224 lines (78 ms)**: 345 same-colour pairs and
-137 blank pairs, no blank rows.  It is shown once at boot, and nothing measured says it needs
-to move.  Levers if it ever does: the decoder in asm (~200 of a page change's lines are the C
-decoder), the blitter clears issued from the asm without the C/framework call (~38 a page), or
-painting the title during the load instead of after it.
-
 ### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
 The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
 under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it and the three other
@@ -1133,6 +1122,7 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ **MODE 7: the TITLE page's one-shot first paint, 78 ms** (user, 2026-09-29: "78 ms is fine") — 146 → 89 → 78 ms from the asm row painter and the four-cells-a-longword pass; the page has no blank rows, so the blank-row skip cannot touch it.  Levers if it is ever reopened: the decoder in asm, the blitter clears issued from the asm, or painting during the load.
 - ⛔ **MODE 7: a blank glyph's key as its background alone** (2026-09-28) — painted cells 1836 → 1588 over the menu walk, paint **838k → 968k colour clocks**: the per-cell blank lookup it adds to every VISITED pair costs more than the pairs it skips. Only a scheme whose skip test is already paid (the blitter clear above) can use it.
 - ⛔ **MODE 7: a whole display row painted by the BLITTER** (2026-09-28) — the CPU staged a 10-line glyph mask + six pen lines in chip RAM and three `blitterCombineWithMask` blits coloured the row (D = glyph ? fg : bg); byte-exact (TTCHECK 0) and the worst walk page went **1026 → 2142 lines**, the title page 2287 → 2280.  The blits (~9.5k cycles a row) do not overlap the CPU — one bus — and the staging alone was ~26k cycles a row, so it breaks even only at ~15 glyph pairs a row.  The blank-run CLEAR pays because it replaces work outright and is D-only.
 - ⛔ **MODE 7: passing the pair painter scalars instead of `TtCell`s, with a separate blank-fill routine** — 852k → 838k colour clocks (inside the noise); the call is not the pair's overhead.
