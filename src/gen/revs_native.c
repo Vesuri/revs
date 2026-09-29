@@ -18492,11 +18492,10 @@ void drive_other_cars(void)
    arm's token, unreached by determinism-crash's trajectory and now covered below.
    ⭐ SABOTAGE, race arm (`make determinism-race`, five defects): four detected with distinct
    counts — lap_completed_flag $01 -> $00 (1 byte), the upper token $2B -> $2A (135), the lower
-   $2C -> $2D (91), pass_count_bcd off by one (13).  The fifth, position_swap_flag $01 -> $00, is
-   a NO CHANGE: only bit 7 is functional (update_position_display BIT-tests it) and is clear in
-   both values, while bit 0 feeds a closing LSR into an exit carry its one call site ($102E)
-   discards.  Its sibling lap_completed_flag, set from the same A one instruction earlier, IS
-   seen — which proves the gate reaches this arm. */
+   $2C -> $2D (91), pass_count_bcd off by one (13).  The fifth, position_swap_flag $01 -> $00,
+   passed, and so did the value itself: the 6502 stores $80 there (see the race arm), and a
+   determinism reference recorded from the port cannot tell a wrong constant from a right one —
+   only the race-proper lockstep against a real BBC could. */
 
 void reset_driving_variables_core(void)
 {
@@ -18575,8 +18574,12 @@ void reset_driving_variables_core(void)
 
     /* 5. the opening message.  LDA/BMI here, so the RACE arm is the bit-7-set one. */
     if (session_is_race & 0x80u) {
-        lap_completed_flag  = 0x01u;                   /* $18A5 — A is still the #$01 from $1875 */
-        position_swap_flag  = 0x01u;                   /* $18A7 */
+        /* $18A5/$18A7 store A, and A is session_is_race — `$188E LDA session_is_race / BMI`
+           is what brought us here ($80: bit 7 = "positions changed", so the leaderboard redraws
+           on the first frame).  ⚠ It was once written as #$01 ("A is still the #$01 from $1875"
+           — it is not): the race-proper lockstep against a real BBC caught it at frame 3602. */
+        lap_completed_flag  = session_is_race;
+        position_swap_flag  = session_is_race;
         print_message_upper_row_core(0x2Bu);           /* $18AA — the two race-start lines */
         print_message_lower_row_core(0x2Cu);           /* $18AF */
         /* $18B4 — the player's grid slot as a 1-based BCD number */
