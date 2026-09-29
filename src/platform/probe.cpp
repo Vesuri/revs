@@ -6,6 +6,10 @@
 #if defined(REVS_PLATFORM_AMIGA)
 #include "framework/AmigaHardware.h"
 #endif
+#if defined(REVS_PROBE_RACE)
+#include "../cpu/mem_decl.h"
+extern "C" MEM_QUAL uint8_t mem[65536];   /* session_is_race opens the window */
+#endif
 
 extern "C" {
 
@@ -62,6 +66,18 @@ volatile unsigned long g_probeFrozenBody  = 0;   /* g_bodyTicks there           
 volatile unsigned long g_probeFrozenUnits[3] = {0, 0, 0};   /* g_viewUnits there              */
 volatile unsigned long g_probeFrozenRuns[3]  = {0, 0, 0};   /* g_viewRuns  there              */
 volatile unsigned long g_probeFrozenLines[3] = {0, 0, 0};   /* g_viewLines there              */
+
+/* ⭐⭐ `make PROBERACE=1` (with RACEPROPER=1 PROBEFIELDS=N) — THE WINDOW OPENS AT THE RACE START.
+ * A RACEPROPER run reaches the grid ~100 000 fields in, through a qualifying session in which the
+ * player is alone on track exactly as in practice, so a window counted from boot measures
+ * qualifying (and g_vbiCount, a uint16_t, has wrapped by then).  Here nothing accumulates until
+ * session_is_race ($006C) has bit 7 set; at that moment every phase row and count is zeroed and
+ * the counters the freeze snapshots take a base, and the window then closes N fields later —
+ * counted with a wrap-safe 16-bit delta, so N is again bounded by the window, not the run.
+ * g_probeFrozen is then the window's LENGTH in beam ticks, which is what phase4_prof.gdb already
+ * treats it as.  ⭐ g_probeRaceOpenedAt prints the build's state: 0 in any other build, and the
+ * beam tick of the race start once it has opened (so 0 in a PROBERACE build means "not yet"). */
+volatile unsigned long g_probeRaceOpenedAt = 0;
 
 /* ⭐⭐⭐ THE BUILD'S OWN A/B STATE, AS A NUMBER THE PROBE SCRIPT PRINTS — CLAUDE.md's
  * "an A/B switch must PRINT its own state", made structural rather than per-flag.
@@ -204,27 +220,49 @@ void probe_phase(int id)
 {
     unsigned long now = beamTick();
 #if defined(REVS_PROBE_FIELDS) && defined(REVS_PLATFORM_AMIGA)
-    /* The window is closed: stop accumulating ticks, counts AND frames, so every printed
-       number describes exactly the first REVS_PROBE_FIELDS fields.  Returning here also
-       freezes phase 0, which is the comparison's validity fingerprint. */
-    {
-        extern volatile uint16_t g_vbiCount;
-        if ((unsigned long)g_vbiCount >= (unsigned long)(REVS_PROBE_FIELDS)) {
-            if (!g_probeFrozen) {
-                /* Snapshot the counters the freeze cannot stop — see the trap above.  The flag
-                   is published LAST so no reader can see a half-built snapshot. */
-                extern volatile unsigned long g_bodyTicks;
-                int i;
-                g_probeFrozenBody = g_bodyTicks;
-                for (i = 0; i < 3; i++) {
-                    g_probeFrozenUnits[i] = g_viewUnits[i];
-                    g_probeFrozenRuns[i]  = g_viewRuns[i];
-                    g_probeFrozenLines[i] = g_viewLines[i];
-                }
-                g_probeFrozen = now;
-            }
-            return;
+    extern volatile unsigned long g_bodyTicks;
+    extern volatile uint16_t g_vbiCount;
+#if defined(REVS_PROBE_RACE)
+    /* The window has not opened: track the phase, accumulate nothing (PROBERACE above). */
+    static unsigned long s_openBody, s_openUnits[3], s_openRuns[3], s_openLines[3], s_fields;
+    static uint16_t      s_lastVbi;
+    if (!g_probeRaceOpenedAt) {
+        if (!(mem[0x006C] & 0x80u)) { s_phase = id; s_mark = now; return; }   /* session_is_race */
+        int i;
+        for (i = 0; i < PROBE_PHASES; i++) { g_phaseTicks[i] = 0; g_phaseCount[i] = 0; }
+        g_phaseFrames = 0;
+        s_openBody = g_bodyTicks;
+        for (i = 0; i < 3; i++) {
+            s_openUnits[i] = g_viewUnits[i]; s_openRuns[i] = g_viewRuns[i]; s_openLines[i] = g_viewLines[i];
         }
+        s_lastVbi = g_vbiCount; s_fields = 0;
+        g_probeRaceOpenedAt = now;
+    }
+    s_fields += (uint16_t)(g_vbiCount - s_lastVbi);  s_lastVbi = g_vbiCount;
+    const unsigned long fields = s_fields, openTick = g_probeRaceOpenedAt;
+#else
+    enum { s_openBody = 0 };
+    static const unsigned long s_openUnits[3] = {0, 0, 0}, s_openRuns[3] = {0, 0, 0},
+                               s_openLines[3] = {0, 0, 0};
+    const unsigned long fields = g_vbiCount, openTick = 0;
+#endif
+    /* The window is closed: stop accumulating ticks, counts AND frames, so every printed
+       number describes exactly the first REVS_PROBE_FIELDS fields of the window.  Returning
+       here also freezes phase 0, which is the comparison's validity fingerprint. */
+    if (fields >= (unsigned long)(REVS_PROBE_FIELDS)) {
+        if (!g_probeFrozen) {
+            /* Snapshot the counters the freeze cannot stop — see the trap above.  The flag
+               is published LAST so no reader can see a half-built snapshot. */
+            int i;
+            g_probeFrozenBody = g_bodyTicks - s_openBody;
+            for (i = 0; i < 3; i++) {
+                g_probeFrozenUnits[i] = g_viewUnits[i] - s_openUnits[i];
+                g_probeFrozenRuns[i]  = g_viewRuns[i]  - s_openRuns[i];
+                g_probeFrozenLines[i] = g_viewLines[i] - s_openLines[i];
+            }
+            g_probeFrozen = now - openTick;
+        }
+        return;
     }
 #endif
     /* beamTick() is monotonic now, so `d` can only be negative if g_beamEpoch itself

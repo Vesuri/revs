@@ -216,6 +216,18 @@ unsigned long probe_beam_tick(void);
 #define PROBE_PHASE_P3_STOPB 37
 #define PROBE_PHASE_P3_CHAINB 38
 
+/* ⭐ `make CARSPLIT=1` — phase 17 (move_and_draw_cars) split by job, because in the RACE PROPER it
+ * is the biggest row in the frame (PROBERACE) and "the other cars" is not a thing to optimise:
+ *   40  drive_other_cars (the per-car AI)     41  check_car_pair (the overtaking pass)
+ *   42  the six stage_nearby_car calls, with reject_all_object_slots / find_player_neighbours
+ *   43  draw_car_field (the object plotter)   44  the car ahead's stage_nearby_car
+ * Phase 17 keeps the entry (the practice test and the car-ahead un-reject). */
+#define PROBE_PHASE_CAR_DRIVE 40
+#define PROBE_PHASE_CAR_PAIR  41
+#define PROBE_PHASE_CAR_STAGE 42
+#define PROBE_PHASE_CAR_DRAW  43
+#define PROBE_PHASE_CAR_AHEAD 44
+
 /* ⭐⭐ `make VIEWCAL=N` — THE CALIBRATION, and it is the only way to read any of the rows above as
  * cycles.  probe_burn_cycles() runs EXACTLY 1000 x (`nop` 4 + `dbra` 10) = 14 000 cycles = 1975 µs
  * at 7.09 MHz, inside its own bracket at the same rate as the rest, and the row must scale LINEARLY

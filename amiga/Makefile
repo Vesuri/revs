@@ -940,6 +940,17 @@ endif
 ifeq ($(RACEPROPER),1)
 EXTRA_DEFINES += -DREVS_RACE_PROPER
 endif
+# ⭐⭐ `make PROBERACE=1` (with RACEPROPER=1 PROBES=1 PROBEFIELDS=N) — open the phase window at
+# the RACE START instead of at boot, so the table describes N fields of the race and none of the
+# qualifying session before it (src/platform/probe.cpp §PROBERACE).  phase4_prof.gdb prints
+# g_probeRaceOpenedAt: non-zero is the proof the window opened.
+ifeq ($(PROBERACE),1)
+EXTRA_DEFINES += -DREVS_PROBE_RACE
+endif
+# `make CARSPLIT=1 PROBES=1` — phase 17 split into its five jobs, phases 40-44 (probe.h §CARSPLIT).
+ifeq ($(CARSPLIT),1)
+EXTRA_DEFINES += -DREVS_CAR_SPLIT
+endif
 
 # ⭐⭐ `make LOWDOUBLE=1` — price the low block's PAINTING against its per-line driver without
 # changing a byte: `view_low_run` is idempotent, so the pair runs twice over the same values.
@@ -1627,7 +1638,7 @@ PROBE_SYMS = g_vbiCount g_simSteps g_simSlowTicks g_fpsFrames g_smcUnhandled g_s
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
 PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch g_probeFrozen \
-             g_probeBuildFlags \
+             g_probeBuildFlags g_probeRaceOpenedAt \
              g_probeFrozenBody g_probeFrozenUnits g_probeFrozenRuns g_probeFrozenLines \
              g_viewUnits g_viewRuns g_viewLines \
              g_probeIsrTicks g_probeIsrCount g_probeIrqTicks g_probeIrqCount \

@@ -34,8 +34,8 @@
 set pagination off
 set confirm off
 continue
-printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu frozen=%lu build=%lx ===\n", \
-  g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled, g_probeFrozen, g_probeBuildFlags
+printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu frozen=%lu build=%lx raceOpen=%lu ===\n", \
+  g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled, g_probeFrozen, g_probeBuildFlags, g_probeRaceOpenedAt
 # ⭐⭐⭐ `build=` IS THE A/B SWITCH PRINTING ITS OWN STATE, and it is not decoration: read it on
 # BOTH arms before diffing them.  A flag that never reached the compiler produces two arms with
 # bit-identical phase tables, which is indistinguishable from an honest null result — and did
@@ -126,7 +126,7 @@ if g_probeIrqCount > 0
     g_probeIrqCount, g_probeIrqCount/$body, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1
-while $i < 40
+while $i < 45
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
      $i, g_phaseTicks[$i], g_phaseCount[$i], \
      (g_phaseTicks[$i]/$per)/10, (g_phaseTicks[$i]/$per)%10, \

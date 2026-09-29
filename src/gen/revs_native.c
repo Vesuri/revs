@@ -18111,6 +18111,11 @@ void reject_all_object_slots_core(void)
    Their moves stay here, after the car-ahead un-reject, rather than beside the player's step,
    because drive_one_car's across-track nudge reads that slot's reject bit — so this is the
    one place in the frame where they see the state they always saw. */
+#if defined(REVS_CAR_SPLIT)                          /* `make CARSPLIT=1`: probe.h §CARSPLIT */
+#define CAR_SPLIT(id) PROBE_PHASE(id)
+#else
+#define CAR_SPLIT(id) ((void)0)
+#endif
 void move_and_draw_cars_steps(unsigned steps)
 {
     if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
@@ -18131,11 +18136,14 @@ void move_and_draw_cars_steps(unsigned steps)
        the window unbooked — car_order goes stale and the view and the mirrors, which stage cars
        by it, show the wrong ones.  At steps = 1 (legacy mode, the gate) this is the 6502's order. */
     while (steps-- != 0u) {
+        CAR_SPLIT(PROBE_PHASE_CAR_DRIVE);
         drive_other_cars();                            /* $2649 — the per-car update engine */
+        CAR_SPLIT(PROBE_PHASE_CAR_PAIR);
         car_distance_marshal_in();                     /* check_car_pair walks every pair in
                                                           car_order, so the whole distance array */
         check_car_pair_core();                         /* $264C — overtaking / position changes */
     }
+    CAR_SPLIT(PROBE_PHASE_CAR_STAGE);
     reject_all_object_slots_core();                    /* $264F */
     find_player_neighbours_core();                     /* $2652 */
 
@@ -18157,7 +18165,9 @@ void move_and_draw_cars_steps(unsigned steps)
        threads V and C to its exit registers only, and those are dead at both of this routine's
        callers.  So they are not carried here — draw_car_field's own fixture is what pins the
        threading against the oracle. */
+    CAR_SPLIT(PROBE_PHASE_CAR_DRAW);
     draw_car_field_core();
+    CAR_SPLIT(PROBE_PHASE_CAR_AHEAD);
     stage_nearby_car_at_core(car_ahead);               /* $2679/$267B — and the car ahead */
 }
 

@@ -674,24 +674,30 @@ base-plus-delta and a staleness oracle. ⇒ **Deliberately NOT built** (user dec
 entry 3 makes the terrain for every view-sweep-only row bypass `mem[]` anyway, so these rows fall
 out of it and building them first is work entry 3 discards.
 
-### 2c. ⚠⚠⚠ THE OBJECT PLOTTER — ~9 ms of a REAL race, and every baseline hides 5 ms of it
-`docs/perf-method.md` §the object plotter. The road sign (phases 14+15, 5.15 ms) is at its local
-optimum: the chain `plot_view_src_line` → `column_gap_walk` → `fill_edge_column_run` has zero
-frame operands, no `pea`, no absolute reads in a loop — the dash-edge campaign already took it
-there — so **~1.3 ms is all a large rewrite would buy for the sign alone**. `scale_shape_vectors`
-is priced exactly at 0.686 ms (`make SIGNDOUBLE=1`, a new idempotent doubling arm): 765 cyc/vertex
-over 6.37 vertices, with 3.63 edges at ~4 970 cyc each.
+### 2c. ⚠⚠⚠ THE OTHER CARS — **24.7 ms of a RACE frame, MEASURED**, and every baseline hides all of it
+Phase 17 (`move_and_draw_cars`) reads **0.21 ms** in every practice measurement because
+`STRAIGHT_TO_RACE` is a practice session and the player is alone on track.  Measured in the race
+proper on the target (2026-09-29: `make PROBES=1 FIXED_RNG=1 RACEPROPER=1 PROBERACE=1
+PROBEFIELDS=3000 SIMLEGACY=1 CARSPLIT=1` + `phase4_prof.gdb`, `diag_run.sh 1900` under warp; the
+window opens at the race start, `raceOpen=` non-zero, 3000 fields, 523 frames, throttle held):
 
-⚠⚠ **BUT `move_and_draw_cars` (phase 17) reads 0.21 ms in every measurement ever taken because
-`STRAIGHT_TO_RACE` IS A PRACTICE SESSION AND THE PLAYER IS ALONE ON TRACK** — that 1 500 cycles is
-22 empty-slot tests and nothing else. A host census of the race proper (gated to frame ≥ 12000;
-ungated it is 42% low, being almost all qualifying) draws **2.32 objects a frame against practice's
-0.89**. At 3.63 ms per drawn object that is **~8.4 ms in a race**, phase 17 becoming ~5.2 ms, so
-**the 172 ms baseline understates a real race by ~5 ms.**
+| row | job | ms/frame |
+|---|---|---:|
+| 43 | `draw_car_field` — the object plotter | **13.55** |
+| 40 | `drive_other_cars` — the per-car AI, 19 cars | 4.01 |
+| 42 | the six `stage_nearby_car` → `place_car_world_coords` → four projections each | 3.80 |
+| 41 | `check_car_pair` — the overtaking pass | 2.80 |
+| 44+17 | the car ahead's staging + the entry | 0.54 |
 
-⇒ **NEXT STEP IS A MEASUREMENT, NOT A REWRITE:** a `PROBES=1 RACEPROPER=1` target run that reaches
-the grid, to replace the estimate (target per-object cost × host object count) with a phase table.
-Until then the object plotter is sized, not measured.
+The race frame is **~101 ms** (`Σ(1..44) − ph28`) against practice's 75.10, so **the standing
+baseline understates a real race by ~25 ms** — five times the ~5 ms the host-census estimate said.
+The road sign (phases 14+15, ~2.5 ms here) is at its local optimum (§the object plotter in
+`docs/perf-method.md`; `scale_shape_vectors` ~0.69 ms at 765 cyc/vertex).
+⇒ **Next: price `draw_car_field` per drawn object** (a host census of objects plotted per race
+frame, against row 43), then read its hot callees' objdump — the plotter is the same code the road
+sign runs, so the sign's 3.63 ms/object is the first thing to check against.  Rows 40-42 are
+~10.6 ms of native C for twenty cars (~2 400 cycles a car in the AI alone), which is worth one
+single-stepped call before believing it is the game's own cost.
 
 ### 3. ⭐⭐⭐ FEWER POINTS / SPANS — the producers, 61 ms, and the title is now the whole plan
 `docs/perf-method.md` §the producers mapped. **MEASURED 2026-09-20 and it redirects this entry:**
