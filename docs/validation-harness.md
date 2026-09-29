@@ -1430,3 +1430,52 @@ each invisible to every other gate:
   `[autopilot] low-block build rejects:` line). ⭐ **Derive a table's domain from its READER's index
   range, never from the value found in it** — a byte outside the range the driver indexes belongs
   to whatever else shares the page.
+
+## ⭐⭐⭐ THE RACE-PROPER LOCKSTEP — the same, with a field of cars (`make lockstep-race`, 2026-09-29)
+
+Every earlier lockstep was PRACTICE: the player alone, so the other cars, the overtaking pass, the
+mirrors' reflections and every `session_is_race & $80` arm were compared against nothing. The
+host qualifies parked (the RACEPROPER script) and the autopilot races; jsbeeb takes the
+competition branch. **Silverstone: identical to a real BBC over 11000 frames** — qualifying and
+~4 laps of the race — in physics, picture and all 20 cars' state. ~50 min (jsbeeb runs a 20-car
+race at 5-10 frames a second).
+
+**What a race needed that practice never did** — each one a stall or a divergence first:
+1. ⚠⚠ **`$FE68` from ENGINE ENTRY.** `seed_car_track_position` jitters every car's grid slot off
+   it BEFORE the first key poll, so a replay armed at the first steering poll seeds a different
+   field (18 of 19 cars at frame 0). The host logs from entry; the replay serves the pre-arm reads
+   in order and reports any surplus.
+2. **OSRDCH answers ('K').** The pre-race wing prompt reads its line through the MOS, which the
+   host's autorun answers with an instant CR — the BBC sat in the MOS read loop. The replay holds
+   RETURN from OSRDCH's entry to `$6319` (jsbeeb has already FETCHED the opcode when a
+   `debugInstruction` hook runs, so rewriting PC there executes the wrong instruction).
+3. ⚠⚠ **The sound OSWORD's exit Y ('Y', forced at `$0B73`).** It is a buffer offset that depends
+   on whether the 100 Hz scheduler has taken the channel's last note (docs/bbc-hardware.md §MOS
+   calls) — a timing race no two machines share, like `$FE68` — and it leaks into the camera.
+4. **A hard stop on the log** (`REVS_LOCKSTEP_MAX`, default 40000 snapshots) and a **stall
+   detector** (no record consumed for 20 s: print a PC histogram and stop). After the race the
+   front end spins on pages that poll SHIFT, every SHIFT poll is a 7 KB snapshot, and an unbounded
+   log once filled **242 GB** of the user's disk.
+
+**It found four port bugs, all invisible to validate, determinism and the practice lockstep:**
+1. ⭐⭐⭐ **THE USER'S "CAR IN THE MIRROR NEVER APPEARS IN THE VIEW".** `car_gap_tail` decided near
+   vs wrapped on D's raw high byte where the 6502 uses |D|'s (the Z abs16_math's closing SBC
+   leaves), so a car drawing level from behind read as far away: no overtake booked, car_order
+   stale, and the view and the mirrors — which stage cars by car_order — drew the wrong cars.
+2. `reset_driving_variables`' race arm stored `$01` where A holds `session_is_race` (`$80`).
+3. The sound OSWORD's exit Y was the block's `$0B`, not the MOS's buffer offset.
+4. `update_engine_revs`' coast-arm carry was apply_driving_model's entry C, not update_grip_limits'
+   exit C (always 0 — mul8's closing ROR).
+
+⭐⭐⭐ **THE TRANSFERABLE LESSON: A 6502-ABI SHIM THAT DROPS AN EXIT FLAG MAKES THE ORACLE WRONG, AND
+THE TWIN IS THEN WRITTEN TO MATCH IT.** Bugs 1 and 4 had passing fixtures because the oracle's
+transliterated callers go through shims (abs16_math, neg16_math, update_grip_limits) that never set
+the flags the 6502 routine leaves — so the oracle branched on a STALE flag, and so did the twin.
+A differential against the port's own oracle cannot see that; only a real BBC can. When a twin's
+comment says a flag "passes through" a callee, check what the 6502 callee does to it — "every
+callee is a cpu-free core" is a fact about the port, not about the 6502 it replaces.
+⭐ **And bisect with dumps at MATCHED mid-frame points** (`REVS_LOCKSTEP_AT` / `--lockstep-at`,
+now with a `$2637` point before the other-car pass): four rounds of "equal at entry, different at
+exit" named each routine, and `--trace-regs=PC` then read the register the dumps cannot hold.
+⚠ **Filter a bisect's background by CLASS, not by "already different at the previous point"** —
+that filter hid the car-distance difference that was the actual first cause.

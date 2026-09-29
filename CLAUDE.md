@@ -127,6 +127,9 @@ make lockstep CIRCUIT=n    # ⭐⭐ ...and that run replayed on a REAL BBC (jsbe
                            #   REVS_LOCKSTEP_AT=PC:N:f + --lockstep-at (docs/validation-harness.md)
                            #   ⚠⚠ and run an in-process oracle (TERRAINLOWCHECK, SCANCHECK, ...) under
                            #   the AUTOPILOT too — a STRAIGHT_TO_RACE window hid a steering-only defect
+make lockstep-race         # ⭐⭐ ...and THE RACE PROPER on a real BBC: qualifying + a 19-car race, poll for
+                           #   poll (~50 min).  The only gate on the other cars, the overtaking pass and the
+                           #   mirrors against real hardware — practice is the player alone
 make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
                            #   the only gate that sees the light column; -race cannot
 python3 tools/sim_equiv.py [--steer[=l|r]] [--modes=legacy,h400,h200]   # ⭐ DECOUPLED physics vs
@@ -985,6 +988,12 @@ Rules that must survive without opening `docs/perf-method.md`:
   otherwise, and "proven" cannot come from a Silverstone run.** Never conclude a cell is
   twin-private from a native-surface scan alone. (`docs/faithfulness-seam.md`,
   `docs/wide-value-cleanup.md` §FOURTH eligibility test)
+- ⭐⭐ **A 6502-ABI SHIM THAT DROPS AN EXIT FLAG MAKES THE ORACLE WRONG — and the twin then gets
+  written to match it.** Two of the race-proper lockstep's four bugs passed `validate` because a
+  shim the transliterated oracle calls (abs16_math, update_grip_limits) never set the flags the 6502
+  routine leaves, so both sides branched on a stale flag. A shim reproduces EVERY flag its 6502
+  routine leaves that a caller can read; "the callee is a cpu-free core" is true of the port, not of
+  the 6502. Only a real BBC catches this class (`make lockstep-race`). `docs/validation-harness.md`.
 - **A 6502 idiom that touches the STACK POINTER has no C equivalent and is dropped silently** —
   suspect that class first for any hang inside generated code. When the idiom manipulates `S` to
   talk about RETURN ADDRESSES, model the control flow and leave `S` alone: modelling neither is a

@@ -207,6 +207,13 @@ with `amiga/mos.gdb` (`g_mosUnknownCount` + entry + A):
   call.  None ever did, which is how we knew **the scripted run never started the engine**.
   ✅ **IMPLEMENTED AND MEASURED, 2026-08-15** — see §Sound below.  A `STRAIGHT_TO_RACE` run with the
   throttle held now counts 298 of them.
+  ⚠⚠ **And its EXIT REGISTERS LEAK INTO THE GAME** [MEASURED 2026-09-29, real MOS 1.20 under
+  jsbeeb, 5130 calls]: OSWORD 7 returns X = buffer 4+channel and Y = the offset of the note's
+  third byte in that buffer's `$F0-$FF` ring (write pointer `$02E1+buf`, read pointer `$02D8+buf`);
+  a flush rewinds the WRITE pointer to the read pointer, which moves only when the 100 Hz scheduler
+  takes the note — so Y is a race between the engine and the sound interrupt.  OSWORD 8 returns
+  X = `$FF`, Y = 0.  `begin_jump_from_a`'s caller indexes the gradient table with that Y, so the
+  camera height after a spin landing depends on it.  Model: `mos.cpp` §THE SOUND BUFFERS.
 
 Both were invisible to the static pass for the same reason as OSBYTE 0: the reason codes come from
 a nearest-preceding-`LDA #imm` heuristic and a *computed* `A` defeats it.  **Treat the table above

@@ -984,14 +984,17 @@ under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it 
 bugs the lockstep found).  The autopilot now races: `make lap` laps all six circuits clean at up to
 ~73 in fourth gear, and `make lockstep` matches a real BBC in physics and picture over 2995 frames
 on ALL SIX circuits at that pace.  Open, in order:
-1. **The RACE proper in the lockstep** (other cars, the object plotter, the `& $80` arms) — every
-   lockstep so far is a practice session, alone on track.
-   ⚠ **A user-reported symptom to settle there (2026-09-28, not yet investigated):** a car seen
-   approaching in the MIRROR often never appears in the main view, and a car later passes in the
-   main view with no mirror sighting before it — expected: a car first seen in the mirror shows in
-   the main view as soon as it drives by.  Faithful (a blind spot alongside) or a port bug (the
-   mirror and the view are separate routines; the decoupled 25 Hz sim is a suspect for a
-   misclassified per-frame quantity) — decide against a real BBC race, never by argument.
+1. **The race-proper lockstep on the EXPANSION circuits.**  `make lockstep-race` (Silverstone) is
+   identical to a real BBC over 11000 frames — qualifying plus ~4 laps of a 19-car race, physics,
+   picture and all 20 cars' state (docs/validation-harness.md §THE RACE-PROPER LOCKSTEP).  The
+   overtaking pass has a per-circuit SMC seam ($2771) and the object plotter per-circuit hooks, so
+   run it on circuits 1-5 (the target needs a CIRCUIT variable and the jsbeeb track mapping).
+2. **The zero-page hand-off chain after `place_car_world_coords`** (user request, 2026-09-29: the
+   car pass must be real C).  ring_gap / check_car_pair / stage_nearby_car / car_order_swap are
+   done; place_car_world_coords still parks its inputs in $0C/$84-$88 and saved_slot_index/
+   shared_counter_42 for project_object_slot / build_section_step_delta / step_delta_halve /
+   section_coord_add_delta, which read them back out of mem[].  Convert as one chain (the readers
+   move with the writer), reader audit first (`rangeaudit --defuse` on a COMPETITION race).
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
