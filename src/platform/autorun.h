@@ -31,9 +31,12 @@
  * menus and any counter read afterwards averages the front end together with the race.  With the
  * script suppressed the target sits in menu_wait_key for the whole run, which is what makes
  * "how often does the front end poll the keyboard" a measurable quantity (amiga/spacerate.gdb).
+ * ⚠ The same stale-site failure happened a second time, to `make RACEPROPER=1`: its script is
+ * compiled whenever the define is set, but without PROBES=1 the build never ran it and sat on the
+ * circuit menu for a whole 30-minute trace.  A script flag belongs in this list the day it is added.
  */
 #if (defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
-     defined(REVS_COMPETITION)) && !defined(REVS_NOAUTORUN)
+     defined(REVS_COMPETITION) || defined(REVS_RACE_PROPER)) && !defined(REVS_NOAUTORUN)
 #define REVS_AUTORUN_BUILD 1
 #endif
 
