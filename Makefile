@@ -481,6 +481,10 @@ lap:
 # revs-hack-nurburgring.ssd (git-ignored, local).  docs/validation-harness.md §THE LOCKSTEP.
 CIRCUIT ?= 0
 FRAMES  ?= 3000
+# The port's circuit number -> the jsbeeb disc and REVSMEN menu entry (5 = the fan-made
+# Nurburgring, which lives on its own disc).  Sets $disc and $bt for the recipe line it opens.
+LOCKSTEP_DISC = case $(CIRCUIT) in 0) disc=""; bt=5;; 1) disc=""; bt=1;; 2) disc=""; bt=2;; 3) disc=""; bt=3;; \
+	   4) disc=""; bt=4;; 5) disc="--disc=revs-hack-nurburgring.ssd"; bt=3;; esac
 lockstep:
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 EXACTRATIO=1 $(TARGET) >/dev/null
@@ -488,8 +492,7 @@ lockstep:
 	@REVS_TRACK=$(CIRCUIT) REVS_LOCKSTEP=tmp/lockstep/host$(CIRCUIT).rls REVS_AUTOPILOT=1 REVS_FIXED_RNG=1 \
 	  REVS_SCREEN_DUMP=tmp/lockstep/h$(CIRCUIT) REVS_SCREEN_FRAME=$(FRAMES) REVS_QUIT_AFTER_DUMP=1 \
 	  ./$(TARGET) 2>&1 >/dev/null | grep '^\[autopilot\]' | sed 's/^/  host: /'
-	@case $(CIRCUIT) in 0) disc=""; bt=5;; 1) disc=""; bt=1;; 2) disc=""; bt=2;; 3) disc=""; bt=3;; \
-	   4) disc=""; bt=4;; 5) disc="--disc=revs-hack-nurburgring.ssd"; bt=3;; esac; \
+	@$(LOCKSTEP_DISC); \
 	 (cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs $$disc --track=$$bt \
 	   --wing=0 --lockstep=../../tmp/lockstep/host$(CIRCUIT).rls \
 	   --lockstep-out=../../tmp/lockstep/bbc$(CIRCUIT).rls) 2>&1 | grep -- '--lockstep: [0-9]* frames' | sed 's/^ */  bbc:  /'
@@ -506,21 +509,22 @@ lockstep:
 # logged from engine entry), the pre-race wing prompt reads through OSRDCH ('K' records), and a sound
 # OSWORD's exit Y is a race against the 100 Hz sound interrupt that leaks into the camera ('Y'
 # records, forced at $0B73).  ~50 min: jsbeeb runs a 20-car race at ~5-10 frames a second.
-# docs/validation-harness.md §THE RACE-PROPER LOCKSTEP.  Silverstone only so far (CIRCUIT=0).
+# docs/validation-harness.md §THE RACE-PROPER LOCKSTEP.  CIRCUIT=0..5 as for `make lockstep`.
 RACEFRAMES ?= 11000
 lockstep-race:
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory RELEASE=1 RACEPROPER=1 HOLD_THROTTLE=1 EXACTRATIO=1 $(TARGET) >/dev/null
 	@mkdir -p tmp/lockstep
-	@rm -f tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls
-	@ulimit -f 2097152; REVS_LOCKSTEP_MAX=$(RACEFRAMES) REVS_TRACK=0 REVS_LOCKSTEP=tmp/lockstep/race_host.rls \
+	@rm -f tmp/lockstep/race_host$(CIRCUIT).rls tmp/lockstep/race_bbc$(CIRCUIT).rls
+	@ulimit -f 2097152; REVS_LOCKSTEP_MAX=$(RACEFRAMES) REVS_TRACK=$(CIRCUIT) REVS_LOCKSTEP=tmp/lockstep/race_host$(CIRCUIT).rls \
 	  REVS_AUTOPILOT=1 REVS_FIXED_RNG=1 ./$(TARGET) 2>&1 >/dev/null | grep -E '^\[(autopilot|lockstep)\]' | sed 's/^/  host: /'
-	@(cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs --competition --track=5 \
-	   --wing=0 --lockstep=../../tmp/lockstep/race_host.rls \
-	   --lockstep-out=../../tmp/lockstep/race_bbc.rls) 2>&1 | grep -E -- '--lockstep: [0-9]* frames|STALLED' | sed 's/^ */  bbc:  /'
-	@python3 tools/lockstep_diff.py tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls; r1=$$?; \
-	 python3 tools/lockstep_diff.py tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls --view | tail -1; r2=$$?; \
-	 python3 tools/lockstep_diff.py tmp/lockstep/race_host.rls tmp/lockstep/race_bbc.rls --view >/dev/null; r2=$$?; \
+	@$(LOCKSTEP_DISC); \
+	 (cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs $$disc --competition --track=$$bt \
+	   --wing=0 --lockstep=../../tmp/lockstep/race_host$(CIRCUIT).rls \
+	   --lockstep-out=../../tmp/lockstep/race_bbc$(CIRCUIT).rls) 2>&1 | grep -E -- '--lockstep: [0-9]* frames|STALLED' | sed 's/^ */  bbc:  /'
+	@python3 tools/lockstep_diff.py tmp/lockstep/race_host$(CIRCUIT).rls tmp/lockstep/race_bbc$(CIRCUIT).rls; r1=$$?; \
+	 python3 tools/lockstep_diff.py tmp/lockstep/race_host$(CIRCUIT).rls tmp/lockstep/race_bbc$(CIRCUIT).rls --view | tail -1; \
+	 python3 tools/lockstep_diff.py tmp/lockstep/race_host$(CIRCUIT).rls tmp/lockstep/race_bbc$(CIRCUIT).rls --view >/dev/null; r2=$$?; \
 	 $(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory $(TARGET) >/dev/null; test $$r1 = 0 -a $$r2 = 0
 
 determinism-drive:
