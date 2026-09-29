@@ -309,23 +309,23 @@ void apply_driving_model_frame(void)
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
     /* A, X, Y and the flags come back from update_camera_and_height untouched — the 6502 exit,
        which only this oracle-facing path publishes: the native frame loop reads no register. */
-    CameraExit ce = apply_driving_model_frame_native(cpu.C);
+    CameraExit ce = apply_driving_model_frame_native();
     cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
     cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
     cpu.X = ce.x; cpu.Y = ce.y;
 }
 
-/* The native frame loop's entry: the carry it arrives with is update_engine_revs' coast-arm
-   carry-in (the 6502's C at $469E), and the exit registers it gets back are the oracle path's,
-   so they are dropped — the loop reads none of them. */
+/* The native frame loop's entry.  The exit registers it gets back are the oracle path's, so they
+   are dropped — the loop reads none of them.  (It once passed the ambient cpu.C in as
+   update_engine_revs' coast-arm carry; that carry is update_grip_limits' exit, always 0.) */
 void apply_driving_model_frame_step(void)
 {
-    (void)apply_driving_model_frame_native(cpu.C);
+    (void)apply_driving_model_frame_native();
 }
 
-CameraExit apply_driving_model_frame_native(int entryC)
+CameraExit apply_driving_model_frame_native(void)
 {
-    CameraExit ce = apply_driving_model_core(car_heading_v, entryC);
+    CameraExit ce = apply_driving_model_core(car_heading_v);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
@@ -705,8 +705,13 @@ void update_grip_limits(void)
     model_state_marshal_in();             /* it reads the model's own state to size the limits */
     update_grip_limits_core();
     model_state_marshal_out();
-    /* $4C46 exit Y = the ANDed surface bytes — the one escaping register (see the core). */
+    /* $4C46 exit Y = the ANDed surface bytes (see the core), and C: the next call,
+       update_engine_revs, ADDs it in its coast arm ($49A6 has no CLC).  C is the last mul8's
+       ($4C57), whose closing `ROR math_lo` always shifts out a 0 — so C = 0, always.  ⚠ This shim
+       once left C alone, so the ORACLE added the caller's stale carry and the twin was written to
+       match; the race-proper lockstep against a real BBC showed the +7 (frame 4163). */
     cpu.Y = (uint8_t)(surface_change_0 & surface_change_1);
+    cpu.C = 0u;
 }
 
 void update_engine_revs(void)

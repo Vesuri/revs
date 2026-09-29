@@ -585,7 +585,7 @@ extern const SpanPlotter SPAN_PLOT_2;
 /* ---- cpu-free cores the shims call (defined in revs_native.c) ---- */
 AdcRead adc_read_core(uint8_t channel);
 MosRegs kbd_test_key_regs(uint8_t keyCode);   /* OSBYTE 129 exit file — kbd_test_key's shim reads A/X/Y */
-CameraExit apply_driving_model_core(uint16_t heading, int entryC);
+CameraExit apply_driving_model_core(uint16_t heading);
 
 /* ⭐⭐ The frame driver's entries into phases 3 and 4, one level below the 6502-ABI INPUT
    marshals: race_main_loop_core runs the two back to back, so each pass's wide inputs are
@@ -609,7 +609,7 @@ void check_crash_native(void);
 void draw_dash_needles_native(void);
 void mirrors_update_native(void);
 void process_car_contact_native(void);
-CameraExit apply_driving_model_frame_native(int entryC);   /* the exit is the oracle path's */
+CameraExit apply_driving_model_frame_native(void);   /* the exit is the oracle path's */
 void apply_driving_model_frame_step(void);
 void build_road_sign_native(void);   /* the frame driver's entry, below the wipe-only INs */                  /* the native frame loop's entry */
 void road_edge_walk_resume_native(void);

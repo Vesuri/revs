@@ -6106,7 +6106,7 @@ static int test_body_drivers(void)
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
     if (want("apply_driving_model")) {
-        int subFail = 0, splitRan = 0, offPower = 0, onPower = 0;
+        int subFail = 0, splitRan = 0, offPower = 0, onPower = 0, coastThrottle = 0;
         /* ⭐ car_lateral_speed_entry ($38/$39) is relocated out of mem[] into a native uint16_t
            (wide-value cleanup, mechanism B), but the cells are NOT ignored here: this routine's
            6502-ABI shim marshals the value back out, so the twin and the oracle still agree on
@@ -6124,6 +6124,13 @@ static int test_body_drivers(void)
             { static const uint8_t st[] = { 0x00, 0x01, 0x02, 0x7F };
               pre[0x002D] = st[xs() % (sizeof st)]; }
             if (pre[0x002D] >= 2) offPower++; else onPower++;
+            /* ⭐ ...and THE COAST ARM ON THE THROTTLE: update_engine_revs' $49A6 `ADC #7` runs with
+               the engine on, the car off the ground and pedal_mode ($3E) = 1 — a 1-in-256 byte, so
+               200 random cases never reached it and a wrong carry-in (update_grip_limits' exit C,
+               always 0, once taken from the entry C instead) passed here.  The race-proper
+               lockstep against a real BBC caught it; half the cases now pin the throttle. */
+            if (t & 1) pre[0x003E] = 0x01;
+            if (pre[0x0061] && pre[0x002D] && pre[0x003E] == 0x01) coastThrottle++;
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;   /* the 6502 never runs the engine in decimal mode — see twin #2 */
@@ -6138,14 +6145,18 @@ static int test_body_drivers(void)
                    "split — a callee trapped out first\n", model);
             fail++;
         }
+        if (coastThrottle == 0) {
+            printf("[VACUOUS] apply_driving_model: no case reached the coast arm on the throttle\n");
+            fail++;
+        }
         if (offPower == 0 || onPower == 0) {
             printf("[VACUOUS] apply_driving_model: the car_height branch went only one way "
                    "(%d off power, %d on)\n", offPower, onPower);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
-               "(%d reached the speed split, %d/%d off power)\n", "apply_driving_model",
-               model, subFail, splitRan, offPower, model);
+               "(%d reached the speed split, %d/%d off power, %d coasting on the throttle)\n",
+               "apply_driving_model", model, subFail, splitRan, offPower, model, coastThrottle);
     }
 
     if (want("draw_track_object")) {

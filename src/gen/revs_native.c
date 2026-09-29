@@ -181,7 +181,7 @@ void draw_car_field_core(void);
 /* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
 static void read_driving_controls_core(void);
-CameraExit apply_driving_model_core(uint16_t heading, int entryC);
+CameraExit apply_driving_model_core(uint16_t heading);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
@@ -7687,7 +7687,7 @@ void lateral_speed_entry_marshal_out(void)
     lateral_speed_entry_hi = (uint8_t)(lateral_speed_entry_v >> 8);
 }
 
-CameraExit apply_driving_model_core(uint16_t heading, int entryC)
+CameraExit apply_driving_model_core(uint16_t heading)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
     compute_car_angles_core(heading);
@@ -7728,9 +7728,14 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
        (sound_stop_channel, $0E6B) passes to the MOS, so replay the engine's exit registers here as
        the shim does, before the sound call reads them. */
     {
-        /* entryC is the 6502's carry at $469E — nothing between the entry and here touches it
-           (every callee above is a cpu-free core), so it is an argument rather than a global. */
-        EngineExit ee = update_engine_revs_core(entryC,
+        /* The carry update_engine_revs consumes is update_grip_limits' EXIT carry, and that is
+           always 0: its last carry-writing instruction is the axle-0 pass's mul8 ($4C57), whose
+           closing `ROR math_lo` always shifts out a 0 (checked over all 65536 operand pairs).
+           ⚠ It was once apply_driving_model's ENTRY carry, on the reasoning that "every callee
+           above is a cpu-free core" — true of the port's cores, false of the 6502 routines they
+           replace.  So the coast arm's throttle step is exactly +7: the race-proper lockstep
+           against a real BBC caught +8 at frame 4163, an airborne frame. */
+        EngineExit ee = update_engine_revs_core(0u,
                             (uint8_t)(SURFACE_BYTE_0 & SURFACE_BYTE_1));
         /* Only the exit Y escapes: it is the ambient Y update_slip_sound's OSBYTE 21
            (sound_stop_channel, $0E6B) passes to the MOS.  A/X and the flags are dead — the
@@ -13241,8 +13246,8 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
       are together unconditional, so the low-byte tie-break under them can never run.
       Reproduced anyway (costs nothing); noted so nobody re-derives it.
    3. ⚠⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY — the coast arm's `ADC #7` at $49A6 is
-      reached through six instructions that write no carry, so it adds 7 + whatever C
-      apply_driving_model left in `stage_lateral_speed_delta`'s wake.
+      reached through six instructions that write no carry, so it adds 7 + the C that
+      `update_grip_limits` returns — and that is always 0, the closing `ROR` of its last mul8.
    4. `update_grip_limits` GIVES THE TWO AXLES OPPOSITE SIGNS of the load term: $4C52's
       `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, which hold
       -(load) and +(load) from $4BE1-$4BE8.  One `,X` is the whole front/rear split.
