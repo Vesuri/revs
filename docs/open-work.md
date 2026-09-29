@@ -443,10 +443,21 @@ draw_track_object's plot, `RELEASE=1 RACEPROPER=1 HOLD_THROTTLE=1`, FIXED_RNG) p
 frame, 2.37 of them cars** — so row 43 is **~4.1 ms, ~29 000 cycles, per drawn object**, the road
 sign's own 3.63 ms/object within the difference in shapes.  ⇒ The plotter is not slower in a race;
 a race simply draws ~3x the objects, and the lever is the per-object cost that §the object plotter
-already sized (vertex scaling ~4.9k cycles, the edge chain ~18k).  Next: single-step one car's
-draw_track_object on the target (`steptrace.gdb`) and rank its source lines.  Rows 40-42 are
-~10.6 ms of native C for twenty cars (~2 400 cycles a car in the AI alone), which is worth one
-single-stepped call before believing it is the game's own cost.
+already sized (vertex scaling ~4.9k cycles, the edge chain ~18k).
+⭐⭐ **SINGLE-STEPPED (2026-09-29, `amiga/race_steptrace.gdb`: three whole `move_and_draw_cars_steps`
+calls 150 frames into the race, a busy stretch at 9 objects a frame):** 28.5k instructions a frame,
+53% memory operands.  **The draw is ~1 950 instructions an object** — `plot_view_src_line_core`
+6.2 calls an object at **156 instructions a call** (entry/mode state ~70, the two fills ~45, the
+surface lookup ~12), `column_gap_walk_core` 3.1 calls at 134, `scale_shape_vectors` 240,
+`plot_shape_edges` 213 — ~71% of it the line side.  **Every hot line is 6-8 instructions a call,
+i.e. one byte RMW on a zero-page cell: there is no fat line, the C is at Rule 1b's floor** (and
+~13-15 cyc/instruction, which reconciles 1 950 instructions with the measured ~29k cycles/object).
+⇒ **the lever is the object line side in 68000 asm** (`plot_view_src_line` + `fill_object_gap` +
+its gap walk, the span pass's method and gate shape; ~9.6 ms of an average race's 13.55, and the
+road sign's ph15 in every practice frame too).  ⭐ **And rows 40-42 are NOT fat**: `drive_one_car`
+is **113 instructions a car** (19 a frame), `check_car_pair` ~1 600 a frame, staging ~200 a
+`place_car_world_coords` — ordinary per-car work at ~13 cyc/instruction, so they are the game's
+own cost and rank below the draw.
 
 ### 3. ⭐⭐⭐ FEWER POINTS / SPANS — the producers, 61 ms, and the title is now the whole plan
 `docs/perf-method.md` §the producers mapped. **MEASURED 2026-09-20 and it redirects this entry:**
