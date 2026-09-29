@@ -15064,8 +15064,16 @@ static int slot_defer_if_same_column(uint8_t acc, uint8_t edgeCol)
    $00..$4F of the $3000..$43FF source blocks: they cannot reach the zero-page cells that drive
    the loop (the pointer, the stop line, the column, the keep mask and the byte), nor any table
    surface_colour_at reads — so each is read once, not per cell.  (The old "not hoisted" note was
-   column_gap_walk's, whose run really can cover $0082/$0085; this one cannot.) */
+   column_gap_walk's, whose run really can cover $0082/$0085; this one cannot.)
+   ⭐ THE AMIGA RUNS IT IN 68000 ASSEMBLY (src/platform/amiga/object_m68k.s, `make OBJASM=0` the
+   control): this body is then plot_view_src_line_c, the reference `make OBJCHECK=1` compares the
+   asm against call for call — see the dispatcher after it. */
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_OBJ_ASM)
+#define REVS_OBJ_ASM_ON 1
+static void plot_view_src_line_c(uint8_t mode, uint8_t colourSelect)
+#else
 void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
+#endif
 {
     unsigned pixel;
     uint8_t  edgeCol, blockStart, acc;
@@ -15228,6 +15236,161 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     }
     slot_prev_col();
 }
+
+#ifdef REVS_OBJ_ASM_ON
+/* ⭐⭐ THE ASM'S TWO C CALLEES are the C's own: fill_object_gap_core (rare), and the gap walk
+   bracketed by the EDGE_COLUMN bump exactly as the tail above brackets it. */
+void pvs_line_m68k(unsigned mode, unsigned colourSelect);
+void pvs_asm_gap_walk(unsigned mode, unsigned blockStart)
+{
+    mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] + 1u);
+    (void)column_gap_walk_core((uint8_t)mode, (uint8_t)blockStart, 0u);
+    mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] - 1u);
+}
+
+#ifndef REVS_OBJ_CHECK
+void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
+{
+    pvs_line_m68k(mode, colourSelect);
+}
+#else
+/* ⭐⭐ `make OBJCHECK=1` — the C and the asm on the same 64 KB every call, after a fuzzer
+   (amiga/obj_check.gdb).  A mismatch address above $FFFF names a pointer word: $10000 plot_ptr_v,
+   $10001 plot_ptr2_v.  ⚠ A correctness arm: three 64 KB copies a call, so its phase rows are void. */
+volatile unsigned long g_objChecks        = 0;
+volatile unsigned long g_objMismatch      = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_objMismatchAt    = 0;
+volatile unsigned long g_objFuzzCases     = 0;
+volatile unsigned long g_objFuzzMismatch  = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_objFuzzMismatchAt = 0;
+volatile unsigned long g_objModes[3]      = { 0, 0, 0 };   /* the game's calls, per mode */
+volatile unsigned long g_objFuzzPainted   = 0;   /* fuzz cases that changed a source cell — must be non-zero */
+static uint8_t s_objBefore[65536] __attribute__((aligned(4))), s_objAfterC[65536] __attribute__((aligned(4)));
+static uint8_t s_objFuzzSave[65536] __attribute__((aligned(4)));
+
+static void obj_compare(uint8_t mode, uint8_t sel, volatile unsigned long* bad,
+                        volatile unsigned long* at)
+{
+    const uint16_t p0 = plot_ptr_v, q0 = plot_ptr2_v;
+    uint16_t pC, qC;
+    unsigned i;
+    memcpy(s_objBefore, (const void*)mem, sizeof s_objBefore);
+    plot_view_src_line_c(mode, sel);
+    pC = plot_ptr_v;  qC = plot_ptr2_v;
+    memcpy(s_objAfterC, (const void*)mem, sizeof s_objAfterC);
+    memcpy((void*)mem, s_objBefore, sizeof s_objBefore);
+    plot_ptr_v = p0;  plot_ptr2_v = q0;
+    pvs_line_m68k(mode, sel);
+    if (plot_ptr_v != pC || plot_ptr2_v != qC) {
+        if (!*bad) *at = (plot_ptr_v != pC) ? 0x10000u : 0x10001u;
+        (*bad)++;
+        return;
+    }
+    {   /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        const uint32_t* a = (const uint32_t*)(const void*)mem;
+        const uint32_t* c = (const uint32_t*)(const void*)s_objAfterC;
+        for (i = 0; i < 65536u / 4u; i++)
+            if (a[i] != c[i]) {
+                unsigned j = i * 4u;
+                while (mem[j] == s_objAfterC[j]) j++;
+                if (!*bad) *at = j;
+                (*bad)++;
+                break;
+            }
+    }
+}
+
+/* ⭐ THE FUZZER, once, before the first real call.  A few objects a frame reach few of the arms
+   (the same-column deferral, the classifier's six exits, a column off the viewport, a run with
+   no height), so each case randomises every input the routine and its two C callees read — the
+   source blocks (mostly empty, some $55), the block starts, the pixel and pattern tables, the
+   surface boundaries, attributes, limits and horizon, the styles, and the whole zero-page entry
+   state — and requires both to agree on all 64 KB and both pointers.  mem[] is restored after.
+   The gap walk's two SMC operands keep the game's values: a random one is its trap arm. */
+static void obj_fuzz(void)
+{
+    uint32_t x = 0x9E3779B9u;
+    unsigned n, i;
+    const uint16_t p0 = plot_ptr_v, q0 = plot_ptr2_v;
+#define OBJ_RND() (x ^= x << 13, x ^= x >> 17, x ^= x << 5, (unsigned)x)
+#define OBJ_MOD(v, m) revs_modu16((uint32_t)((v) & 0xFFFFu), (uint16_t)(m))   /* no __umodsi3 (muldiv-audit) */
+    memcpy(s_objFuzzSave, (const void*)mem, sizeof s_objFuzzSave);
+    for (n = 0; n < 400u; n++) {
+        const unsigned k = OBJ_RND(), k2 = OBJ_RND();
+        const uint8_t mode = (uint8_t)OBJ_MOD(k, 3u);
+        for (i = 0x3000u; i < 0x4400u; i++) {
+            const unsigned v = OBJ_RND();
+            mem[i] = (uint8_t)(((v & 7u) < 5u) ? 0u : ((v & 7u) == 5u) ? 0x55u : (v >> 8));
+        }
+        for (i = 0; i < 0x29u; i++) mem[MEM_dash_block_starts + i] = (uint8_t)(OBJ_RND() & 0x3Fu);
+        for (i = 0; i < 0x50u; i++) {
+            const unsigned v = OBJ_RND(), w = OBJ_RND();
+            mem[MEM_surface_edge_0 + i] = (uint8_t)(v & 0x3Fu);
+            mem[MEM_surface_edge_1 + i] = (uint8_t)((v >> 8) & 0x3Fu);
+            mem[MEM_surface_edge_2 + i] = (uint8_t)((v >> 16) & 0x3Fu);
+            mem[MEM_surface_edge_3 + i] = (uint8_t)((v >> 24) & 0x3Fu);
+            mem[MEM_line_attr_0 + i]    = (uint8_t)w;
+            mem[MEM_line_attr_1 + i]    = (uint8_t)(w >> 8);
+            mem[MEM_view_line_surface + i] = (uint8_t)(w >> 16);
+        }
+        for (i = 0; i < 0x80u; i++) mem[MEM_edge_style + i] = (uint8_t)OBJ_RND();
+        /* ⚠ A quarter of every colour and mask entry is ZERO: a composed byte of 0 (stored as $55)
+           needs zero colours or masks, and uniform bytes almost never give one — sabotage 3 (the 0
+           stored as 0) survived the fuzzer until this, caught only by the game. */
+#define OBJ_RND_Z() ((OBJ_RND() & 3u) == 0 ? 0u : OBJ_RND())
+        for (i = 0; i < 4u; i++) {
+            mem[MEM_surface_colours + i]       = (uint8_t)OBJ_RND_Z();
+            mem[MEM_colour_pattern_tbl + i]    = (uint8_t)OBJ_RND_Z();
+            mem[MEM_pixel_keep_others_tbl + i] = (uint8_t)OBJ_RND_Z();
+            mem[MEM_colour_pattern_and_tbl + i]  = (uint8_t)OBJ_RND_Z();
+            mem[MEM_colour_pattern_keep_tbl + i] = (uint8_t)OBJ_RND_Z();
+            mem[MEM_pixel_after_mask_tbl + i]  = (uint8_t)OBJ_RND_Z();
+        }
+#undef OBJ_RND_Z
+        horizon_extent    = (uint8_t)((k >> 4) & 0x3Fu);
+        line_attr_0_limit = (uint8_t)((k >> 12) & 0x3Fu);
+        line_attr_1_limit = (uint8_t)((k >> 20) & 0x3Fu);
+        /* the entry state: columns mostly on the viewport, lines on the view */
+        mem[PVS_COLOUR] = (uint8_t)OBJ_RND();  mem[PVS_COLOUR_P] = (uint8_t)OBJ_RND();
+        mem[PVS_HALF]   = (uint8_t)OBJ_RND();  mem[PVS_KEEP]     = (uint8_t)OBJ_RND();
+        mem[PVS_BYTE]   = (uint8_t)OBJ_RND();  mem[PVS_MODE]     = (uint8_t)OBJ_RND();
+        mem[EDGE_COLUMN]   = (uint8_t)((k2 & 0x0Fu) == 0 ? OBJ_RND() : OBJ_MOD(OBJ_RND(), 0x2Bu));
+        mem[PVS_OTHER_COL] = (uint8_t)((k2 & 0xF0u) == 0 ? OBJ_RND()
+                                       : ((k2 & 0x300u) == 0 ? mem[EDGE_COLUMN] : OBJ_MOD(OBJ_RND(), 0x2Bu)));
+        mem[PVS_OTHER_X]   = (uint8_t)OBJ_RND();
+        mem[PVS_PREV_COL]  = (uint8_t)OBJ_RND();
+        mem[OBJ_EDGE_X]    = (uint8_t)OBJ_RND();
+        mem[OBJ_EDGE_STYLE] = (uint8_t)OBJ_RND();
+        shared_temp_7e     = (uint8_t)OBJ_RND();
+        shared_temp_8c     = (uint8_t)OBJ_RND();
+        shared_temp_76     = (uint8_t)OBJ_RND();
+        span_defer_pending = (uint8_t)((k2 & 0x400u) ? 0x80u | OBJ_RND() : 0u);
+        span_line_cursor   = (uint8_t)(OBJ_MOD(OBJ_RND(), 0x50u));
+        span_top_line      = (uint8_t)(OBJ_MOD(OBJ_RND(), 0x50u));
+        plot_x             = (uint8_t)OBJ_RND();
+        plot_ptr_v = (uint16_t)OBJ_RND();  plot_ptr2_v = (uint16_t)OBJ_RND();
+        plot_ptr_lo = (uint8_t)plot_ptr_v; plot_ptr_hi = (uint8_t)(plot_ptr_v >> 8);
+        obj_compare(mode, (uint8_t)(k2 >> 16), &g_objFuzzMismatch, &g_objFuzzMismatchAt);
+        for (i = 0x3000u; i < 0x4400u; i++)       /* (no memcmp in the freestanding runtime) */
+            if (s_objBefore[i] != s_objAfterC[i]) { g_objFuzzPainted++; break; }
+        g_objFuzzCases++;
+        memcpy((void*)mem, s_objFuzzSave, sizeof s_objFuzzSave);
+    }
+#undef OBJ_RND
+#undef OBJ_MOD
+    plot_ptr_v = p0;  plot_ptr2_v = q0;
+}
+
+void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
+{
+    static int fuzzed;
+    if (!fuzzed) { fuzzed = 1; obj_fuzz(); }
+    g_objChecks++;
+    if (mode < 3u) g_objModes[mode]++;
+    obj_compare(mode, colourSelect, &g_objMismatch, &g_objMismatchAt);
+}
+#endif
+#endif /* REVS_OBJ_ASM_ON */
 
 /* TWINS #98-#114 — THE DRIVING CONTROLS
    Seventeen functions, ~700 bytes: everything `read_driving_controls` reaches.  One cluster, not

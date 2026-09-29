@@ -111,7 +111,8 @@ enum {
     PROBE_BUILD_VIEW_OWN_FULL  = 1u << 10,  /* VIEWFULL=1   — phase 1 owns its LINE LOOP too   */
     PROBE_BUILD_FASTMEM        = 1u << 11,  /* FASTMEM=1    — longword memset/memcpy/memmove   */
     PROBE_BUILD_SPAN_ASM       = 1u << 12,  /* SPANASM=1    — the span walk in 68000 asm       */
-    PROBE_BUILD_SETUP_ASM      = 1u << 13   /* SETUPASM=1   — the whole span pass in 68000 asm */
+    PROBE_BUILD_SETUP_ASM      = 1u << 13,  /* SETUPASM=1   — the whole span pass in 68000 asm */
+    PROBE_BUILD_OBJ_ASM        = 1u << 14   /* OBJASM=1     — the object plotter's line side in asm */
 };
 
 volatile unsigned long g_probeBuildFlags =
@@ -159,6 +160,9 @@ volatile unsigned long g_probeBuildFlags =
 #endif
 #ifdef REVS_VIEW_OWN_FULL
     PROBE_BUILD_VIEW_OWN_FULL |
+#endif
+#ifdef REVS_OBJ_ASM
+    PROBE_BUILD_OBJ_ASM |
 #endif
     0u;
 

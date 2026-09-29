@@ -909,6 +909,23 @@ endif
 endif
 endif
 
+# ⭐⭐ `OBJASM=1` (the DEFAULT) — the object plotter's line side, plot_view_src_line, in 68000 assembly
+# (src/platform/amiga/object_m68k.s): every other car and the road sign.  `make OBJASM=0` is the C
+# control.  ⭐⭐ `make OBJCHECK=1` runs the C and the asm on the same 64 KB every call, after a 400-case
+# fuzzer (amiga/obj_check.gdb) — ⚠ a correctness arm, its phase rows are void.  `OBJASM_SABOTAGE=N`
+# assembles defect N for it to catch.  docs/open-work.md §2c.
+OBJASM ?= 1
+ifeq ($(OBJASM),1)
+EXTRA_DEFINES += -DREVS_OBJ_ASM
+ASM_SRCS += $(AMIGA_SRC)/object_m68k.s
+ifeq ($(OBJCHECK),1)
+EXTRA_DEFINES += -DREVS_OBJ_CHECK
+PROBE_SYMS_OBJASM = g_objChecks g_objMismatch g_objMismatchAt g_objFuzzCases g_objFuzzMismatch \
+                    g_objFuzzMismatchAt g_objModes g_objFuzzPainted
+endif
+endif
+OBJASM_SABOTAGE ?= 0
+
 # ⭐⭐ `make EDGEFILL=1` — `fill_dash_edge_columns`' pass A specialised on its own
 # precondition (src/gen/revs_native.c §pass A, specialised).  Its 136 cells a frame cost
 # ~490 cycles each; the fill is load-bearing so it cannot be deleted, only made cheap.
@@ -1679,7 +1696,7 @@ PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TTCHECK) $(PROBE_SYMS_TTTIME)
-PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM) $(PROBE_SYMS_NDLASM)
+PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM) $(PROBE_SYMS_NDLASM) $(PROBE_SYMS_OBJASM)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
@@ -1818,6 +1835,10 @@ obj/walk_m68k.o : $(AMIGA_SRC)/walk_m68k.s
 obj/edge_m68k.o : $(AMIGA_SRC)/edge_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(EDGEASM_SABOTAGE) -o $@ "$<"
+
+obj/object_m68k.o : $(AMIGA_SRC)/object_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(OBJASM_SABOTAGE) -o $@ "$<"
 
 obj/needle_m68k.o : $(AMIGA_SRC)/needle_m68k.s
 	$(info ASM  $<)
