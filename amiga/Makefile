@@ -922,8 +922,9 @@ endif
 # autorun script is the shared one (src/platform/autorun.cpp §STRAIGHT TO THE RACE PROPER) that
 # answers the championship menus, sits out one qualifying session and answers START RACE, so this
 # is a define and nothing else.
-# ⚠⚠ IT COSTS ~100 000 FIELDS — ~22 MINUTES of host time under warp — AND THAT IS MEASURED, not
-# modelled.  The qualifying session ends on `tick_race_timers`, which advances the clock once per
+# ⚠⚠ IT COSTS ~17 000 FIELDS — the race opened at field ~16 700 on 2026-09-29 (PROBERACE's
+# raceOpen tick / 80120), ~25 minutes of host time under warp in a PROBES build.  The figure below
+# (~100 000) is from an older, slower build and is kept only as its measurement.  The qualifying session ends on `tick_race_timers`, which advances the clock once per
 # GAME FRAME; the host reaches the deadline at ~12000 frames, and this port paints 2066 of them by
 # vbi 17503 (0.118 a field), so the same deadline is ~101 700 fields here.  Break on
 # `g_vbiCount >= 105000` and give `diag_run.sh` ~1500 seconds.

@@ -693,9 +693,13 @@ The race frame is **~101 ms** (`Σ(1..44) − ph28`) against practice's 75.10, s
 baseline understates a real race by ~25 ms** — five times the ~5 ms the host-census estimate said.
 The road sign (phases 14+15, ~2.5 ms here) is at its local optimum (§the object plotter in
 `docs/perf-method.md`; `scale_shape_vectors` ~0.69 ms at 765 cyc/vertex).
-⇒ **Next: price `draw_car_field` per drawn object** (a host census of objects plotted per race
-frame, against row 43), then read its hot callees' objdump — the plotter is the same code the road
-sign runs, so the sign's 3.63 ms/object is the first thing to check against.  Rows 40-42 are
+⭐ **Priced per object**: a host census over the same first 523 race frames (a temporary counter at
+draw_track_object's plot, `RELEASE=1 RACEPROPER=1 HOLD_THROTTLE=1`, FIXED_RNG) plots **3.28 objects a
+frame, 2.37 of them cars** — so row 43 is **~4.1 ms, ~29 000 cycles, per drawn object**, the road
+sign's own 3.63 ms/object within the difference in shapes.  ⇒ The plotter is not slower in a race;
+a race simply draws ~3x the objects, and the lever is the per-object cost that §the object plotter
+already sized (vertex scaling ~4.9k cycles, the edge chain ~18k).  Next: single-step one car's
+draw_track_object on the target (`steptrace.gdb`) and rank its source lines.  Rows 40-42 are
 ~10.6 ms of native C for twenty cars (~2 400 cycles a car in the AI alone), which is worth one
 single-stepped call before believing it is the game's own cost.
 
