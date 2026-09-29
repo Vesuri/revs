@@ -128,7 +128,7 @@ make lockstep CIRCUIT=n    # ⭐⭐ ...and that run replayed on a REAL BBC (jsbe
                            #   ⚠⚠ and run an in-process oracle (TERRAINLOWCHECK, SCANCHECK, ...) under
                            #   the AUTOPILOT too — a STRAIGHT_TO_RACE window hid a steering-only defect
 make lockstep-race         # ⭐⭐ ...and THE RACE PROPER on a real BBC: qualifying + a 19-car race, poll for
-                           #   poll (~50 min).  The only gate on the other cars, the overtaking pass and the
+                           #   poll (~20-50 min; CIRCUIT=n as for lockstep).  The only gate on the other cars, the overtaking pass and the
                            #   mirrors against real hardware — practice is the player alone
 make determinism-lights    #   ...and the STARTING LIGHTS on screen (race proper, frame 3375) —
                            #   the only gate that sees the light column; -race cannot

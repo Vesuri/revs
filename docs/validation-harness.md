@@ -1436,9 +1436,10 @@ each invisible to every other gate:
 Every earlier lockstep was PRACTICE: the player alone, so the other cars, the overtaking pass, the
 mirrors' reflections and every `session_is_race & $80` arm were compared against nothing. The
 host qualifies parked (the RACEPROPER script) and the autopilot races; jsbeeb takes the
-competition branch. **Silverstone: identical to a real BBC over 11000 frames** — qualifying and
-~4 laps of the race — in physics, picture and all 20 cars' state. ~50 min (jsbeeb runs a 20-car
-race at 5-10 frames a second).
+competition branch. **All six circuits (`CIRCUIT=0..5`): identical to a real BBC over 11000
+frames** — qualifying and 4-5 laps of the race — in physics, picture and all 20 cars' state,
+including each expansion circuit's overtaking SMC seam ($2771) and object-plotter hooks. ~20-50 min
+a circuit (jsbeeb runs a 20-car race at 5-10 frames a second).
 
 **What a race needed that practice never did** — each one a stall or a divergence first:
 1. ⚠⚠ **`$FE68` from ENGINE ENTRY.** `seed_car_track_position` jitters every car's grid slot off

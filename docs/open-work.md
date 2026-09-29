@@ -967,18 +967,6 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ▶ THE AUTOPILOT: the real-BBC LOCKSTEP's last differences (user, 2026-09-26/27)
-The user's Nurburgring jump-and-crash is FIXED (d0ad1e0: the low block's terrain painter put grass
-under the right-wheel probe; `docs/validation-harness.md` §THE LOCKSTEP has it and the three other
-bugs the lockstep found).  The autopilot now races: `make lap` laps all six circuits clean at up to
-~73 in fourth gear, and `make lockstep` matches a real BBC in physics and picture over 2995 frames
-on ALL SIX circuits at that pace.  Open:
-- **The race-proper lockstep on the EXPANSION circuits.**  `make lockstep-race` (Silverstone) is
-   identical to a real BBC over 11000 frames — qualifying plus ~4 laps of a 19-car race, physics,
-   picture and all 20 cars' state (docs/validation-harness.md §THE RACE-PROPER LOCKSTEP).  The
-   overtaking pass has a per-circuit SMC seam ($2771) and the object plotter per-circuit hooks, so
-   run it on circuits 1-5 (the target needs a CIRCUIT variable and the jsbeeb track mapping).
-
 ### ⬜ Phase 7 — packaging (`docs/phases.md`)
 WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
 the release ships only what the port needs, not the disc image.
