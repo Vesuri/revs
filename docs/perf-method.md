@@ -3575,3 +3575,361 @@ a beam-overlap counter can read differently on two runs of one binary.
 Surface numbers honestly. Say which build produced them, which harness, and the window size. If a
 change measures at zero, that is a result — record it as closed *on data*, and do not re-open it
 on optimism.
+
+## THE CLOSED QUEUE ENTRIES — moved verbatim from `docs/open-work.md` when the queue was cleaned (2026-09-29)
+
+Kept for their numbers and reasoning; section numbers are the queue's as they stood. Nothing here is open.
+
+#### 1. ⛔ The TRANSPOSED SCAN — **10.00 ms, and BOTH routes to it are now CLOSED**
+`docs/perf-method.md` §the transposed scan is at its floor, and §producer-emitted source events.
+Its two halves are at the floor (**walk 5.30** + **recording 4.70**, objdump closes to ~10%), and
+the representation change that deletes it was **built, proved correct and measured at +14 ms**:
+the scan really does go (−10.59) and `draw_road` pays **+15.28** for the hook.
+⭐⭐⭐ The same note costs 67 cycles inline in a loop we own and ~2700 inside `interp_edge_core` —
+**40×** — because there it is a `jsr` in `draw_road`'s hot loops. Inlining it instead is the other
+horn (+4.9 ms precedent). There is no third placement.
+⇒ **the 10 ms is the price of not touching `draw_road`.** Reopen only if a producer is rewritten so
+its note is inline in a loop it owns; the list machinery is proved (0 mismatch, 3584 sweeps) and
+sits behind `SRCEVENTS=1`.
+⛔ **RE-CLOSED 2026-09-26 with the span pass in asm** (the barrier term is gone):
+`docs/span-render-plan.md` §13c-B. The scan is now ~29 instructions an event including its walk,
+because the walk hands each hit its order and address for free, while a producer note plus
+paint-time read-back (class B composition) is ~30. The one producer where direct emission pays
+is the seam fill, and there it is a wash too (§13c-C).
+
+#### 1b. ⭐⭐ The view sweep's DRIVER code — **phases 2+3 are DELETED by §12; this entry is history**
+⛔⛔⛔ **EVERY CANDIDATE THIS ENTRY EVER NAMED IS NOW CLOSED, AND THE REASON TO STOP IS A
+MEASURED CALIBRATION, NOT A LACK OF IDEAS: ON THIS DRIVER AN OBJDUMP DELTA OVER-READS THE BRACKET
+BY ~6×.** The last edit deleted **seven memory-operand instructions from a tail taken 82 runs a
+frame** — a static ~0.7 ms — and the phase table paid **0.118**. The three edits before it went
+−0.733, −0.136, −0.118, i.e. the grain is exhausted: what is left in the body is 2-7 instruction
+items (the three `addi.l #12416,d6` index rebuilds that miss the `mem + line` base already in
+`a2`; the two `VIEW_SHORT_ENTER` page reads; the run set-up's two `lsl.l #7`), and they are worth
+**~0.1 ms together**, not the ~0.3 the instruction count says.
+⭐⭐⭐ **AND THE SPLIT IS THE TELL, NOT THE TOTAL: phase 2 took −0.111 of that 0.118 and phase 3,
+which has HALF AGAIN AS MANY RUNS (50 against 32), took −0.008.** A per-run cost cannot do that.
+⇒ **when a deletion's win does not scale with the count of the thing it deletes, the instruction
+was not on the path the count describes** — and no amount of further objdump reading will say
+which path it *was* on. Size the next one with an arm, or do not build it.
+⇒ **What would actually win this 27 ms is not an instruction: it is FEWER CHAIN ENTRIES PER
+LINE.** Phase 3 spends **~4880 cyc/line to paint 11.3 cells**, of which the unit loop is ~486
+(43 cyc/unit, measured, irreducible) — so **~4400 cyc/line is driver serving four chain entries**
+(two stops, two entries), each with its own set-up, tail, `view_compose` pair, unit lookup and
+`g_viewStopList` search. That is a REPRESENTATION question and it belongs with §2/§3, not here.
+
+⭐⭐ **−6.58 ms taken** (`214c8ae`, `docs/perf-method.md` §the entry was deleted): the runs are
+**inline in both drivers**, `byte`/`line`/`cell` are in registers, `view_own_enter`'s poke-decode
+round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
+unit (426/32/16 and 282/50/25).
+⭐ **−0.733 ms more taken** (`422e68c`, `docs/perf-method.md` §the driver's cost is its memory
+operands): **28.104 → 27.371 ms**, census identical again, from two objdump-read defects — the
+unit loop was bound on `dp`, the pointer that DIES at the run's end, so the stop tail
+reconstructed the `srcp` the loop already held; and `line = (line - 1) & 0xFF` cost a
+materialised constant and a stack spill where `subq.b` does the job. Phase 3 is now
+**4906 cyc/line for 5.6 painted cells**.
+
+**Where that time IS — SETTLED FROM THE OBJDUMP, and it is that THE BODY IS LONG** (floor =
+cheapest plant/trap-free path from loop head to back edge; ceiling = every non-cold instruction
+once; `docs/perf-method.md` §where phases 2/3's 29 ms is, settled from the objdump):
+
+| | floor | **measured cyc/line** | ceiling | non-cold instrs | cells/line |
+|---|---:|---:|---:|---:|---|
+| phase 2 (16 lines, 10.08 ms) | — (all routes touch a plant block) | **4502** | 4374 + unit turns | 365 | 26.6 |
+| phase 3 (25 lines, 17.30 ms) | 2154 | **5348** | 6026 | 499 | 11.3 |
+
+⭐⭐⭐ **AND THE BODY COSTS WHAT ITS INSTRUCTIONS COST — THE LEVER IS PER-RUN OVERHEAD, 2.7× THE
+WORK IT DRIVES.** Summing all 71 blocks: **286 instructions/line, 90 of them the two unit loops ⇒
+196 driver instructions, 63 of which carry a memory operand** (~18 cyc against 4-8 for a register
+op) ⇒ ~2065 cyc nominal, ×1.3 for DMA ≈ 2685, which closes against the bracket once the probe
+(~13%) comes off. ⛔ **So there is no "2× slack" to find, and my own ~9 ms estimate of it is
+retracted** — it differenced a modelled operation count against a measured wall-clock bracket,
+the error `docs/perf-method.md` records three times. Of the 196: two run set-ups ~32, two stop
+tails ~30, two ENTER decodes + two stop-list walks ~45 = **~107 instructions of per-run overhead
+against ~39 instructions of real unit work** in phase 3's 5.6-cell runs. ⇒ **rank the remaining
+edits by instructions deleted per line** (one deleted instruction ≈ 0.065 ms/frame if phase 3
+only, 0.109 ms if it hits both phases).
+
+⭐ **−0.136 ms more taken** (`b6d5374`): **27.371 → 27.230 ms**, census identical again. The
+run set-up was spilling the destination pointer purely from register pressure (the function opens
+`movem.l d2-d7/a2-a6` — all eleven usable registers), and the cause was not the arithmetic but
+**two REDUNDANT REPRESENTATIONS of values the line body already keeps live**: `srcLine` was a
+third spelling of `line` (which is live for `line_is_last`, and `mem + line` is already CSE'd into
+an address register for the per-line table reads) and `dstLine` a second of `plot_ptr_v` (live
+because the chain boundary store composes its address). Deleting both hoists and forming each run
+pointer at the point of use took `44(sp)` traffic 8 → 2, all `n(sp)` **21 → 12**, and the function
+**571 → 569 instructions**. ⭐ **DELETE A REDUNDANT REPRESENTATION BEFORE FIGHTING THE SPILL IT
+CAUSES.** ⚠ Sized at ~0.2-0.5 ms and paid 0.136 — the give-back is real and named below.
+
+⛔ **Two follow-ons to that are CLOSED, both from the objdump and neither needing an emulator
+run.** (a) *Hoist `srcLine` only* — the asymmetric version, on the reasoning that `(d8,An,Dn.l)`
+has an **eight-bit** displacement so `srcp`'s `$3000` cannot ride the address and must be re-formed
+as `adda.l #mem+$3000` a run, while `dp`'s base carries no constant at all and is free. It is a
+true asymmetry and it does not help: the spill simply **moves** from `dstLine` to `srcLine`
+(`n(sp)` straight back to 21, `44(sp)` to 8, plus a per-cell reload). ⇒ **there is no room for ONE
+hoisted pointer either — the allocator is saturated, so "hoist the base that absorbs a
+non-displaceable constant" is a real rule with no seat at this table.** (b) *Spelling the base as
+`(mem + MEM_view_src_blocks) + (line + …)`* to make GCC keep `mem+$3000` in an address register —
+**byte-identical output**, GCC reassociates through the parentheses.
+
+⚠⚠ **And the retraction that goes with them: "the edit grew the function 571 → 645 instructions"
+was an ARTEFACT OF DIFFING TWO BUILD CONFIGURATIONS** — the "after" dump was from a `PROBES=1`
+build (it carries a `jsr probe_phase` the other has not) and the "before" from a plain one. Built
+the same way the edit is 2 instructions *smaller*. ⇒ **an objdump is a measurement and takes the
+same rule as a phase table: same flags on both arms, and check the artefact's own fingerprint
+(here: the load address moved `0x11ee0` → `0x1293e`) before diffing.**
+
+⛔ **AND THE THREE "smaller follow-ons" THIS ENTRY LISTED ARE ALL CLOSED, none of them needing an
+emulator run.** (a) *The two duplicate table reads (~0.25 ms)* — **both are load-bearing**, and the
+rule that settles it is worth more than the item was:
+⭐⭐⭐ **SOURCE-BLOCK ALIASING DECIDES WHETHER A REPEATED TABLE READ IS REDUNDANT.** The sweep's
+source bytes live at `$3000 + cell*$80 + line`, so a per-line table at `T + line` is aliased by a
+current-line `view_consume` **iff `cell*$80 == T`** — and `MEM_view_run_right_end` is `$3080`,
+which **IS cell 1's source byte**, so the consume can zero it between the two reads.
+(`MEM_view_edge_phase` at `$3050` is never aliased, and that is the *other* read.) ⭐ The second
+reason is independent and kills the `edge` pair on its own: **`VIEW_SHORT_RUN`'s cold arm can
+advance `line`** — `stop_ >= 40` calls `view_own_run`, whose own comment says "the cold run may
+have advanced the line and the plot pointer", and a host counter puts it at **333 of 4958 run
+entries (6.7%)** ⇒ a per-line value re-read after a run is a real dependency, not a duplicate.
+(b) *`step_scanline`'s byte-lane dance* — ⛔ **the ~1.4 ms sizing is RETRACTED and the real ceiling
+is ~0.35 ms**: the objdump's common path is **9 instructions ≈ 98 cyc/line**, and the byte-lane
+carry arm the wide-value rewrite would delete runs **1 line in 8**. The ~230 cyc/line in the table
+below is the bracket including that arm's amortised share, not what a rewrite can collect.
+(c) *The `view_stop_from` byte compare (~0.19 ms)* — already **4 instructions (~24 cyc) on the
+common path** with its base hoisted to `a6`; there is nothing left in it.
+
+⇒ **Phase 3 runs ~89% of its non-cold body on every line. There is no hotspot and no marshalling
+layer to delete** — the body serves **four chain entries a line** (two stops, two entries), each
+with its own run set-up, stop tail, `view_compose` pair, unit lookup and `g_viewStopList` search,
+for an average run of **5.6 cells**. `NOUNITS=2`'s 80%-driver figure confirms it independently.
+
+⭐⭐⭐ **AND THE PAINTER IS A WASH — RANK OWNERSHIP BY ROWS, NOT BY PHASE COST (§11, 2026-09-17).**
+Three arms of one field-bounded session settled it: phase 1's takeover moves **phase 1 by −0.03 ms**
+(15.53 → 15.50, forty `mem[]` bytes + forty units + a 905 cyc/line driver replaced by two bitplane
+writes a cell) and **the frame by −5.62, all of it `ph27`** (28.74 → 24.30 for 36 of 208 rows =
+−0.123 ms/row, which reproduces `VIEWCARVE`'s −0.124 to 1%). ⇒ **A direct-to-bitplane painter is
+worth `rows owned × 0.123 ms` and nothing else** (0.08–0.12 depending on the block — every one is
+now priced in §11's ledger, and ⚠ **a row price does NOT scale with the decode's total**: the
+−4.20 ms shape pass at `151e282` re-priced the dashboard only −4.40 → −4.11, because it deleted
+the per-**row** driver while ownership collects the per-**cell** scan). The predicted −6.6 to −7.8 ms on phase 24 is
+⛔ **RETRACTED**: it priced a driver deletion that the measurement says is not there to collect.
+⚠⚠ In no phase does the painter delete the **source walk** — `view_consume`'s RLE must read every
+cell's source byte whatever the destination is. **The prize is the DECODE**, but ⛔ **"the end
+state is `ph27` → 0 = 28.74 ms" is RETRACTED as well** (§11a): `DECODESPLIT` attributed the whole
+row, and ownership deletes only `convertRace`'s per-row conversion — **−11.18 ms from here, in
+step 1 of two**. The rest goes with the CALL (hence `NODECODE` = 0.13 ms), and of it
+`snapshotBands` + `buildLineModes` (~2.4 ms) must keep running forever, because `m_plan` is the
+COPPER's palette schedule rather than decode work. **End state `ph27` → ~2.4 ms, prize ~17.6 ms.**
+The 208-row ledger with every block now priced, the two invariants (the measured reader gate;
+per-display-line ownership) are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
+10.16" estimate is RETRACTED** too — it assumed the span deleted the source walk.
+⛔⛔⛔ **AND THAT −11.18 ms OF ROWS IS ITSELF CLOSED NOW: 70 ROWS ARE OWNED** (phase 1's 81..116
+plus domain A's 0..17 + 192..207), **63 SKY ROWS WERE ALREADY FREE, AND THE REMAINING 75 ARE PRICED
+OUT** — the whole remaining ownership campaign is **−3.61 ms best case against a measured
++3.45 ms** for the only placement ever built (see CLOSED). ⇒ **this entry's 27.23 ms has to be won
+INSIDE the driver; it cannot be won by taking the decode's rows away from it.**
+✅ **Step 0 is DONE: the new pipeline is the DEFAULT build** — `VIEWOWN=0` / `SPANFILL=0` are now
+the A/B controls, so the shipping frame goes **196.59 → 182.62 ms (−13.97)**. `validate` PASS, all
+five `determinism` trajectories PASS.
+
+⛔ **And WHOLE-LINE ownership of these two phases is closed on arithmetic — they stay per-RUN:**
+41 lines × 0.36 ms of painting = 14.8 ms against 4.9 ms of units + 5.07 ms of decode = **+4.8 ms
+net**. That −5.07 ms is also the decode's whole ceiling for these lines (`make VIEWCARVE=1`, ~2.0
+scan / ~3.0 expand — and a per-run takeover reaches only the expand half).
+⚠⚠ **The correctness obstacle, if any of these lines is ever owned, is MIXED CELLS:**
+`m_lineMode[y] = 0` is per-line-ALL-40-CELLS, so a cell owned on some of its 8 display lines and
+written through `mem[]` on the others repaints from a stale byte. Priced: per-cell RMW **1.6 ms
+⛔**; per-row prefix-XOR delta **≈0.9 ms**; per-changed-cell 8-line range test **≈1.1 ms**.
+⚠ **Two decompositions of the same 52.7 ms sweep are in circulation and they are NOT the same
+axis** — `NOUNITS=2` differencing says 32.4 ms driver/entry + 20.4 ms unit loop; §7j's calibrated
+bracket says 29.0 ms unit/run *interior*, of which ~8 ms is destination stores and ~21 ms is
+source/translation/control. Never subtract one from the other.
+
+⭐ **Four candidate causes of the per-line cost were checked and ALL are too small:**
+
+| candidate | measured | verdict |
+|---|---|---|
+| the plants (`view_move_stop`/`view_plant`) | **25 plants a sweep, ~1 ms all phases** | ⛔ not a step — a host census, not the split's 888 cyc/line |
+| the census instrument (`PROBE_VIEW_*`) | ~680 cyc/line ≈ 13% | instrument, and it is inside every figure here |
+| the four spilled invariants | 15 body touches/line ≈ 240 cyc | ⛔ the `column_gap_walk_core` trap — both runs are on pads past the back-edge |
+| phase 2's cold `view_own_run` arm | **16 of 32 runs, one per line** (host census) | ⛔ ~150 cyc/line: a `ViewState` marshal + a call, not a fallback path |
+| the per-line table reads | `lea (0,a3,d7.l),a5` once, then 12-cyc `d16(a5)` | ⛔ already optimal, nothing to hoist |
+| `step_scanline`'s byte-lane dance | ~230 cyc/line (phase 3 ~280, carry tail) | ⛔ **~0.35 ms, not the ~1.4 ms once claimed** — 9 instructions on the common path, the carry arm is 1-in-8 (above) |
+
+⚠⚠ **`copy_dash_data_core(0x80)` at `race_main_loop`'s exit stows the whole $7B00 page back into
+the $3000 block tails**, so the opcode slots and the three `VIEW_REC_*` operands are read,
+persisted and re-assembled into the NEXT race's page. They are cross-RACE state — no RESULTS-RULE
+exemption can treat them as twin-private.
+⚠⚠ **Keep `view_stop_from` as the stop authority and do NOT derive the stop from the tables.**
+The planted stop is a **state machine over `mem[rec]`**: `view_move_stop` returns early when
+`stop_unchanged(stop, mem[rec])` and `unplant_stops` restores `STA` at the end of phase 3, so on a
+phase's FIRST line a table byte equal to the stale record plants nothing and the run legitimately
+runs to unit 39.
+⚠⚠ **And the geometry tables still cannot be precomputed** — `view_run_right_end` ($3080) collides
+with column 1's source block at exactly one byte ($309B, phase 3's topmost line), so every table
+read must happen where the 6502 did it.
+⚠ Phase 2 also carries **one byte of SMC state across its lines on purpose**: the poke of chain B's
+entry sits inside the `stop_unchanged` test, so that entry must be read from `mem[]`, not a local.
+
+⚠⚠ **The unit loop itself is CLOSED** — 43 cyc/unit is what a byte load, a zero test and a byte
+store cost on a 68000, and widening is impossible (destination cells 8 bytes apart, sources 128).
+⚠⚠ Any edit to `paint_cells` must pass **the counting test**: grep the objdump for each loop
+invariant's absolute address and require the count to stay at 1, or the 4× unroll is gone.
+
+#### 2b. ✅ THE SOURCE-BLOCK READER AUDIT IS DONE — `docs/span-render-plan.md` §12b, `make srcaudit`
+The RESULTS-rule gate on "the producers stop maintaining the source blocks in `mem[]`" is
+**written and measured on all five circuits**: no reader outside the view pipeline touches a live
+source byte during a race. What it changed about the plan, and none of it was in the guess it
+replaced:
+- ⚠⚠ **13% of the reads are the producers reading their OWN byte back** to compose two shape edges
+  landing in the same cell. "The producer already knows every byte it writes" is true per STORE and
+  false per CELL, so the replacement representation must carry the composition. **This is the real
+  constraint on the item and it is a design question, not an audit one.**
+- `copy_dash_data` reads the **live span**, not the tails as CLAUDE.md says — but it brackets the
+  race (assemble in, stow out) and never interleaves, so it does not block.
+- Two producers the practice-session window cannot reach go with the rest: `draw_starting_lights`
+  (`$42C0`) and `paint_fence_backdrop`.
+- The gate is `make viewdiff` per circuit plus a scoped `set_ignore` and a `determinism` re-record.
+
+⛔⛔⛔ **AND THE ROUTE IT UNBLOCKS IS NOW CLOSED ON ARITHMETIC — the ceiling is −2.16 ms.**
+`docs/perf-method.md` §producer-emitted source events are closed for good. The scan's 10.00 ms is
+**5.30 walk + 4.70 record**, and only the walk is deletable: the record is 161 event appends that
+have to happen wherever the events come from, and the producer route's ordered insert is strictly
+MORE work than the scan's in-order append. Against a **measured** +3.89 ms call barrier in
+`interp_edge_core`'s loops, best case is −5.30 − 0.75 + 3.89 = **−2.16 ms** — for a new
+representation that must preserve class B's read-modify-write composition, plus a scoped
+`set_ignore`, a `determinism` re-record and per-circuit `viewdiff` gating. **Do not re-open
+without a new number.** Two sub-ideas died with it: bounding the scan by `dash_block_starts` is
+worth exactly ZERO (`s_lowConsume[cell] == dash_block_starts[cell] + 1` on all forty cells — the
+scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
+
+⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
+`copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
+
+#### 2d. ✅ ROWS 158..191 — THE DASHBOARD, DONE AND NOW **DEFAULT ON** (`NEEDLE ?= 1`)
+⭐ Flipped 2026-09-21 after re-measuring on the current baseline: **ph27 16.68 → 15.70** and
+**Σ(1..39)−ph28 −0.80** as the default flip, −1.21 / −1.39 alongside `DUALPF=1`, which is the
+−1.3 to −1.5 this entry predicted. ⚠ The raw frame total reads **+0.08** because ph28 (the
+`50/N` vblank pad) absorbs it — size it against Σ−ph28, as Rule 1a says. It is also a
+PRECONDITION of `LOWOWN=1`, which `#error`s without it.
+Re-opened by the §12c retraction above and then taken: these 34 rows really are worth ~0.086 ms
+each. All four writers are off `mem[]` or mirrored:
+- ✅ the two dash NEEDLES — §12d: a pixel list painted into the planes, erased by a
+  32-pixel-granular rectangle copy out of a cached clean cockpit. Six gates green.
+- ✅ the two WING MIRRORS — a `REVS_PLOT_BYTE` at `mirror_draw_car_core`'s store site. ⚠ Invisible
+  in every practice measurement (an empty track reflects nothing), so its justification is the
+  game's own `mirror_seg_*` tables, not a census.
+- ✅ the GEAR indicator — already `vdu_char_emit`'s, and its rows are 192..207 anyway.
+- ✅ the front-wheel DITHER is at 133..140, i.e. entry 2a's block, not this one.
+Net −1.3 to −1.5 ms of frame: −2.42 of decode against the painter's +1.46 and the 6502 plot's
+−0.56. ⭐ The painter is now the thing eating half the prize — 36 pixels at ~148 cycles each is
+the 68000's price for two byte read-modify-writes, and grouping the pixels that share a byte is
+the only lever left on it.
+
+#### 2a-old. ROWS 117..157 under the pre-§12c model — only 17 of the 41 have a single writer
+`make fbwrites FILL=117-157 FILLFRAMES=15-70` gives the per-line writer set: **117..128 (12) and
+141..145 (5) have the view sweep as their ONLY writer**; 129..132 and 146..157 add
+`undraw_plot_lines` + `plot_line_octant`, and 133..140 add `tick_wheel_spin` (the tyres). Those 24
+rows OR their pixels into `mem[]`, so owning them means they never reach the screen ⇒ **blocked on
+the car becoming sprites/a playfield** (§12's commitments). The 17 ownable rows price at −2.1 ms of
+decode against ~0.6 ms of interval-fill painting = **~−1.5 ms**, in two fragmented blocks needing
+base-plus-delta and a staleness oracle. ⇒ **Deliberately NOT built** (user decision, 2026-09-20):
+entry 3 makes the terrain for every view-sweep-only row bypass `mem[]` anyway, so these rows fall
+out of it and building them first is work entry 3 discards.
+
+#### 5b. ✅ CLOSED — THE CONVERSION IS A COLD-START PATH, AND WHAT IS LEFT IS NOT A DECODE
+**The frame-buffer -> bitplane conversion no longer runs per frame.** Every display line has a
+painter (0..18 + 192..207 the glyph delta base, 83..116 the span sweep, 117..157 the low painter
+plus the cockpit layer, 158..191 the dash base and its rectangles) and the 64-line sky band is
+FLAT — its four palette entries are equal, so no plane bit in it is observable. That band is the
+engine's own bytes showing through screen memory, which is why the picture there was always
+arbitrary and why converting it was pure loss. `convertRace` now runs TWICE per entry into the
+race view; `make DECODEFULL=1` restores the old per-frame pass as the A/B control.
+
+| ms | slot | after |
+|---:|---|---|
+| 0.93 | `snapshotBands` | ⛔ survives — `m_plan` is the COPPER's palette schedule |
+| 1.64 | `buildLineModes` | ⛔ survives, same reason |
+| 2.28 | dynamic rectangles | ⛔ survives — it is the PAINTER that owns 158..191 |
+| 1.11 | ownership / carve walk | **deleted** (it existed only to tell the conversion what to skip) |
+| 0.52 | `convertRace` | **deleted from the per-frame path** (was 17.09 before ownership) |
+
+⇒ `ph27` **10.47 -> 7.83**, frame `Σ(1..39)−28` **155.80 -> 152.77**, i.e. **−3.03 ms**.
+
+⭐⭐⭐ **AND THE `phase 27 remainder` THAT THREE SESSIONS CALLED "3.1 ms UNATTRIBUTED" WAS NEVER
+RACE WORK — it is eight front-end `decodeTeletext()` calls at the top of the window, amortised
+over 337 race frames.** Bracketing the entry BEFORE the teletext test read 2.72 ms with
+`calls=345` against 337 frames; moving the bracket after it sent the row to 0.13 (the control) and
+the 2.7 ms back to 27. ⚠ The lesson is the calls column: **a bracket whose `calls` exceeds the
+frame count is collecting a different population**, and the excess is where its time is.
+⚠ What remains in `ph27` is therefore ~5.1 ms of real per-frame work — all three survivors above —
+plus that boot artefact. The three small rows (entry, post-convert, tail, 0.13-0.24) sit at the
+instrument's floor: the control bracket is 0.13 and the VERTB ISR lands on whichever phase it
+preempts, so nothing under ~0.5 ms in this split is resolvable.
+
+⭐⭐ **THE TRIGGER IS EXACT AND PER FRAME, AND A COLD-FRAME COUNT IS NOT A SUBSTITUTE.** The
+five-circuit census: gap frames stop at frame 2 on Silverstone, Brands, Oulton and Snetterton —
+and at frame **54** on Donington, where a two-frame guess left ~45 stale display lines standing for
+ten seconds of race. `own_has_gap(lo, hi)` is asked from `buildLineModes`, per band, where the
+range is already in registers; a flat band is not asked at all and a wholly owned one costs one
+`cmp.l` per four lines. It cost +0.69 ms against the unsound version.
+⚠ **A gap appearing LATE in a run is the one thing that can put stale pixels on screen**, so
+`g_decodeGapFrames` / `g_decodeGapLastAt` / `g_decodeFrames` are always compiled in. Silverstone
+driving reads `gap frames=1 of 1226`.
+
+✅ `RevsScreen::decode()` is **renamed `prepareFrame()`** (and phase 27 `DECODE` → `PREPARE`) —
+what is left is not a decode.
+
+**What is still owed here:**
+- ⬜ **Delete the dirty machinery nothing reaches any more**: `s_shadow`, `s_shadowMode`, the
+  mode-change bitmask arm of `convertRace`, `DECODESKIP`, `DIRTYCHECK`. The cold path calls
+  `convertRace(dst, 0, 0)`, the NULL-shadow arm, so the other arm is now reachable only from
+  `DECODEFULL=1`. Keep that control until the gap census has run on a full RACE (queue 2c), then
+  delete both.
+- ⚠ **One unexplained 36 bytes**: under `DECODEFULL=1` the `DIRTYCHECK` oracle reports 36
+  mismatching bytes on ONE frame at offset 10680 (display line 133, PF1's second plane), and it
+  does so identically with and without the conversion skip — i.e. it is not either change's. Left
+  on the record rather than waved away.
+
+#### 5b-old. (the pre-§2a framing, kept only for its numbers) 5 ms around 7.2 ms of real work
+`make DECODESPLIT=1` now carves `decode()` SIX ways (§12c added the rect slot). The shipping
+15.04 ms is **0.92 `snapshotBands` + 1.63 `buildLineModes` + 2.00 own/carve + 7.22 `convertRace`
++ 3.02 remainder + 0.11 bracket**. `snapshotBands` + `buildLineModes` must survive forever
+(`m_plan` is the COPPER's palette schedule, §11a), but **the own/carve loops are 2.00 ms of
+per-frame scan over all 208 display lines that exists only because ownership exists**, and the
+**3.02 ms remainder is unattributed**. Neither has ever been read. Cheap and certain, unlike the
+rows.
+
+#### 8. ✅ CLOSED — THE REAL BBC IS PROFILED PER ROUTINE (`make bbcprof`), AND IT RANKS EVERYTHING
+`make refloop` had measured the BBC's FRAME for days; this asks where that frame goes. Routines
+bracketed on a real BBC under jsbeeb **by stack pointer** (at the entry PC the return address is
+already pushed ⇒ returned exactly when S rises back past its entry value: exact, nest-safe, no
+return-address table), subtree cost, median over the same settled window. Same semantics as an
+Amiga phase bracket, which is what makes the columns comparable; an interrupt inside a routine is
+charged to it, exactly as the VERTB ISR is charged to whatever phase it preempts.
+
+| routine | BBC ms | port ms | ratio |
+|---|---:|---:|---:|
+| `build_track_geometry` (ph5) | 21.3 | 26.64 | 1.25× |
+| `draw_road` (ph11) | 18.6 | 34.41 | **1.85×** |
+| `view_paint_lines` (ph24+33+32) | 23.2 | 40.81 | **1.76×** |
+| `fill_dash_edge_columns` (ph18) | 7.0 | 5.94 | **0.85× — the port is FASTER** |
+| `apply_driving_model` (ph4) | 7.8 | 3.61 | **0.46× — 2.2× FASTER** |
+
+⭐⭐⭐ **THE PORT ALREADY BEATS THE 6502 BY UP TO 2.2× WHERE IT DOES ARITHMETIC IN NATIVE C, AND
+LOSES ONLY IN THE THREE ROUTINES THAT WALK `mem[]` BYTE BY BYTE.** ⇒ "a 68000 cannot beat a 6502
+per byte touched" is true and **irrelevant**: the machine was never the constraint, the
+byte-at-a-time REPRESENTATION is. ⛔ And the parity claim one commit earlier is retracted with it —
+it inferred the producers were at parity from an *assumed* 20-30% share; geometry is close at
+1.25×, `draw_road` is not.
+
+**The headroom, and it needs no visual-fidelity trade at all:** the view pipeline is 63.1 ms of the
+BBC's frame (65%) against **101.9 ms of ours (68%), = 1.61×**.
+- at mere 6502 PARITY on those three: **frame ~110 ms**
+- at the 2.16× the driving model already demonstrates: **frame ~77 ms**
+⇒ **48 ms needs ~3× the 6502 on the view pipeline** — hard, but it is an engineering number now
+rather than a wall, and ⛔ **entry 3 is NOT forced: "fewer points / fewer spans" is no longer the
+only route and must not be proposed as one.**
+
+✅ **The `move_and_draw_cars` discrepancy is SETTLED** — a PC-range bracket over its practice
+delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
+on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)

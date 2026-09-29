@@ -537,7 +537,7 @@ ifeq ($(HOLD_STEER),r)
 EXTRA_DEFINES += -DREVS_HOLD_STEER_RIGHT -DREVS_HOLD_THROTTLE
 endif
 
-# ⭐⭐ THE SIMULATION CLOCK (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  The game's
+# ⭐⭐ THE SIMULATION CLOCK (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  The game's
 # simulation steps are owed against real VERTB fields; by default the step is chosen at run time
 # by the CPU — 400 tenths of a ms (25 Hz) on a 68000, 200 (50 Hz) on a 68020 or better.
 # `make SIM_STEP_TENTHS=n` pins it (936 = the engine's own 93.6 ms frame, h = 1).

@@ -209,7 +209,7 @@ make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 make SIMLEGACY=1 # the engine's own loop (one sim step per painted frame) — the default build
-                #   is DECOUPLED (game time = real time, docs/open-work.md §FRAME-RATE-INDEPENDENT)
+                #   is DECOUPLED (game time = real time, docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build).  ⭐ SILENT
                 #   (`--audio_driver=dummy` — a warp run's audio is a screech and no probe reads
                 #   it); `FSUAE_SOUND=1` restores it, `FSUAE_SILENT=1` mutes the audible ./run.sh
@@ -426,13 +426,13 @@ engine frames) or per-render-held — an unclassified one runs 2–4× fast or s
 two ticks must be latched for the tick code that samples it.
 ⚠ **Price render work with `SIMLEGACY=1`** (a decoupled window is a different stretch of game time),
 and quote the decoupled cost from `fps_series.gdb`: 25 Hz steps cost the A500 ~16% of its displayed
-rate today (`docs/open-work.md`).
+rate today (`docs/faithfulness-seam.md` §THE FRAME-RATE-INDEPENDENT SIMULATION).
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
 **Baseline: the bracketed FRAME in `docs/open-work.md`'s header** (`PROBES=1 FIXED_RNG=1
 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000 SIMLEGACY=1` + `phase4_prof.gdb` — ⚠ SIMLEGACY:
-a decoupled window is a different stretch of game time, see docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION, warp, driving, priced with
+a decoupled window is a different stretch of game time, see docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION, warp, driving, priced with
 `diag_run.sh 45`). **This is the number a change is sized against**, and it is both the
 bracketed total (`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to
 0.02 ms, so the brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` is NOT
@@ -540,7 +540,7 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   `cmp.l` per four lines — because a fixed cold-frame count is wrong: gap frames stop at frame 2 on
   four circuits and at frame **54** on Donington. ⚠ And a gap appearing LATE in a run is the one
   thing that can put stale pixels on screen, so `g_decodeGapFrames` / `g_decodeGapLastAt` are
-  always compiled in. `docs/open-work.md` §5b.
+  always compiled in. `docs/perf-method.md` §THE CLOSED QUEUE ENTRIES (queue §5b).
   ⭐⭐⭐ **BUT THE PRIZE IS ONLY HALF AN OWNERSHIP DECISION — RANK A DOMAIN BY ROWS OWNED ÷ WRITER
   SET, because owning a row means RETARGETING EVERY ROUTINE THAT WRITES IT.** The measured
   writer-set ledger (`make fbwrites FILL=all`, §11b) groups all 208 display lines by their writer
@@ -825,9 +825,10 @@ Rules that must survive without opening `docs/perf-method.md`:
 - ⚠⚠⚠ **AND THE BASELINE TRAJECTORY DECIDES WHICH CODE EXISTS AT ALL, NOT JUST HOW HOT IT IS.**
   `STRAIGHT_TO_RACE` is a **PRACTICE** session: the player is alone on track, every car slot is
   empty, and `move_and_draw_cars` (phase 17) therefore reads **0.21 ms** in every measurement this
-  project has taken — 22 empty-slot tests and nothing else. A race draws **2.32 objects a frame
-  against practice's 0.89**, i.e. **~5 ms the standing baseline does not contain**
-  (`docs/perf-method.md` §the object plotter). ⭐ And **gate a session census on the session it is
+  project has taken — 22 empty-slot tests and nothing else. **In the race proper it is 24.7 ms**
+  (object plotter 13.55 at 3.28 objects a frame, AI 4.0, staging 3.8, overtaking 2.8), so the
+  standing baseline hides ~25 ms of a real race — measure one with `make PROBERACE=1 RACEPROPER=1
+  CARSPLIT=1` (`docs/open-work.md` §2c). ⭐ And **gate a session census on the session it is
   about**: `determinism-race` spends ~12000 of its 12600 frames in QUALIFYING, alone on track, so
   an ungated count reads 42% low. Ask what the chosen trajectory never populates.
 - ⚠⚠ **SIZE A ROAD-PASS ROUTINE WHILE DRIVING, NOT PARKED — it is 8x.** `div16by8` runs 7.8 times a

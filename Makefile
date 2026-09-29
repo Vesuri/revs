@@ -654,7 +654,7 @@ determinism-race:
 # entirely PASSES that gate (measured 2026-09-25).  The race proper starts at frame ~3290 on this
 # script and the lights run to ~3458; frame 3375 is mid-sequence, the painted column is on
 # screen, and the same sabotage changes 30 frame-buffer bytes there.  It is the gate on the
-# lights' walk/paint split (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION), whose walk
+# lights' walk/paint split (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION), whose walk
 # runs on the slow tick once a painted frame covers several simulation steps.
 # ⚠ The frame is a property of the autorun script: if the script changes, re-find the window
 # (start_light_state $6D bit 7 set, with session_is_race $6C = $80) before re-recording.

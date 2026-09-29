@@ -642,7 +642,7 @@ The engine steps its whole simulation once per painted frame, and its race clock
 frame, so on the BBC **game speed is the framerate**. The port decouples them: game time is owed
 against real display fields and paid in steps of `h` engine frames. The user chose 25 Hz steps on a
 68000 and 50 Hz on a 68020 or better, with lap times comparable to the original's
-(`docs/open-work.md` §FRAME-RATE-INDEPENDENT SIMULATION has the stages and the measurements). This
+(§The build record below has the stages and the measurements). This
 is a departure, so here is the argument, piece by piece. Each piece says what a player sees.
 
 **What stays byte-exact.** Legacy mode (`Platform::simStepTenths() == 0`, the host default, `make
@@ -726,3 +726,114 @@ with the same airtime. Elsewhere the difference is below what a player sees:
 - **`amiga/sim_clock.gdb` + `tools/sim_clock_report.py`** on the target: steps/s, slow ticks/s and the
   race clock against real time.
 - **The legacy determinism family** gates the split itself.
+
+### The build record — design, stages and measurements (moved here from the open-work queue when it closed)
+The engine steps its whole simulation once per painted frame, and its clock is calibrated to a
+93.6 ms frame (`docs/perf-method.md` §GAME SPEED IS THE FRAMERATE). So game speed = 93.6 / frame ms:
+1.11× today and **1.95× at the 48 ms target**. This item is the fix. It owes a written faithfulness
+argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
+
+**The user's decisions.**
+- **Step rates:** fixed steps tied to vertical blanks — **25 Hz on a 68000, 50 Hz on a 68020 or better**
+  (chosen at run time, the same way as the blitter's CPU choice).
+- **Timestep:** h is **exact**, h = step / 93.6 ms (0.4274 at 25 Hz, 0.2137 at 50 Hz), applied as a
+  Q16 `mulu.w` at the scaled sites. Game time is therefore real time.
+- **Clock:** lap times stay **comparable with the original's**. `add_frame_time` runs bit-exact on a
+  slow tick that fires every 93.6 ms of game time.
+- Precedent: the user's Stunt Car Racer port (`~/Documents/Stunt Car Racer`, CLAUDE.md §Frame Rate
+  Conversion) runs one step per elapsed vertical blank and draws on the last one.
+
+**The design** — review of an outside proposal, verified against the code 2026-09-25.
+- **Units stay; only accumulation over time scales.** Speeds, forces, yaw rate and grip keep their
+  units. The scaled sites:
+  - `integrate_state_rates`: `<<3`/`<<5` × h;
+  - `integrate_car_position`: 2V·h, plus a heading remainder;
+  - the vertical model: −4h, height += v·h, jump height −2h;
+  - the keyboard steering ramp (the mouse is absolute and needs no h; CAS is per painted frame, below);
+  - engine coast: +7h / −12h;
+  - `drive_one_car`: 4·gap·h, 2·speed·h, ±h lateral;
+  - camera pitch smoothing: 1 − 0.5^h.
+
+  Each scaled quantity carries a fraction remainder.
+- **NOT time steps** (leave alone):
+  - the `0x58`/×1.5 lever arms in `stage_lateral_speed_delta` (rear wheel at x−s, front at x+1.5s);
+  - both steer rotations (elements 8/9 are rebuilt every frame from 0/1 — pure geometry);
+  - `0x4E`, `0xCD`, drag, grip, gear ratios and the power curve;
+  - the `>>2` on elements 10..13 — a scale on the ground, because `check_wheel_slip` rewrites them
+    every frame. It is a genuine decay only while airborne, and on the saturation path (stale values),
+    where its consumers are zeroed anyway. This is Stunt Car Racer's ground/airborne damping split
+    again.
+- **The slow tick** (every 93.6 ms of game time, accumulated per step like Stunt Car Racer's
+  `frameThrottleFlag`) runs with its **original constants**:
+  - `tick_race_timers` (the clock, `loop_counter`, AI reseeding);
+  - the lights;
+  - the session countdowns;
+  - starter luck;
+  - the slip-history roll (OR-ed over the tick's steps);
+  - squeal hysteresis;
+  - the `grip_disturbance` draw (held between ticks — drawn every step it averages the grass bumps
+    away);
+  - engine-note chasing.
+- **Once per render, with the value held between steps:**
+  - the surface probe (grip reads two painted pixels);
+  - player placement and the section walk (they come out of `build_track_geometry`, 10.7 ms — never
+    per step);
+  - CAS edge data;
+  - lap timers, contact, crash, shift keys.
+
+  Holding these is faithful or better while a rendered frame is under ~94 ms, because the BBC's own
+  sample is one frame old. ⚠ Per-frame-change thresholds in this code do scale with the render rate
+  and must be converted: `record_section_jump`'s |Δacross| ≥ $16. `rebase_edge_point` subtracts the
+  heading/pitch change **since the last geometry pass**. `advance_player_section` keeps reading ω
+  (a one-BBC-frame predictor in ω's own units).
+- **Cost:** `apply_driving_model` is 3.62 ms a call. 25 Hz steps cost ~9% of a 68000 (+~4 ms on
+  today's frame); 50 Hz would cost ~18% (+~13 ms), which is why the 68000 steps at 25 Hz.
+- **The legacy mode stays**: one step per render, h = 1. Today's loop is byte-exact under the whole
+  determinism family and remains the gate for every refactor. The new modes are gated by a host
+  physical-equivalence suite against h = 1 in game time.
+
+**Status: DONE** — stages 1–6 on 2026-09-25; stage 7, the user's play-test on 2026-09-28: lap timer at real speed, the feel the original's, the A500 price (~16% of the displayed rate) accepted.
+The default Amiga build steps at **25 Hz on a 68000 and 50 Hz on a 68020+**, measured at 24.93 and
+50.03 steps/s, with the race clock 1.000× / 1.003× real time. The written argument is the section above.
+
+Host physics against legacy, in game time (`tools/sim_equiv.py`, T2 pinned):
+- **throttle:** 0.5% (h = 0.43) and 0.7% (h = 0.21);
+- **AI:** all 20 cars within 1 speed unit and on the same segment for 20 s;
+- **steering:** tracks up to the spin, which happens at the same moment in every mode;
+  ⭐ timed to the frame (2026-09-28, the user asked whether the car loses grip too easily): the
+  first |lateral slip| > 2 under a held key comes at left/right **3.65/3.18 s legacy, 3.60/3.24
+  h400, 3.46/3.26 h200, 3.64/3.28 h200x2** — within ±0.2 s, i.e. ~two legacy frames — and the slip
+  before it is 3-10% LOWER decoupled, so no step size loses grip more easily than the engine's own
+  loop, which the lockstep holds byte-identical to a real BBC;
+- **jump:** peak 64 against 61, same airtime (with the launch-bias compensation);
+- **lap timer:** 0.9965–1.005× real time.
+
+⚠⚠ **THE PRICE ON THE A500 — displayed framerate ~12.5 → ~10.5 fps** (`fps_series.gdb`,
+reset-free rows, `SIMLEGACY=1` against the default build). ph3 + ph4 go 5.73 → 14.30 ms a painted
+frame: ~2.8 steps of ~3.1 ms (controls ~1.7 ms a step, driving model ~3.5). It is a tax on WALL
+time (25 steps/s ≈ 13% of the CPU), so it costs about the same fraction at any render speed.
+⇒ At today's ~10 fps render, 25 Hz steps buy physics accuracy, not visible smoothness: a step
+finer than the display frame is not seen. Levers, cheapest first:
+- ✅ the controls' key polling per step — in line now (`revs_keys.h`, 660 → 247 instructions a
+  step); the ~1.7 ms once quoted here was an AUTORUN build's figure;
+- a slower 68000 step until the render is near 40 ms (a user decision);
+- the driving model itself.
+
+⚠ **Price render work with `SIMLEGACY=1`**: a decoupled window covers a different stretch of game
+time (60 s, where legacy's 1.1× speed covers ~66 s), so its phase table measures a different
+workload (84.80 → 85.39 bracketed, while the displayed rate fell 16%).
+
+**Stages** (each gated before the next):
+1. Byte-exact split into `sim_step` / `legacy_tick` / `render_frame`, scheduler at 1:1:1.
+   `move_and_draw_cars`, `update_camera_and_height`, the controls read, starter luck, the slip
+   roll and the disturbance draw are divided; every reordering is proved by a reader/writer audit.
+   Gate: determinism ×5 + `transtrap`.
+2. The scheduler with the physics unchanged (h = 1, one step per 93.6 ms): the since-last-geometry
+   rebase, a catch-up cap, the backlog discarded on the crash hold / reset / front end, a scripted
+   field count on the host.
+3. The h conversion. Gate: the equivalence suite (acceleration, braking, cornering yaw rate, jump
+   airtime, AI lap times) plus sabotages.
+4. The per-frame-change thresholds and the written holding argument.
+5. The Amiga rate choice, and probes for steps a frame and dropped steps.
+6. Docs (CLAUDE.md's GAME SPEED rule).
+7. The user play-tests it.

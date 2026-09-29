@@ -4321,7 +4321,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
 /* The idiomatic core.  `depth` is how much of the session state the FIRST pass resets, which
    is the only thing the 6502 prologue decides before the loop starts. */
 /* ⭐⭐ THE SIMULATION CLOCK — how many simulation steps a painted frame covers, and which of
-   them carry the SLOW TICK (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).
+   them carry the SLOW TICK (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).
    A step advances game time: the player's controls and driving model, and the other cars'
    moves.  The slow tick is the engine's own 93.6 ms frame, and it runs what counts frames
    with the original constants — the race clock (so lap times stay the original's), the lights.
@@ -4432,7 +4432,7 @@ static int sim_slow_tick_due(void)
    sites read.  Speeds, forces, the yaw rate and grip keep the engine's units (per 93.6 ms
    frame); only what ACCUMULATES over time is multiplied by h — the velocity and position
    integrators, the heading, gravity, the engine's coasting, the keyboard steering ramp, the
-   other cars' moves, the camera's smoothing (docs/open-work.md §FRAME-RATE-INDEPENDENT
+   other cars' moves, the camera's smoothing (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION
    SIMULATION has the verified list and the NOT-a-timestep list beside it).
    Q16, and 0 means EXACTLY 1: legacy mode and the h = 1 decoupled mode then run the engine's
    own arithmetic at every scaled site, which is what keeps every determinism gate byte-exact.
@@ -4451,7 +4451,7 @@ uint8_t  sim_render_ticks = 1u;
    it as "running" — only when h < 1, the one case with steps between two walks (at h = 1 every
    step is a tick, and a validate fixture's random state must not see a stale latch). */
 uint8_t  sim_engine_caught;
-/* ⭐ ONCE PER PAINTED FRAME, BUT MEASURING ENGINE FRAMES (docs/open-work.md §FRAME-RATE-INDEPENDENT
+/* ⭐ ONCE PER PAINTED FRAME, BUT MEASURING ENGINE FRAMES (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION
    SIMULATION, stage 4).  engine_sound_update moves the note one unit a call and is called four
    times a painted frame, so its slew is four units per ENGINE frame: decoupled, it draws on a
    budget that accrues four units per 93.6 ms of game time, step by step (sim_note_accrue — a
@@ -7638,8 +7638,8 @@ void view_origin_marshal_out(void)
         stage_lateral_speed_delta subtracts the yaw rate's lever arm s, the next four sub-models
         run against x - s (the REAR axle), and then the entry value is restored and 1.5s added
         (lateral_speed_delta_lo/hi) for the FRONT axle.  Geometry, not a timestep (⚠ formerly
-        described here as a hand-integrated accumulator; docs/open-work.md
-        §FRAME-RATE-INDEPENDENT SIMULATION depends on the difference).
+        described here as a hand-integrated accumulator; docs/faithfulness-seam.md
+        §THE FRAME-RATE-INDEPENDENT SIMULATION depends on the difference).
 
      3. THE OFF-POWER GATE.  Once car_height reaches 2 — the car is in the air, or $7F from
         check_crash — elements 5..7 of the state vector are forced to zero instead of being
@@ -13674,7 +13674,7 @@ static uint8_t engine_coast_arm(uint8_t carryIn)
     uint8_t a = engine_revs;                                        /* $499F */
     uint8_t x = (uint8_t)(pedal_mode - 1);       /* $49A1-$49A3 — LDX pedal_mode; DEX (X escapes) */
     if (sim_h_q16) {
-        /* ⭐ x h (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  Both arms are RATES
+        /* ⭐ x h (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  Both arms are RATES
            per engine frame: the creep adds 7 + carry, and the fall subtracts 12 from wherever
            the creep left it and adds the jitter back — so a failed creep nets 7 + c - 12 + J.
            The floor is a LEVEL (0x28 + J every frame), so it needs no h. */
@@ -15655,7 +15655,7 @@ uint8_t menu_wait_key_core(uint8_t count)
    so the shim can reproduce that push's stack residue; exit regs/flags are dead at
    the sole (native) caller, race_main_loop.
    ⭐ TWO HALVES, because they run at DIFFERENT RATES once the simulation is decoupled from
-   painting (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).  Walking the sequence is
+   painting (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  Walking the sequence is
    elapsed time — a 64-frame dwell, one state per frame — so it belongs to the slow tick.
    Painting the column is a view SOURCE write, and the sweep consumes sources destructively,
    so it has to happen on every painted frame whether or not a tick fell inside it.  The
@@ -18106,8 +18106,8 @@ void reject_all_object_slots_core(void)
    And nothing is bought by paying it — the delay exists to slow practice to RACE pacing, and the
    port is already 12x below 50 Hz.  Keep the memory effect, drop the cycles.
    (docs/perf-method.md §twin #179's delay loop) */
-/* ⭐ `steps` is how many simulation steps this painted frame covers (docs/open-work.md
-   §FRAME-RATE-INDEPENDENT SIMULATION): the other cars MOVE once per step and are DRAWN once.
+/* ⭐ `steps` is how many simulation steps this painted frame covers (docs/faithfulness-seam.md
+   §THE FRAME-RATE-INDEPENDENT SIMULATION): the other cars MOVE once per step and are DRAWN once.
    Their moves stay here, after the car-ahead un-reject, rather than beside the player's step,
    because drive_one_car's across-track nudge reads that slot's reject bit — so this is the
    one place in the frame where they see the state they always saw. */

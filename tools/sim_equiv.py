@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """THE PHYSICAL-EQUIVALENCE CHECK for the frame-rate-independent simulation.
 
-Four decoupled step sizes can never be byte-exact against the 6502 (docs/open-work.md
-§FRAME-RATE-INDEPENDENT SIMULATION), so they are gated here instead: the same scripted drive
+Four decoupled step sizes can never be byte-exact against the 6502 (docs/faithfulness-seam.md
+§THE FRAME-RATE-INDEPENDENT SIMULATION), so they are gated here instead: the same scripted drive
 in legacy mode (one engine step per painted frame, 93.6 ms of game time each) and in decoupled
 modes on the host, compared as functions of GAME TIME.
 

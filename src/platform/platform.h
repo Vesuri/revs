@@ -184,7 +184,7 @@ public:
     virtual uint32_t hwMicros();
 
     /* ⭐⭐ THE SIMULATION CLOCK's two inputs (race_main_loop_core §THE SIMULATION CLOCK,
-       docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).
+       docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).
        simStepTenths — the game time one simulation step covers, in tenths of a millisecond;
        0 selects LEGACY mode (one step per painted frame, the engine's own loop), which is the
        default and what every determinism gate runs.

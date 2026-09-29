@@ -262,7 +262,7 @@ uint32_t PlatformAmiga::hwMicros()
 #endif
 }
 
-// ⭐⭐ THE SIMULATION CLOCK's inputs (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION).
+// ⭐⭐ THE SIMULATION CLOCK's inputs (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).
 // The step is chosen by the CPU (user decision): a 68000 steps at 25 Hz — the best a stock
 // A500 can display is 25 fps, and a step there costs ~3.6 ms of driving model — and a 68020 or
 // better at 50 Hz, one step per field.  `make SIM_STEP_TENTHS=n` overrides it (936 = the engine's

@@ -1,4 +1,4 @@
-# ⭐ DOES GAME TIME RUN AT REAL TIME?  (docs/open-work.md §FRAME-RATE-INDEPENDENT SIMULATION)
+# ⭐ DOES GAME TIME RUN AT REAL TIME?  (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION)
 #
 # Samples the simulation clock's counters every 250 EMULATED fields (5 s) from field 500 to 3000
 # and prints them; tools/sim_clock_report.py turns each reset-free interval into steps and slow
