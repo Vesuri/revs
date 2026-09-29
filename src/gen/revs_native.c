@@ -18151,11 +18151,17 @@ void move_and_draw_cars_steps(unsigned steps)
     uint8_t aheadSlot = mem[MEM_car_order + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
     mem[MEM_car_flags_shape + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
 
-    while (steps-- != 0u)
-        drive_other_cars();                                    /* $2649 — the per-car update engine */
-    car_distance_marshal_in();                         /* check_car_pair walks every pair in
+    /* ⭐ One overtaking check PER STEP, as on the BBC, where every drive is followed by one: the
+       swap window is 10 units and a car closes up to ~3 a step, so checking once after several
+       steps (the decoupled sim's 25 Hz at a low framerate) can let a car pass straight through
+       the window unbooked — car_order goes stale and the view and the mirrors, which stage cars
+       by it, show the wrong ones.  At steps = 1 (legacy mode, the gate) this is the 6502's order. */
+    while (steps-- != 0u) {
+        drive_other_cars();                            /* $2649 — the per-car update engine */
+        car_distance_marshal_in();                     /* check_car_pair walks every pair in
                                                           car_order, so the whole distance array */
-    check_car_pair_core();                             /* $264C — overtaking / position changes */
+        check_car_pair_core();                         /* $264C — overtaking / position changes */
+    }
     reject_all_object_slots_core();                    /* $264F */
     find_player_neighbours_core();                     /* $2652 */
 
