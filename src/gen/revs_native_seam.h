@@ -214,7 +214,9 @@ typedef struct { uint8_t hi; int declined; } SlipRef;
 typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effect; row=X, line=A/Y */
 typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
 typedef struct { uint8_t mag; uint8_t dir; uint8_t reading; } AdcRead;   /* distance from centre, its sign, and the raw MOS reading that leaks out in Y */
-typedef struct { uint8_t a, n, c; } GapTail;
+/* ring_gap's answer: the signed gap the short way round (meaningless when far), whether the pair
+   is 128+ units apart, and whether the short way crosses the start line. */
+typedef struct { int16_t gap; uint8_t far, wrapped; } RingGap;
 /* stage_nearby_car_core's decision: reject == 1 -> the shim calls reject_object_slot; otherwise
    y is the view-section cursor to pass into place_car_world_coords ($2922 TAY). */
 typedef struct { int reject; uint8_t y; } StageNearbyCar;
@@ -617,15 +619,14 @@ void    mul8_noinit_regs(HookRegs *r);   /* $0C02 with the file as a value */
 EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY);   /* $4626's entry X/Y — build_track_geometry's exit */
 void build_player_car_native(void);
 
-unsigned car_gap_lo_core(uint8_t a, uint8_t b);
-GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
-StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
+RingGap ring_gap(uint8_t from, uint8_t to, unsigned borrow);
+StageNearbyCar stage_nearby_car_core(RingGap g, uint8_t slot);
 void    stage_nearby_car_at_core(uint8_t orderIndex);
 void    move_and_draw_cars_core(void);
 void    move_and_draw_cars_steps(unsigned steps);   /* the frame driver's: `steps` moves, one draw */
 void draw_car_field_core(void);
 void check_car_pair_core(void);
-void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
+void car_order_swap_core(uint8_t i, uint8_t j);
 void clamp_near_edge_cursor_core(uint8_t candidate);
 void clamp_near_edge_window_core(uint8_t nearSlots);
 void clear_race_clock_core(uint8_t x);

@@ -16302,8 +16302,16 @@ static void read_driving_controls_core(void)
 void read_driving_controls_frame(void)  { model_state_marshal_in(); read_driving_controls_core(); }
 void read_driving_controls(void)        { car_angle_marshal_in(); read_driving_controls_frame();
                                           car_angle_marshal_out(); }
-void steer_demand_from_slip(void)       { model_state_marshal_in(); car_angle_marshal_in(); steer_demand_from_slip_core();
-                                          car_angle_marshal_out(); }
+/* ⚠ The exit V is $15FE abs16_math's on the negative arm: its closing `SBC math_hi` ($0E4D) sets
+   V and nothing downstream of it on this path writes V again (LSR/ROR/CMP and the limiter do not),
+   so the oracle leaves it there.  The positive arm skips the negate and V passes through. */
+void steer_demand_from_slip(void)
+{
+    model_state_marshal_in(); car_angle_marshal_in();
+    steer_demand_from_slip_core();                  /* reads model_state, never writes element $0A */
+    steer_slip_negate_v();
+    car_angle_marshal_out();
+}
 void steer_apply_with_assist(void)      { car_angle_marshal_in(); steer_apply_with_assist_core();
                                           car_angle_marshal_out(); }
 void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering_assist_core();
@@ -16785,101 +16793,39 @@ void car_distance_marshal_out(void)
     for (unsigned x = 0; x < CAR_SLOTS; x++) car_distance_marshal_out_one((uint8_t)x);
 }
 
-/* $27A4  car_gap  (twin #125)
-   Byte 0 of the 24-bit separation between cars Y and X.  Only this subtract's BORROW
-   survives into the shared three-byte tail (car_gap_tail) — the low difference itself is
-   discarded there — so the twin's whole job is to hand that tail the right carry. */
-unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
-
-/* $27AB  car_gap_tail — SIGNED GAP AROUND THE RING  (twin #137)
-   The shared three-byte tail every car_gap ($27A4) and its two other callers ($10E1, $28FD)
-   fall into.  Forms the signed 16-bit separation  D = car_distance[Y] - car_distance[X]  (the
-   borrow is chained from the entry carry — car_gap's byte-0 subtract, or a plain SEC), takes
-   |D|, then reduces it around a circular track of circumference lap_length:
-
-       * D's high byte is zero      -> the gap IS |D|            (near pair, "direct" branch)
-       * otherwise                  -> the shorter way is  lap_length - |D|   ("wrapped" branch)
-
-   Products written to memory:
-       math_lo       = the reduced gap's low byte
-       math_hi       = |D|'s high byte
-       hypot_min_hi  = a per-call sign bit rotated into this shift register: a 1 on the direct
-                       branch, a 0 on the wrapped branch (bit 6 of hypot_min_hi later selects
-                       negate-vs-accumulate for the caller's sort).
-
-   The original saves D's sign (PHP), and on the wrapped branch FLIPS it (PLA/EOR #$80/PHP) so
-   the final abs8 re-signs the complement the opposite way round.  Both are modelled here as
-   plain booleans; abs8/abs16_math are inlined as the binary negates they are (D = 0 always —
-   race logic, not a BCD site).
-
-   Exit ABI — the three registers/flags callers actually read ($10E1 and $28FD test C then use
-   A; check_car_pair tests C, then N, then compares A):
-       C = 1 on the three "far" exits (SEC at $27EB), 0 on the two in-range exits (CLC $27E8)
-       N = the sign of the returned A          A = the reduced gap byte the caller compares
-   V and Z are dead at every caller.  The PHP/PLP stack byte ($01FF) is the oracle's only
-   residue the twin does not reproduce; the fixture ignores it. */
-
-GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
+/* $27A4 car_gap / $27AB car_gap_tail — HOW FAR AHEAD, ROUND THE LAP  (twins #125, #137)
+   The signed distance from car `from` forward to car `to`, the SHORT way round a lap of
+   lap_length units: D = distance[to] - distance[from], less a `borrow` the caller supplies (car_gap's
+   finer subtract of the two cars' in-section offsets; none for the other two callers).  When |D|
+   is a whole byte or more the short way is the other way round, lap_length - |D|, with the
+   opposite sign — and `wrapped` says so, because the pair then straddles the start line.
+   `far` = 128 or more units apart the short way; every caller tests it first, and `gap` means
+   nothing when it is set.
+   ⚠⚠ Near vs wrapped is decided on |D|, NOT on D: $27C2's BEQ tests the Z that abs16_math's
+   closing `SBC math_hi` left ($0E4D).  Deciding on D's raw high byte read every NEGATIVE near gap
+   ($FFxx) as wrapped-and-far, so check_car_pair never saw a car draw level from behind: no
+   overtake was booked, car_order went stale, and the view and the mirrors — which stage cars by
+   car_order — showed the wrong cars (the user's "a car in the mirror never appears in the view").
+   The oracle hid it, because the abs16_math shim dropped those flags too; the race-proper
+   lockstep against a real BBC found it at frame 80.
+   ⚠ lap_length stays in mem[]: it is TRACK-FILE data an expansion circuit's hook can patch.
+   The 6502 register contract (A/N/C, math_lo/math_hi, the hypot_min_hi shift register) lives
+   only in the oracle shims, car_gap / car_gap_tail (revs_native_seam.c). */
+RingGap ring_gap(uint8_t from, uint8_t to, unsigned borrow)
 {
-    /* D = dist[Y] - dist[X], 16-bit, borrow chained from the entry carry.
-       The 6502's two SBCs with a borrow chained between them ARE one
-       16-bit subtract, and the entry carry is just its incoming borrow — nothing to hand-carry. */
-    int      d     = (int)car_distance_16[y] - (int)car_distance_16[x]
-                   - (carryIn ? 0 : 1);
-    uint8_t  maglo = (uint8_t)d;
-    uint8_t  dhi   = (uint8_t)((unsigned)d >> 8);   /* raw high byte of D (its sign, saved by PHP) */
-    unsigned n1   = (dhi >> 7) & 1u;               /* D negative? */
-    unsigned z1   = (dhi == 0);                    /* D's high byte zero? -> near pair */
-
-    uint8_t maghi = dhi;
-    if (n1) {                                      /* |D| via abs16_math: negate (dhi:maglo) */
-        uint16_t mag = (uint16_t)(0u - (uint16_t)(((uint16_t)dhi << 8) | maglo));
-        maglo = (uint8_t)mag;
-        maghi = (uint8_t)(mag >> 8);
+    const int16_t  d   = (int16_t)(uint16_t)(car_distance_16[to] - car_distance_16[from] - borrow);
+    const uint16_t mag = (uint16_t)(d < 0 ? 0u - (uint16_t)d : (uint16_t)d);
+    RingGap r;
+    if (mag < 0x100u) {
+        r.wrapped = 0;
+        r.far     = (mag >= 0x80u);
+        r.gap     = (int16_t)(d < 0 ? -(int)mag : (int)mag);
+    } else {
+        const uint16_t comp = (uint16_t)((uint16_t)(lap_length_lo | (lap_length_hi << 8)) - mag);
+        r.wrapped = 1;
+        r.far     = (comp >= 0x80u);
+        r.gap     = (int16_t)(d < 0 ? (int)comp : -(int)comp);
     }
-    math_lo = maglo;
-    math_hi = maghi;
-
-    GapTail r;
-    if (z1) {
-        /* DIRECT: rotate a 1 into the sign register (C = 1 from the SEC at $27C1). */
-        hypot_min_hi = (uint8_t)((hypot_min_hi >> 1) | 0x80u);
-        if (maglo >= 0x80u) {                       /* $27DE BCS -> far exit (PLP/SEC) */
-            r.a = maglo; r.n = (uint8_t)n1; r.c = 1;/* n1 == 0 here (high byte is zero) */
-            return r;
-        }
-        /* abs8 with N = n1 = 0: no negate; CLC. */
-        r.a = maglo; r.n = (uint8_t)((maglo >> 7) & 1u); r.c = 0;
-        return r;
-    }
-
-    /* WRAPPED: complement = lap_length - |D|, with the saved sign flipped for the re-sign.
-       The 6502's SBC pair is one 16-bit subtract.  Its borrow into the
-       high lane is the wide subtract's own, and the byte the $27D5 branch tests is that
-       subtract's high byte — so there is no carry to spell out and no `clo`/`c3` to carry it.
-       ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
-       patch it at runtime, so the pair is read wide per call rather than relocated to a global
-       (docs/wide-value-cleanup.md §FOURTH eligibility test). */
-    unsigned flipped = n1 ^ 1u;                     /* P2's N (the PLA/EOR #$80 flip) */
-    uint16_t lap     = (uint16_t)(lap_length_lo | (lap_length_hi << 8));
-    uint16_t mag16   = (uint16_t)((maghi << 8) | maglo);
-    uint16_t comp    = (uint16_t)(lap - mag16);
-    uint8_t  comp_lo = (uint8_t)comp;
-    math_lo = comp_lo;
-    if ((uint8_t)(comp >> 8) != 0) {                /* $27D5 BNE -> far exit (PLP/SEC) */
-        r.a = (uint8_t)(comp >> 8); r.n = (uint8_t)flipped; r.c = 1;
-        return r;
-    }
-    /* complement fits in a byte: rotate a 0 into the sign register (CLC at $27D7). */
-    hypot_min_hi = (uint8_t)(hypot_min_hi >> 1);
-    if (comp_lo >= 0x80u) {                         /* $27DE BCS -> far exit (PLP/SEC) */
-        r.a = comp_lo; r.n = (uint8_t)flipped; r.c = 1;
-        return r;
-    }
-    /* abs8 with N = flipped: negate the complement iff D was positive; CLC. */
-    uint8_t a = flipped ? (uint8_t)(0u - comp_lo) : comp_lo;
-    math_lo = a;
-    r.a = a; r.n = (uint8_t)((a >> 7) & 1u); r.c = 0;
     return r;
 }
 
@@ -17798,18 +17744,13 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
     return (i >= 0x14u) ? 0x00u : i;
 }
 
-/* $267F car_order_swap — exchange car_order[xi] and car_order[yi].  On exit the 6502
-   leaves X = the value now at [xi] (old [yi]) and Y = the value now at [yi] (old [xi]),
-   and parks old [xi] in the math_lo scratch. */
-void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY)
+/* $267F car_order_swap — exchange two entries of the running order.  (The 6502's exit X/Y and
+   its math_lo parking are the oracle shim's to rebuild; no native caller reads them.) */
+void car_order_swap_core(uint8_t i, uint8_t j)
 {
-    uint8_t oldX = mem[MEM_car_order + xi];
-    uint8_t oldY = mem[MEM_car_order + yi];
-    math_lo = oldX;                              /* $2682 — the scratch the oracle writes */
-    mem[MEM_car_order + xi] = oldY;
-    mem[MEM_car_order + yi] = oldX;
-    *outX = oldY;
-    *outY = oldX;
+    const uint8_t t = mem[MEM_car_order + i];
+    mem[MEM_car_order + i] = mem[MEM_car_order + j];
+    mem[MEM_car_order + j] = t;
 }
 
 /* $63A2 find_player_neighbours — locate the player's own car in the running order and
@@ -17994,12 +17935,11 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
     /* 3. re-anchor the pace car ($17): advance it until its gap to the player is exactly $20 the
        near way (car_gap_tail: C set = far side, so keep going; A == $20 = the target gap) */
     {
-        GapTail g;
+        RingGap g;
         do {
             track_pos_advance_core(0x17u);
-            /* C = 1 is the subtract's entry borrow-in — a genuine input, not a residue. */
-            g = car_gap_tail_core(player_car, 0x17u, 1u);
-        } while (g.c || g.a != 0x20u);
+            g = ring_gap(player_car, 0x17u, 0u);         /* $10E1 — SEC: no finer term */
+        } while (g.far || g.gap != 0x20);
     }
 
     /* 4. back the pace car up $31 units, then on to the previous segment boundary, counting every
@@ -18605,8 +18545,7 @@ void reset_driving_variables_core(void)
            session_is_race, so the practice arm is the one where it is CLEAR. */
     uint8_t retreatDepth = 0x01u;                      /* $1838 LDA #$01 — the race depth */
     if (!(session_is_race & 0x80u)) {
-        uint8_t swappedX, swappedY;                    /* car_order_swap's exit pair, dead here */
-        car_order_swap_core(practice_start_slot, zp_scratch_index, &swappedX, &swappedY);
+        car_order_swap_core(practice_start_slot, zp_scratch_index);
         find_player_neighbours_core();                 /* $1846 — the order just changed */
         retreatDepth = practice_field_spread;          /* $1849 */
     }
@@ -18825,24 +18764,24 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
        that magnitude into car_section_across, so this hand-off is literally "a fast car runs wide
        in the coming corner" ([DERIVED] 2026-09-08 on a real BBC; see the section_curve row).
 
-   math_lo ($74) is car_gap_tail's reduced-gap byte, and on every near exit it equals the returned
-   A (car_gap_tail_core: direct-near and wrapped-near both set r.a == math_lo), so the core reads
-   the return and never mem[MATH_LO].  The one remaining MATH_LO touch is the faithful |gap|
-   writeback at $290b, which the object-queue tail inside place_car_world_coords reads back.
+   The routine's working cells — the reduced gap car_gap_tail leaves in math_lo/math_hi/
+   hypot_min_hi and the |gap| it stores back at $290B — are read only inside this routine
+   (def-use audit, a competition race on all five circuits, 2026-09-28; the one other reader, the
+   view chain at $7C77, is an interrupt-time read charged to the interrupted PC), so they are locals
+   and the fixture ignores them (docs/validation-harness.md §THE RESULTS RULE).
    D=0 on this path (docs/static-map.md §Decimal mode: no SED on the car/geometry path).
 
    Exit A/X/Y/flags are dead: move_and_draw_cars reloads X from $1D and Y from $62F4 after the
    first call and reads nothing from the second (it returns) — so the fixture is result-only. */
-StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot)
+StageNearbyCar stage_nearby_car_core(RingGap g, uint8_t slot)
 {
     StageNearbyCar r = { 1, 0 };                             /* default: reject */
 
-    if (gapFar) return r;                                    /* $2900 BCS — far */
-    if (((uint8_t)(gapA ^ track_direction)) & 0x80u)         /* $2902-04 EOR/BMI — wrong side */
+    if (g.far) return r;                                     /* $2900 BCS — far */
+    if ((g.gap < 0) != ((track_direction & 0x80u) != 0))     /* $2902-04 EOR/BMI — wrong side */
         return r;
 
-    uint8_t mag = abs8_value(gapA);   /* $2908 abs8 */
-    math_lo = mag;                                           /* $290b STA $74 — faithful writeback */
+    const uint8_t mag = (uint8_t)(g.gap < 0 ? -g.gap : g.gap);   /* $2908 abs8 */
     if (mag >= 0x28u) return r;                              /* $290d-0f CMP #$28 / BCS reject */
 
     /* Y = section_cursor - 3*|gap|, +$78 if it wraps below zero (8-bit throughout). */
@@ -18860,198 +18799,138 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
     return r;
 }
 
-/* $2692  check_car_pair  (twin #163)
-   The per-frame OVERTAKING / POSITION-CHANGE pass, called twice a frame (the driving loop's
-   $1181, and $264C).  It walks car_order BACKWARDS from zp_scratch_index ($03) — pos,
-   dec(pos), dec... wrapping mod-20 (car_index_dec) until it comes back to the start — and for
-   each pos compares the car there (firstSlot) against the car one place behind it (secondSlot)
-   by the signed ring gap car_gap returns.  Three arms:
+/* $2692  check_car_pair — THE OVERTAKING PASS  (twin #163)
+   Called twice a frame (the driving loop's $1181, and move_and_draw_cars' $264C).  Walks the
+   running order once round from zp_scratch_index, and for each position compares the car there
+   with the car one order position down (car_index_dec), by how far that neighbour is ahead of it
+   round the lap (ring_gap, with the two in-section offsets as the finer term):
 
-     (a) FAR / already in order  (car_gap C set)          -> no-op tail.
-     (b) OUT OF ORDER, close behind  (N set, gap >= $F6)  -> SWAP the pair in car_order, rotate
-         a 1 into bit7 of position_swap_flag ($62FE) so the leaderboard redraws, and — when the
-         player is one of the two cars and both are on the same lap — add the pass amount
-         ($99 = BCD -1 if the player LOST the place, $01 if the player GAINED it) to the BCD
-         counter pass_count_bcd ($2F).
-     (c) POSITIVE small gap (< 5)  -> the PROXIMITY arm: from the 16-bit speed difference
-         firstSlot-secondSlot (sign -> shared_temp_76), the two cars' state_2 ($0178), the User
-         VIA T2 entropy ($FE68) and the per-circuit SMC compare at $2771, it derives a view/AI
-         cursor byte (span_line_cursor) that it writes into car_race_flags[firstSlot] and folds a
-         magnitude+sign into car_across_drift[firstSlot].
+     - FAR apart (128+ units): nothing but the tail.
+     - NEGATIVE and within 10 units: the pair is out of order — SWAP them in car_order, flag the
+       leaderboard for a redraw (position_swap_flag), and when the player is one of the two and
+       both are on the same lap, add to pass_count_bcd: $99 (BCD -1) if the player was overtaken,
+       $01 if the player overtook.  ⭐ "Same lap" allows for a pass across the start line: when the
+       short way round wraps, the car ahead on the road has booked one lap more ($26D6's ROL $79
+       picks that borrow out of the bit car_gap_tail rotated in — `wrapped` here).
+     - 0..4 units, the neighbour faster: the PROXIMITY arm.  It builds the front car's new race
+       flags — bit 6 "alongside" (gap under 4), bit 7 the neighbour's speed advantage, bit 4 "take
+       avoiding action" — and may set a drift command (car_across_drift: bit 7 which side, the
+       magnitude from the speed difference, clamped 4..$1E) to move the front car across.
 
-   math_lo ($74) is the reader-nat target: set to firstSlot, overwritten by car_gap's reduction,
-   then reused as the ROR-accumulated proximity byte.  ⚠ CRUX (#159): car_gap and car_order_swap
-   both write $74 mid-routine through the SAME native cores both models call, so this twin never
-   caches math_lo across those calls — it reads/writes mem[MATH_LO] inline, byte-exact until the
-   $74 relocation.  The other scratch cells (math_hi/hypot_min_lo/hypot_min_hi/shared_temp_76/
-   shared_temp_77 and the mem[$0083] magnitude scratch — point_delta_hi reused, see rename note)
-   keep their 6502 exit values in mem[] too.
+   The tail then stores the new flags unless the car's flags have bit 0 set (a car the race logic
+   holds).  On the swap arm the flags go to the car that was the neighbour: the 6502's X is left on
+   it by car_order_swap, and nothing clears the fresh flags byte first.
 
-   ⚠ ONE BRACKETED SED SITE: only the pass-count ADC at $26DD is decimal (it goes through
-   `bcd_add`); every other subtract in the routine runs with D=0 and is plain binary C.  Exit A/X/Y/flags are dead — both
-   callers reload X immediately after — so this is result-only (LIVE_NONE, mem[]-only compare). */
+   ⭐ ALL OF THE 6502'S WORKING CELLS ARE LOCALS — shared_temp_76 (the speed bit), math_lo (the
+   drift side), point_delta_hi (the magnitude), span_line_cursor (the flags being built),
+   shared_temp_77 / hypot_min_lo (the two positions) and the hypot_min_hi shift register.  The def-use
+   audit (`make rangeaudit DEFUSE=1` on a COMPETITION race — the pass never runs in practice —
+   Silverstone and all four expansion circuits, 2026-09-28) found every one of their stores read only
+   inside this routine and car_gap_tail; the only other readers were single interrupt-time reads
+   charged to the interrupted PC (a BCS at $1EBC, MOS ROM), which the port's ISR does not make.
+   So they are the 6502's working notes, not results (docs/validation-harness.md §THE RESULTS RULE),
+   and the fixture ignores them.
+   ⚠ ONE BCD SITE: the pass-count add ($26DD SED ... $26E5 CLD); every other sum is binary. */
 void check_car_pair_core(void)
 {
-    /* The proximity arm's tail is a five-stage chain the 6502 enters at four different points
-       ($2742/$2744/$2749/$277D/$2786).  In C that is one classification followed by two flags:
-       `publish` runs the car_across_drift store and `setBit` the cursor's bit4 — and publish implies
-       setBit, exactly as $277D falls through into $2786. */
-    enum ProxOutcome { PROX_TAIL, PROX_PUBLISH, PROX_SETBIT, PROX_NONE };
-
     uint8_t pos = zp_scratch_index;                          /* $2692 LDX $03 */
 
     for (;;) {
-        shared_temp_77 = pos;                                /* $2694 STX $77 */
-        uint8_t firstSlot  = mem[MEM_car_order + pos];           /* $2696 */
-        math_lo = firstSlot;                                 /* $2699 (car_gap overwrites it) */
-        uint8_t posBehind  = car_index_dec_core(pos);        /* $269b */
-        uint8_t secondSlot = mem[MEM_car_order + posBehind];     /* $269e */
-        hypot_min_lo = posBehind;                            /* $26a1 STX $78 */
-        span_line_cursor = 0x00u;                            /* $26a6-a8 */
-        mem[MEM_car_across_drift + firstSlot] = 0x00u;                /* $26aa clear the front car's flags */
-        uint8_t tailSlot = firstSlot;                        /* $278c indexes on cpu.X: firstSlot on every
-                                                                arm EXCEPT the swap, which leaves X=secondSlot */
+        const uint8_t here      = mem[MEM_car_order + pos];
+        const uint8_t neighPos  = car_index_dec_core(pos);
+        const uint8_t neighbour = mem[MEM_car_order + neighPos];
+        uint8_t flags     = 0x00u;                           /* $26A6 — the new race flags */
+        uint8_t flagsSlot = here;                            /* whose flags the tail writes */
+        mem[MEM_car_across_drift + here] = 0x00u;            /* $26AA — no drift unless set below */
 
-        /* $26ad car_gap(X=firstSlot, Y=secondSlot): state_1[second]-state_1[first], reduced to a
-           signed ring gap in math_lo/A with C=far, N=sign (writes math_hi/hypot_min_hi too). */
-        unsigned d = car_gap_lo_core(mem[MEM_car_section_along + secondSlot], mem[MEM_car_section_along + firstSlot]);
-        GapTail g  = car_gap_tail_core(firstSlot, secondSlot, !(d & 0x100u));
-        uint8_t gap = g.a;
+        const unsigned borrow = mem[MEM_car_section_along + neighbour] < mem[MEM_car_section_along + here];
+        const RingGap  g      = ring_gap(here, neighbour, borrow);    /* $26AD car_gap */
 
-        if (g.c) {
-            /* $26b0 far / already in order — straight to the tail */
-        } else if (g.n) {
-            /* ---------- (b) SWAP ARM ($26b4): out of order, close behind ---------- */
-            if (gap >= 0xF6u) {                              /* $26b4-b6 else too far behind to swap */
-                uint8_t nowAtPos, nowAtBehind;               /* $26bc swap car_order[pos] <-> [posBehind] */
-                car_order_swap_core(pos, posBehind, &nowAtPos, &nowAtBehind);
-                (void)nowAtPos; (void)nowAtBehind;           /* exit X=second, Y=first — used as the slots below */
-                tailSlot = secondSlot;                       /* $278c reads mem[$0100+X], X=second after the swap */
-                position_swap_flag = (uint8_t)((position_swap_flag >> 1) | 0x80u);  /* $26bf SEC / $26c0 ROR $62FE */
+        if (g.far) {
+            /* $26B0 — too far apart to interact */
+        } else if (g.gap < 0) {
+            if (g.gap >= -10) {                              /* $26B4 CMP #$F6 — close enough to swap */
+                car_order_swap_core(pos, neighPos);
+                flagsSlot = neighbour;                       /* $278C reads X = the neighbour's slot */
+                position_swap_flag = (uint8_t)((position_swap_flag >> 1) | 0x80u);  /* $26BF SEC / ROR */
 
-                uint8_t passAmt; int doPass;
-                if (firstSlot == player_car)       { passAmt = 0x99u; doPass = 1; }  /* $26c3 CPY (Y=first): player lost */
-                else if (secondSlot == player_car) { passAmt = 0x01u; doPass = 1; }  /* $26cb CPX (X=second): player gained */
-                else                               { passAmt = 0x00u; doPass = 0; }  /* $26cd -> tail (no player) */
-
-                if (doPass) {
-                    math_lo = passAmt;                       /* $26d1 STA $74 */
-                    uint8_t lapFirst  = mem[MEM_car_lap_count + firstSlot];            /* $26d3 (Y=first) */
-                    unsigned rolCarryOut = (hypot_min_hi >> 7) & 1u;               /* $26d6 ROL $79 (C-in=1): old bit7 -> C */
-                    hypot_min_hi = (uint8_t)((hypot_min_hi << 1) | 1u);
-                    uint8_t lapDiff = (uint8_t)((int)lapFirst
-                                                - (int)mem[MEM_car_lap_count + secondSlot]  /* $26d8 SBC (X=second) */
-                                                - (rolCarryOut ? 0 : 1));               /* C-in = ROL carry-out; D=0 */
-                    if (lapDiff == 0u) {                     /* $26db same lap -> count the pass */
-                        /* $26dd SED / $26e5 CLD — the pass counter is a BCD tally, so the add
-                           is decimal.  $99 is "minus one" in that representation, which is how
-                           the player LOSING a place is one add rather than a subtract. */
-                        pass_count_bcd = bcd_add(passAmt, pass_count_bcd, 0).val;  /* $26de-$26e3 */
-                    }
+                const int lost   = (here == player_car);         /* $26C3 */
+                const int gained = (neighbour == player_car);    /* $26CB */
+                if (lost || gained) {
+                    const int sameLap = (uint8_t)(mem[MEM_car_lap_count + here]
+                                                  - mem[MEM_car_lap_count + neighbour]
+                                                  - (g.wrapped ? 1u : 0u)) == 0u;   /* $26D3-$26DB */
+                    if (sameLap)
+                        pass_count_bcd = bcd_add(lost ? 0x99u : 0x01u, pass_count_bcd, 0).val;  /* $26DD-$26E5 */
                 }
             }
-        } else if (gap < 0x05u) {
-            /* ---------- (c) PROXIMITY ARM ($26e9): positive, small gap ---------- */
-            /* 16-bit speed difference firstSlot - secondSlot; borrow-out sign -> shared_temp_76 bit7
-               D is 0 here — the routine brackets its ONE SED around the
-               pass-count ADC at $26DD — so the two chained SBCs are a plain binary 16-bit subtract
-               with a forced entry borrow ($26f0's CLC).  What escapes is the carry OUT of the high
-               byte, i.e. "no borrow out of 16 bits" (docs/static-map.md §Decimal mode). */
-            int      sd      = (int)(mem[CAR_SPEED_FRAC     + firstSlot]
-                                   | (mem[MEM_car_speed_scaled  + firstSlot] << 8))
-                             - (int)(mem[CAR_SPEED_FRAC     + secondSlot]
-                                   | (mem[MEM_car_speed_scaled  + secondSlot] << 8))
-                             - 1;                            /* $26ed-$26f7 */
-            unsigned sdCarry = (sd >= 0);                    /* the high SBC's carry-out */
-            shared_temp_76 = (uint8_t)((sdCarry << 7) | (shared_temp_76 >> 1)); /* $26fa ROR $76 (C-in = it) */
+        } else if (g.gap < 5) {
+            /* ---------- the PROXIMITY arm ($26E9) ---------- */
+            const int speedDiff = (int)(mem[CAR_SPEED_FRAC + here] | (mem[MEM_car_speed_scaled + here] << 8))
+                                - (int)(mem[CAR_SPEED_FRAC + neighbour] | (mem[MEM_car_speed_scaled + neighbour] << 8))
+                                - 1;                         /* $26ED-$26F7 — CLC: a forced borrow */
+            if (speedDiff >= 0) {                            /* $26FA ROR / $26FC BPL — here is faster */
+                uint8_t faster = 0x80u;                      /* bit 7 of the $76 shift register */
+                uint8_t mag = (uint8_t)((uint8_t)((unsigned)speedDiff >> 8) >> 1);   /* $26FE LSR */
+                if (mag > 0x1Eu) mag = 0x1Eu;                /* $26FF-$2709 — clamp 4..$1E */
+                if (mag < 0x04u) mag = 0x04u;
 
-            if (sdCarry) {                                   /* $26fc BPL: N(from ROR) = the carry; !N -> tail */
-                uint8_t mag = (uint8_t)((uint8_t)((unsigned)sd >> 8) >> 1);  /* $26fe LSR A */
-                if (mag >= 0x1Eu) mag = 0x1Eu;               /* $26ff-2703 clamp high */
-                if (mag <  0x04u) mag = 0x04u;               /* $2705-2709 clamp low */
-                mem[MEM_point_delta_hi] = mag;                   /* $270b — the +0 slot as scratch (see its note:
-                                                                the geometry tenant is idle here) */
+                const int alongside = g.gap < 4;             /* $270F CMP #4 — C clear */
+                const uint8_t acrossHere  = mem[MEM_car_section_across + here];
+                const uint8_t acrossNeigh = mem[MEM_car_section_across + neighbour];
+                uint8_t side;                                /* bit 7: the drift direction */
+                enum { PUBLISH, SET_AVOID, NOTHING, TAIL } outcome;
 
-                unsigned c4 = (math_lo >= 0x04u);            /* $270d LDA $74 / $270f CMP #4 (math_lo == gap here) */
-                uint8_t rf = (uint8_t)(mem[MEM_car_race_flags + secondSlot] & 0x40u);   /* $2711 / $2714 AND #$40 */
-                enum ProxOutcome outcome;
-
-                if (rf != 0u) {
-                    /* bit6 of the trailing car's race flags set — classification is decided here */
-                    span_line_cursor = c4 ? 0x40u : 0xC0u;   /* $2718 BCS / $271a ORA #$80 / $271c */
-                    unsigned cst = (mem[MEM_car_section_across + firstSlot] >= mem[MEM_car_section_across + secondSlot]);  /* $2721 CMP */
-                    math_lo = (uint8_t)((cst << 7) | (math_lo >> 1));   /* $2724 ROR $74 (C-in = cst) */
-                    outcome = PROX_PUBLISH;                  /* $2726 -> $277D */
+                if (mem[MEM_car_race_flags + neighbour] & 0x40u) {       /* $2711 — neighbour alongside */
+                    flags = alongside ? 0xC0u : 0x40u;                   /* $2718-$271C */
+                    side  = (acrossHere >= acrossNeigh) ? 0x80u : 0x00u; /* $2721 CMP / $2724 ROR */
+                    outcome = PUBLISH;
                 } else {
-                    /* bit6 clear ($2729): pick the chain's entry point, then run it */
-                    int loadState2 = 1;                      /* the $2744 stage runs unless we enter at $2749 */
-                    if (c4) {
-                        shared_temp_76 = (uint8_t)(shared_temp_76 >> 1);   /* $2742 LSR $76 */
+                    int sideFromNeighbour = 1;               /* $2744 — the neighbour's across byte */
+                    side = 0x00u;
+                    if (!alongside) {
+                        faster = 0x00u;                      /* $2742 LSR $76 */
                     } else {
-                        span_line_cursor = 0x40u;            /* $272d */
-                        uint8_t s2 = mem[MEM_car_section_across + secondSlot];        /* $272f LDA — ONE load, as on the 6502: the value survives to abs8 */
-                        unsigned cst2 = (s2 >= mem[MEM_car_section_across + firstSlot]);  /* $2732 CMP */
-                        math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
-                        uint8_t absv = abs8_value(s2);  /* $2737 AND #$FF (sets N) / $2739 abs8 */
-                        loadState2 = (absv < 0x3Cu);         /* $273c CMP #$3C / $273e BCC $2744 / $2740 BCS $2749 */
+                        flags = 0x40u;                       /* $272D */
+                        side  = (acrossNeigh >= acrossHere) ? 0x80u : 0x00u;   /* $2732 CMP / $2735 ROR */
+                        sideFromNeighbour = abs8_value(acrossNeigh) < 0x3Cu;   /* $2739-$273E */
                     }
-                    if (loadState2)
-                        math_lo = mem[MEM_car_section_across + secondSlot];   /* $2744 LDA / $2747 STA $74 */
+                    if (sideFromNeighbour) side = acrossNeigh;               /* $2744-$2747 */
 
-                    /* $2749: the trailing/leading pair's own classification */
-                    uint8_t fs = mem[MEM_car_flags_shape + firstSlot];   /* $2749 (X=first) */
-                    if (fs & 0x80u) {                        /* $274c BPL $275e; bit7 set -> here */
-                        uint8_t ent = (uint8_t)(bus_read(USRVIA_T2CL) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
-                        if (ent != 0u) {
-                            outcome = PROX_TAIL;             /* $2753 -> tail */
-                        } else {
-                            span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2755-59 */
-                            outcome = PROX_NONE;             /* $275b -> $278A: neither stage runs */
-                        }
+                    if (mem[MEM_car_flags_shape + here] & 0x80u) {           /* $2749 — here not in view */
+                        /* $274E — one time in 32, by the User VIA's free-running timer */
+                        if (bus_read(USRVIA_T2CL) & 0x1Fu) outcome = TAIL;
+                        else { flags |= faster; outcome = NOTHING; }          /* $2755-$275B */
                     } else {
-                        /* bit7 clear ($275E): |state_2[second] - state_2[first]| decides */
-                        /* ⭐ A PLAIN BINARY SUBTRACT, and the D question is settled rather than
-                           dodged: this site sits AFTER the $26e5 CLD on every path that runs the
-                           SED, and the routine is entered with D=0 on two independent grounds —
-                           all eight SED sites bracket their own CLD (docs/static-map.md §Decimal
-                           mode), and validate_native.c's fixture pins `c.D = 0` citing it.  So
-                           the sbc_value that used to wear the decimal helper here was computing
-                           binary every time. */
-                        int      d    = (int)mem[MEM_car_section_across + secondSlot]   /* $275e LDA / $2761 SEC */
-                                      - (int)mem[MEM_car_section_across + firstSlot];   /* $2762 SBC */
-                        uint8_t  diff = (d >= 0) ? (uint8_t)d : (uint8_t)(~(uint8_t)d); /* $2765 BCS / $2767 EOR #$FF */
-                        if (diff >= 0x64u) {
-                            outcome = PROX_TAIL;             /* $2769-6b -> tail */
-                        } else if (diff >= 0x50u) {
-                            outcome = PROX_SETBIT;           /* $276d-6f -> $2786 */
-                        } else if (mem[MEM_smc_car_pair_hook] != 0xC9u) {
-                            /* the per-circuit SMC site at $2771 is not the unpatched CMP #imm */
+                        const int d = (int)acrossNeigh - (int)acrossHere;     /* $275E-$2762 */
+                        const uint8_t apart = (d >= 0) ? (uint8_t)d : (uint8_t)~(uint8_t)d;   /* $2765 EOR */
+                        if (apart >= 0x64u)      outcome = TAIL;             /* $2769 */
+                        else if (apart >= 0x50u) outcome = SET_AVOID;        /* $276D */
+                        else if (mem[MEM_smc_car_pair_hook] != 0xC9u) {
+                            /* $2771 is a per-circuit SMC site; anything but the unpatched CMP #imm
+                               cannot be modelled here */
                             platform_smc_unhandled(MEM_smc_car_pair_hook, mem[MEM_smc_car_pair_hook]);
                             return;
-                        } else if (diff >= mem[MEM_smc_car_pair_hook + 1]) {
-                            outcome = PROX_PUBLISH;          /* $2773 BCS $277d */
                         } else {
-                            span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2775-79 */
-                            outcome = PROX_PUBLISH;          /* falls into $277d */
+                            if (apart < mem[MEM_smc_car_pair_hook + 1]) flags |= faster;   /* $2775-$2779 */
+                            outcome = PUBLISH;
                         }
                     }
                 }
 
-                if (outcome == PROX_PUBLISH) {               /* $277d-83 */
-                    mem[MEM_car_across_drift + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[MEM_point_delta_hi]);
-                }
-                if (outcome == PROX_PUBLISH || outcome == PROX_SETBIT) {
-                    span_line_cursor = (uint8_t)(span_line_cursor | 0x10u);   /* $2786-88 */
-                }
+                if (outcome == PUBLISH)                      /* $277D-$2783 */
+                    mem[MEM_car_across_drift + here] = (uint8_t)((side & 0x80u) | mag);
+                if (outcome == PUBLISH || outcome == SET_AVOID)
+                    flags |= 0x10u;                          /* $2786-$2788 */
             }
         }
 
-        /* ---------- the shared tail (L_278c $278c) ---------- */
-        if (!(mem[MEM_car_race_flags + tailSlot] & 0x01u))       /* $278c LDA / $278f LSR (C=bit0) / $2792 BCS */
-            mem[MEM_car_race_flags + tailSlot] = span_line_cursor;   /* $2794 */
+        /* ---------- the tail ($278C) ---------- */
+        if (!(mem[MEM_car_race_flags + flagsSlot] & 0x01u))
+            mem[MEM_car_race_flags + flagsSlot] = flags;
 
-        pos = car_index_inc_core(shared_temp_77);            /* $2797 LDX $77 / $2799 inc */
-        if (pos == zp_scratch_index) return;                 /* $279c CPX $03 / $279e BEQ */
+        pos = car_index_inc_core(pos);                       /* $2797 */
+        if (pos == zp_scratch_index) return;                 /* $279C */
     }
 }
 

@@ -616,7 +616,8 @@ void store_slip_signed(void)
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     uint8_t sign = mem[SLIP_SIGN];                   /* BIT operand, before the core runs */
     store_slip_signed_core(cpu.A);
-    store_slip_exit_abi(sign);                       /* C, X, S untouched by this routine */
+    store_slip_exit_abi(sign);                       /* X, S untouched; C only by the negate */
+    store_slip_negate_flags(sign);
     model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
@@ -627,7 +628,8 @@ void store_slip_clamped(void)
     uint8_t clampC = (uint8_t)(valueHi >= mem[SLIP_MAG_HI]);   /* $4B47 CMP SLIP_MAG_HI */
     store_slip_clamped_core(valueHi);
     store_slip_exit_abi(sign);
-    cpu.C = clampC;                                  /* the compare's carry survives to the exit */
+    cpu.C = clampC;                                  /* the compare's carry survives to the exit... */
+    store_slip_negate_flags(sign);                   /* ...unless the negate runs after it */
     model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
@@ -640,6 +642,7 @@ void store_slip_clamped_off_throttle(void)
     store_slip_clamped_off_throttle_core(valueHi);
     store_slip_exit_abi(sign);
     cpu.C = throttle ? entryC : clampC;             /* throttle path never runs the CMP */
+    store_slip_negate_flags(sign);
     model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
@@ -1457,27 +1460,51 @@ void adc_read(void)
     cpu.N = ((uint8_t)(r.mag - 0x0Au) >> 7) & 1u;
 }
 
+/* $27AB car_gap_tail's 6502 register contract, for the TRANSLITERATED callers only (a track
+   hook re-enters the transliteration, and the oracle): A/N/C, math_lo = the byte A was reduced
+   to, math_hi = |D|'s high byte, and the hypot_min_hi shift register — a 1 rotated in on the
+   direct branch, a 0 on a wrapped near one, nothing when the complement's high byte is non-zero
+   ($27D5's BNE skips the ROR).  The native callers take ring_gap's answer and none of this. */
+static void car_gap_tail_abi(uint8_t x, uint8_t y, unsigned borrow)
+{
+    const RingGap  g   = ring_gap(x, y, borrow);
+    const uint16_t d   = (uint16_t)(car_distance_16[y] - car_distance_16[x] - borrow);
+    const unsigned neg = d >> 15;
+    const uint16_t mag = neg ? (uint16_t)(0u - d) : d;
+    const uint16_t cmp = (uint16_t)((uint16_t)(lap_length_lo | (lap_length_hi << 8)) - mag);
+
+    math_hi = (uint8_t)(mag >> 8);
+    if (!g.wrapped)          hypot_min_hi = (uint8_t)((hypot_min_hi >> 1) | 0x80u);
+    else if (!(cmp >> 8))    hypot_min_hi = (uint8_t)(hypot_min_hi >> 1);
+
+    if (!g.far) {
+        cpu.A = (uint8_t)g.gap;  cpu.N = (uint8_t)(cpu.A >> 7);  cpu.C = 0;
+        math_lo = cpu.A;
+    } else if (!g.wrapped) {
+        cpu.A = (uint8_t)mag;    cpu.N = (uint8_t)neg;           cpu.C = 1;
+        math_lo = cpu.A;
+    } else {
+        math_lo = (uint8_t)cmp;
+        cpu.A = (cmp >> 8) ? (uint8_t)(cmp >> 8) : (uint8_t)cmp;
+        cpu.N = (uint8_t)!neg;   cpu.C = 1;                      /* the PLA/EOR #$80 flip */
+    }
+    /* V, Z dead at every caller */
+}
+
 void car_gap(void)
 {
-    /* $27A4-$27AA: state_1[Y] - state_1[X], then FALL THROUGH into the shared tail at $27AB.
-       The tail's only inputs are X, Y and the borrow this subtract leaves, so hand them to its
-       core directly rather than parking them in cpu for the tail's own shim to read back.
-       (cpu.A is not one of them — the tail recomputes the difference from car_distance_16 — so
-       the byte this subtract leaves in A is overwritten by the exit ABI below either way.) */
-    unsigned d = car_gap_lo_core(mem[MEM_car_section_along + cpu.Y], mem[MEM_car_section_along + cpu.X]);
+    /* $27A4-$27AA: along[Y] - along[X]; only its borrow reaches the tail at $27AB. */
+    const unsigned borrow = mem[MEM_car_section_along + cpu.Y] < mem[MEM_car_section_along + cpu.X];
     car_distance_marshal_in_one(cpu.X);            /* the two slots the gap is measured between */
     car_distance_marshal_in_one(cpu.Y);
-    GapTail e = car_gap_tail_core(cpu.X, cpu.Y, (unsigned)!(d & 0x100));
-    cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;         /* V, Z dead at every caller */
+    car_gap_tail_abi(cpu.X, cpu.Y, borrow);
 }
 
 void car_gap_tail(void)
 {
-    /* consumer of two slots of the relocated distance array — marshal exactly those two */
     car_distance_marshal_in_one(cpu.X);
     car_distance_marshal_in_one(cpu.Y);
-    GapTail e = car_gap_tail_core(cpu.X, cpu.Y, cpu.C);   /* entry C is a genuine input */
-    cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;                /* V, Z dead at every caller */
+    car_gap_tail_abi(cpu.X, cpu.Y, !cpu.C);        /* entry C is the subtract's borrow-in */
 }
 
 /* $28F2 — the whole routine as a function of the car_order POSITION it is handed, so a native
@@ -1488,13 +1515,10 @@ void stage_nearby_car_at_core(uint8_t orderIndex)
     saved_slot_index = slot;                              /* $28F5 STA $45 */
     shared_counter_42 = slot;                             /* $28F7 STA $42 */
 
-    /* $28F9 TAX; $28FA LDY #$17; $28FC SEC; $28FD car_gap_tail — X=slot, Y=$17, C=1 in.  The
-       car_gap_tail shim leaves cpu.X/cpu.Y untouched, so X is still slot at the tail call. */
+    /* $28F9-$28FD — how far the reference car ($17) is ahead of this one (SEC: no finer term) */
     car_distance_marshal_in_one(slot);         /* the two slots this gap is measured between */
     car_distance_marshal_in_one(0x17u);
-    GapTail g = car_gap_tail_core(slot, 0x17u, 1u);
-
-    StageNearbyCar s = stage_nearby_car_core(g.a, g.c, slot);
+    StageNearbyCar s = stage_nearby_car_core(ring_gap(slot, 0x17u, 0u), slot);
 
     /* X is held from the $28F9 TAX through to the tail; both tails consume it as a value. */
     if (s.reject) {                                       /* $2911 reject_object_slot; return */
@@ -1571,10 +1595,12 @@ void paint_fence_backdrop(void)
 
 void car_order_swap(void)
 {
-    uint8_t x, y;
-    car_order_swap_core(cpu.X, cpu.Y, &x, &y);
-    cpu.X = x;                                   /* exit ABI: X and Y hold the swapped values */
-    cpu.Y = y;
+    /* the 6502 contract: old [X] parked in math_lo ($2682), then X/Y = the values now at [X]/[Y] */
+    const uint8_t i = cpu.X, j = cpu.Y;
+    math_lo = mem[MEM_car_order + i];
+    car_order_swap_core(i, j);
+    cpu.X = mem[MEM_car_order + i];
+    cpu.Y = mem[MEM_car_order + j];
 }
 
 void clear_race_clock(void)
@@ -1928,6 +1954,20 @@ int state_flags_bit6(void)
 }
 
 /* $4B4E — store_slip's exit ABI, replayed from the two values the core threads out. */
+/* $4B53 abs16_math runs when the sign byte's bit 7 is set, and its closing `SBC math_hi`
+   ($0E4D) leaves C and V, which nothing after it in the store touches (LDY/STA/LDA set only
+   N/Z) — so they are the exit C and V on that arm, overriding the clamp compare's C and the
+   BIT's V.  The operands are recovered from what the core left: math_hi holds the pre-negate
+   high byte, math_lo the negated low byte, and the stored word's high byte is the result. */
+void store_slip_negate_flags(uint8_t sign)
+{
+    if (!(sign & 0x80u)) return;
+    const uint8_t hi  = math_hi, lo = (uint8_t)(0u - math_lo);
+    const uint8_t res = (uint8_t)(model_state_16[MS_SLIP + mem[SLIP_OUT_INDEX]] >> 8);
+    cpu.C = (uint8_t)(hi == 0u && lo == 0u);        /* no borrow out of 0 - hi:lo */
+    cpu.V = (uint8_t)(((hi & res) >> 7) & 1u);      /* ((A^M) & (A^R)) bit 7 with A = 0 */
+}
+
 void store_slip_exit_abi(uint8_t sign)
 {
     cpu.A = math_lo;                                 /* $4B5B LDA math_lo — the stored low byte */

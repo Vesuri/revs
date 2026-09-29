@@ -4841,6 +4841,12 @@ static int test_stage_nearby_car(void)
     g_smcUnhandled = 0;
 
     int cases = 6000 * scale;
+    /* ⭐ car_gap_tail's working cells (math_lo/math_hi/hypot_min_hi) and the |gap| written back at
+       $290B are read only inside this routine (def-use audit, a competition race on all five
+       circuits, 2026-09-28) — so they are not results.  On the staging arm place_car_world_coords
+       rewrites $74/$75 as its own residue, which ITS fixture still compares. */
+    static const uint16_t IGN[] = { 0x0074, 0x0075, 0x0079 };
+    set_ignore(IGN, (int)(sizeof IGN / sizeof IGN[0]));
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
         fill_random(pre);
@@ -4899,6 +4905,7 @@ static int test_stage_nearby_car(void)
         fail += diff_run("stage_nearby_car", pre, c, stage_nearby_car,
                          stage_nearby_car__t6502, mask, t, &printed);
     }
+    set_ignore(0, 0);
     unsetenv("REVS_SMC_CONTINUE");
 
     if (g_smcUnhandled == 0) {
@@ -4935,7 +4942,11 @@ void check_car_pair__t6502(void);
      - Fully random (slice 3) samples the far exits and the wrapped-far tail.
    T2 entropy ($FE68) is pinned per case to sweep the ent & $1F == 0 / != 0 split in the fs-bit7 arm,
    and a seventh of cases plant a non-$C9 opcode at $2771 so the trap-and-return unwind is compared
-   too (equal trap counts asserted by diff_run; nonzero total checked below). */
+   too (equal trap counts asserted by diff_run; nonzero total checked below).
+   ⚠ SCOPE: this fixture CANNOT see a defect in ring_gap — the oracle's car_gap calls reach the same
+   ring_gap through the shim, a SHARED INPUT (CLAUDE.md §sabotage).  Measured: the near/wrapped
+   test put back on D's raw high byte passes here and in stage_nearby_car, and fails car_gap_tail,
+   whose oracle is the independent $27AB transliteration.  car_gap / car_gap_tail gate ring_gap. */
 static int test_check_car_pair(void)
 {
     static uint8_t pre[65536];
@@ -4950,6 +4961,13 @@ static int test_check_car_pair(void)
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     g_smcUnhandled = 0;
+    /* ⭐ THE 6502'S WORKING CELLS ARE NOT RESULTS: math_lo/math_hi/shared_temp_76/77/hypot_min_lo/
+       hypot_min_hi/span_line_cursor/point_delta_hi[0] are the pass's own scratch (and
+       car_gap_tail's), and the def-use audit on a competition race, all five circuits
+       (2026-09-28), found every store to them read only inside this routine and car_gap_tail —
+       the twin keeps them in locals (revs_native.c §check_car_pair). */
+    static const uint16_t IGN[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007F, 0x0083 };
+    set_ignore(IGN, (int)(sizeof IGN / sizeof IGN[0]));
 
     int cases = 12000 * scale;
     for (t = 0; t < cases; t++) {
@@ -5003,6 +5021,7 @@ static int test_check_car_pair(void)
         fail += diff_run("check_car_pair", pre, c, check_car_pair,
                          check_car_pair__t6502, mask, t, &printed);
     }
+    set_ignore(0, 0);
     unsetenv("REVS_SMC_CONTINUE");
 
     if (g_smcUnhandled == 0) {

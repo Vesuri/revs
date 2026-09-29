@@ -199,8 +199,25 @@ void scale_shape_vectors(void)  { cpu.C = (uint8_t)scale_shape_vectors_core(); }
 void apply_steer_demand(void)           { car_angle_marshal_in(); apply_steer_demand_core(cpu.A);
                                           car_angle_marshal_out(); }
 
-void steer_assist_dispatch(void)        { model_state_marshal_in(); car_angle_marshal_in(); steer_assist_dispatch_core(cpu.A);
-                                          car_angle_marshal_out(); }
+/* The exit V of steer_demand_from_slip's negate — the oracle ABI's, see steer_demand_from_slip. */
+void steer_slip_negate_v(void)
+{
+    const uint16_t slip = (uint16_t)(model_state_16[MS_SLIP] & 0xFFF0u);   /* $15F4-$15FB */
+    if (slip & 0x8000u) {
+        const uint8_t hi = (uint8_t)(slip >> 8), res = (uint8_t)((uint16_t)(0u - slip) >> 8);
+        cpu.V = (uint8_t)(((hi & res) >> 7) & 1u);  /* ((A^M) & (A^R)) bit 7 with A = 0 */
+    }
+}
+void steer_assist_dispatch(void)
+{
+    model_state_marshal_in(); car_angle_marshal_in();
+    const uint8_t demand = cpu.A;
+    steer_assist_dispatch_core(demand);
+    /* ...and its slip arm ($1EF7) exits through steer_demand_from_slip, V and all (see there) */
+    if (steering_assist_flag != 0 && !(track_direction & 0x80u) && demand < 0x05u)
+        steer_slip_negate_v();
+    car_angle_marshal_out();
+}
 
 void scale_wing_settings(void)
 {
@@ -302,11 +319,26 @@ void neg16_math(void)
     neg16_math_noinit();
 }
 
+/* ⚠⚠ The flags of $0E4D `SBC math_hi` — the negate's LAST instruction — escape to the caller:
+   car_gap_tail's $27C2 BEQ branches on its Z (near vs wrapped).  These shims once left the
+   flags alone, so the ORACLE branched on the caller's stale Z, the twin was written to match
+   it, and a negative near gap between two cars read as far: overtakes from behind were never
+   booked.  Only the race-proper lockstep against a real BBC could see it (frame 80).
+   0 - hi - borrow, with borrow = "the low byte was non-zero" ($0E47 SBC math_lo). */
+static void neg16_flags(uint8_t hi, uint8_t lo, uint8_t result)
+{
+    cpu.C = (hi == 0 && lo == 0);                   /* no borrow out of 0 - hi:lo */
+    cpu.V = (uint8_t)(((hi & result) >> 7) & 1u);   /* ((A^M) & (A^R)) bit 7 with A = 0 */
+    UPD_NZ(result);
+}
+
 void neg16_math_noinit(void)
 {
-    uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)math_hi << 8) | math_lo));
+    const uint8_t hi = math_hi, lo = math_lo;
+    uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));
     math_lo = (uint8_t)v;               /* $0E44-$0E49 — low byte written back */
     cpu.A   = (uint8_t)(v >> 8);        /* $0E4B-$0E4E — high byte escapes in A, math_hi kept */
+    neg16_flags(hi, lo, cpu.A);
 }
 
 /* ...and five more the lint caught only once its scan stopped skipping ONE-LINE shims.
@@ -385,11 +417,12 @@ void abs16_math(void)
        $0E42 (neg16_math, the init entry abs16_math falls into) first PARKS the caller's high byte
        in math_hi, and the negate leaves it there — so math_hi holds the PRE-negate high byte on
        exit, which the pure-C twin reproduces because callers see that cell. */
-    uint8_t high = cpu.A;
-    uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)high << 8) | math_lo));
+    uint8_t high = cpu.A, lo = math_lo;
+    uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)high << 8) | lo));
     math_hi = high;
     math_lo = (uint8_t)v;
     cpu.A   = (uint8_t)(v >> 8);
+    neg16_flags(high, lo, cpu.A);       /* $0E4D's flags — see neg16_flags */
 }
 
 /* $4753  scale16_by_y — |x| * Y >> 8, sign restored.  ⚠ PHP/PLP and both halves matter: the
