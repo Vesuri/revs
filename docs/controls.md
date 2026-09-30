@@ -61,6 +61,10 @@ The BBC had no such overlap. Quitting wins, which is the harmless order.
 **Steering with the mouse** replaces the BBC's uPD7002 analogue joystick (user decision). Select it
 the same way the BBC selects a joystick: **SHIFT+F2**.
 
+**Quitting the program is CTRL-Q** (user decision; the BBC had no quit, only BREAK). It is polled
+from every spin-wait, so it works on every page. Under WHDLoad on a 68010 or better the WHDLoad
+QuitKey, keypad `*`, also quits — not F10, which is the BBC's f0.
+
 ## The SHIFT commands
 
 `shift_key_commands` (`$0EE5`) runs once per race frame, does nothing unless SHIFT is held, and
@@ -242,7 +246,7 @@ Two details that are easy to get wrong, both covered by `make trackmenu`:
 
 - **Any key means any key** (`TM_KEY_ANY`, `RevsInput::anyKeyDown()`), not one of the menu's
   seven — someone hurrying a title screen does not consult the key map first. Modifiers are
-  excluded: resting on SHIFT or CTRL must not count, and CTRL is half the quit chord.
+  excluded: resting on SHIFT or CTRL must not count, and CTRL is half the CTRL-Q quit chord.
 - **The key that skipped must be released before the menu reads it.** Otherwise one press both
   skips the title and picks a circuit, which looks like the page doing two things — the same trap
   `TM_SELECT` already guards with `s_spaceSeenUp`.

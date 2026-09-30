@@ -39,7 +39,7 @@
 
 #include "../../cpu/mem_decl.h"
 extern "C" MEM_QUAL uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
-extern "C" volatile uint8_t g_keyDown[128];  // RevsInput's rawkey state, for the quit chord
+extern "C" volatile uint8_t g_keyDown[128];  // RevsInput's rawkey state, for the CTRL-Q quit
 // revs_keys.h: may kbd_test_key answer in line?  Not in an autorun build until its script hands
 // over, because every scripted answer must go through keyDown() below to reach the rawkey state.
 #ifdef REVS_AUTORUN_BUILD
@@ -133,6 +133,13 @@ static uint32_t vbiHandler()
     *intreqPointer = (uint16_t)INTF_VERTB;
 
     g_vbiCount++;
+
+#ifdef REVS_QUIT_TEST
+    // `make QUITTEST=n` + amiga/quit_test.gdb: hold CTRL and Q from field n on, exactly as the
+    // CIA-A handler records a real chord, so the quit poll and the whole shutdown path run on a
+    // headless target (gdb cannot WRITE this machine's memory — docs/headless-fsuae.md).
+    if (g_vbiCount >= (uint16_t)REVS_QUIT_TEST) { g_keyDown[0x63] = 1u; g_keyDown[0x10] = 1u; }
+#endif
 
 #ifdef REVS_FPSCOUNT
     // Sample the painted-frame counter every 512 vblanks — a mask and three stores, so the
@@ -406,7 +413,7 @@ uint8_t PlatformAmiga::rdch()
     for (;;) {
         uint8_t ch = input.typedChar();
         if (ch) return ch;
-        if (quit) return 0x0D;                 // CTRL + left button: let the field close
+        if (quit) return 0x0D;                 // CTRL-Q: let the field close
         renderFrame();                         // echo what is already typed, wait one field
         pollEvents();
     }
@@ -494,12 +501,12 @@ void PlatformAmiga::renderFrame()
 
 void PlatformAmiga::pollEvents()
 {
-    // ⚠ QUIT IS CTRL + LEFT BUTTON, not the bare left button it used to be: the left button
-    // is the BRAKE PEDAL now (RevsInput::axis channel 2), so a bare-button quit would end the
-    // program the first time the player braked.  Ctrl is not a key the game ever tests, so the
-    // chord cannot collide with anything.  Polled from every spin-wait so the player can always
-    // abort — including out of a compute stretch that never reaches renderFrame().
-    if ((*ciaapraPointer & 0x40u) == 0 && g_keyDown[0x63]) quit = true;
+    // ⭐ QUIT IS CTRL-Q (user decision, docs/phases.md §Phase 7): the game is mouse-driven, so the
+    // quit moved off the mouse — the left button is the BRAKE PEDAL (RevsInput::axis channel 2).
+    // Ctrl is not a key the game ever tests, so the chord cannot collide with anything; Q is gear
+    // up, which the frame it is seen in cannot matter.  Polled from every spin-wait so the player
+    // can always abort — including out of a compute stretch that never reaches renderFrame().
+    if (g_keyDown[0x63] && g_keyDown[0x10]) quit = true;   // CTRL + Q (rawkeys)
 }
 
 // ⭐⭐ THE CIRCUIT MENU.  src/platform/trackmenu.h is the model and `make trackmenu` proves the
@@ -539,7 +546,7 @@ bool PlatformAmiga::runTrackMenu()
     uint16_t last = g_vbiCount;
     while (!tm_finished() && !quit) {
         renderFrame();                            // decode the page, then wait one field
-        pollEvents();                             // left mouse button still quits
+        pollEvents();                             // CTRL-Q still quits
 
         unsigned keys = 0;
         for (unsigned i = 0; i <= TM_OPTIONS_MAX; i++)

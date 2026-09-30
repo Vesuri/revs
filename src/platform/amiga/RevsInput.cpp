@@ -319,8 +319,8 @@ static void typeQueuePush(uint8_t raw)
 
 bool RevsInput::anyKeyDown() const
 {
-    /* Skip the modifiers: SHIFT/CTRL/ALT/AMIGA are held while chording (CTRL + left button is
-       quit) and resting on one must not count as hurrying the title page. */
+    /* Skip the modifiers: SHIFT/CTRL/ALT/AMIGA are held while chording (CTRL-Q is quit) and
+       resting on one must not count as hurrying the title page. */
     for (unsigned raw = 0; raw < 96u; raw++)
         if (g_keyDown[raw]) return true;
     return false;

@@ -2,8 +2,7 @@
 /* Revs — the Amiga application/scene class.
  *
  * ⚠ SCAFFOLD.  Today this is the minimum that proves the machine is ours: one copper
- * list, one background colour, a run() loop that pumps frames until CTRL + the left mouse
- * button quits.  It is deliberately the same shape the finished app will have, so
+ * list, one background colour, a run() loop that pumps frames until CTRL-Q quits.  It is deliberately the same shape the finished app will have, so
  * filling it in never means restructuring it.
  *
  * The Atari port's equivalent class (RescueOnFractalus) ended up owning: the per-scene

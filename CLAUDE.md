@@ -206,7 +206,7 @@ ground truth is FS-UAE + gdb on the Amiga build. The host build exists for `make
 . env.sh        # put the ~/.local Amiga toolchain on PATH (source it, SAME shell command)
 make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every link)
 make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
-./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
+./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL-Q quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 make SIMLEGACY=1 # the engine's own loop (one sim step per painted frame) — the default build
                 #   is DECOUPLED (game time = real time, docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION)

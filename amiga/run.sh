@@ -2,7 +2,7 @@
 # Run the Amiga Revs build in FS-UAE as an ECS A500+ (ECS Denise needed for
 # BPLCON3 border-blanking; OCS A500 ignores it).
 #   ./run.sh [path-to-kickstart-rom]
-# Use KS 3.1 (auto-boots directory HDs). CTRL + left mouse button quits (the bare button is the BRAKE).
+# Use KS 3.1 (auto-boots directory HDs). CTRL-Q quits (the left button is the BRAKE).
 # Override ROM via $1 or $KICKSTART.
 #
 # Run a DIFFERENT binary than out/Revs.exe with $REVS_EXE — handy for A/B-ing two builds by

@@ -45,7 +45,7 @@ public:
     // the machine, and src/platform/bbc_hw.cpp models them for both backends.  Phase 5
     // adds an override here that calls the base and then routes $FE20/$FE21 to the copper.
     virtual void    renderFrame()                       override;  // present + wait for next VBI
-    virtual void    pollEvents()                        override;  // poll quit (CTRL + left mouse)
+    virtual void    pollEvents()                        override;  // poll quit (CTRL-Q)
     virtual void    tickVBI()                           override;  // no-op: the ISR owns the clock
     // mosCall is deliberately NOT overridden — src/platform/mos.cpp owns the whole MOS
     // surface for both backends.  What this backend answers is the input, below.

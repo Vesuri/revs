@@ -8,7 +8,7 @@
 #   make STRAIGHT_TO_RACE=1  ⭐ boot into a Silverstone practice session, engine running,
 #                        then hand the keyboard to the player — the only way to SEE this
 #                        port, since the MODE 7 front end is not rendered
-#   ./run.sh             boot in FS-UAE (left mouse button quits)
+#   ./run.sh             boot in FS-UAE (CTRL-Q quits)
 #   ./debug.sh           source-level debug via the FS-UAE GDB stub
 #   ./diag_run.sh [secs] headless probe run (needs PROBES=1)
 #
@@ -500,6 +500,11 @@ endif
 # with the latch compiled out the same build must stall on the circuit menu.
 ifdef TAPTEST
 EXTRA_DEFINES += -DREVS_TAPTEST
+endif
+# `make QUITTEST=<field>` + quit_test.gdb: the ISR holds CTRL-Q from that field on (see
+# PlatformAmiga.cpp); the script passes when the platform is torn down.
+ifdef QUITTEST
+EXTRA_DEFINES += -DREVS_QUIT_TEST=$(QUITTEST)
 endif
 ifdef NOLATCH
 EXTRA_DEFINES += -DREVS_NOLATCH
