@@ -229,9 +229,9 @@ a genuine Phase 5 dependency, not a footnote — the port currently returns blan
 them in `g_mosCharDefCount`.
 
 ✅ **`OSWORD 10` is IMPLEMENTED as of 2026-08-15** — `src/platform/mos_font.h`, 96 printable glyphs,
-**drawn** rather than extracted (the MOS software font is Acorn's ROM with no published spec behind
-it, unlike the SAA5050 set).  Measured need: 88 calls / 15 codes / all `$20..$74` in one practice
-race (`make refloop-charset`); the whole printable range is drawn anyway and anything outside it is
+**extracted from the MOS 1.20 ROM** (&C000-&C2FF; user decision 2026-09-30 — a drawn stand-in with
+the ROM's metrics was used until then).  Measured need: 88 calls / 15 codes / all `$20..$74` in one practice
+race (`make refloop-charset`); the whole printable range is present anyway and anything outside it is
 counted in `g_mosCharDefOutOfRange`, because one session's vocabulary is a floor.
 
 ⭐⭐ **And there is a THIRD entry to `vdu_char_def`: `$508C`, which is DOUBLE WIDTH.**  It stores the

@@ -845,9 +845,8 @@ font:
 	python3 tools/gen_teletext_font.py
 
 # Regenerate the RACE VIEW's character generator — the OTHER font, the one OSWORD 10 returns.
-# ⚠ Unlike `font` above, these 96 glyphs are DRAWN rather than sourced: the MOS software font is
-# Acorn's copyrighted ROM with no standards document behind it.  Metrics match, letterforms are
-# ours.  Checked in; see tools/gen_mos_font.py.
+# Extracted from the MOS 1.20 ROM (tools/jsbeeb's os.rom, SHA-1 checked).  Checked in; see
+# tools/gen_mos_font.py.
 mos-font:
 	python3 tools/gen_mos_font.py
 

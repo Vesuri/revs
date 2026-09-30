@@ -1372,9 +1372,9 @@ between the machines), the span/object plotters' per-draw state, the other car s
 practice, and edge-array slots past the live end cursors (stale).
 
 **What is not compared in the PICTURE** (`--view`): `tick_wheel_spin`'s six EOR runs (the tyres
-turn in the 50 Hz interrupt — ~5 times a BBC frame, once a host frame) and the gear digit, whose
-glyph is this project's own font (`src/platform/mos_font.h`), as are `vdu_char_block`'s rows
-(`FONT`) in the physics set.
+turn in the 50 Hz interrupt — ~5 times a BBC frame, once a host frame).  ⚠ The gear digit and
+`vdu_char_block`'s rows were excluded too while the race font was a drawn stand-in; since
+2026-09-30 it is the MOS ROM's own (`src/platform/mos_font.h`) and both are compared.
 
 **Results (practice, the autopilot's line, 2995 frames each — ≈1.2 laps at first-gear pace, and
 re-run at racing speed, 1-2 laps up to ~73 in fourth gear):** ALL SIX

@@ -6,7 +6,7 @@
   default   the PHYSICS: the car-model block $6280-$62FF and zero page below $90, less the cells
             below that are not state the port keeps (each with its reason)
   --view    the PICTURE: the race view's frame buffer ($6700-$7AFF), per frame, less the tyre
-            flicker and the gear digit (WHEEL_SPIN / GLYPH below, each with its reason)
+            flicker (WHEEL_SPIN below, with its reason)
   --raw     every snapshotted byte, nothing excluded
 
 Both logs are RLS1 (src/platform/host/PlatformHost.cpp §THE LOCKSTEP RECORDER): the host's from
@@ -43,23 +43,20 @@ SCRATCH = {  # 6502 working cells the port deliberately does not reproduce (the 
     0x0C, 0x45,   # place_car_world_coords' direction index and slot hand-off: arguments in the twin
 }
 TICK = {0x62CA, 0x62F7, 0x62FA}   # driven by the 50 Hz interrupt, whose count per frame differs
-FONT = set(range(0x62C4, 0x62CA))  # vdu_char_block's glyph rows: OSWORD 10's answer is this project's
-                                   # own font (src/platform/mos_font.h), never Acorn's ROM bytes
 RENDER = set(range(0x628F, 0x62A0)) | {0x62F3, 0x62F9, 0x62FD}   # the object plotter's scale state, and the span plotters' per-span colour patterns — drawing state
                                       # (a difference here is a hint for --view, not physics)
 PHYSICS = [a for a in list(range(0x00, 0x90)) + list(range(0x6280, 0x6300))
-           if a not in SCRATCH and a not in TICK and a not in FONT and a not in RENDER]
-# The picture, less two things that are not the port's to match (each measured on Silverstone and
-# the Nurburgring, 2995 frames: with these out, the only differences left are real ones).
+           if a not in SCRATCH and a not in TICK and a not in RENDER]
+# The picture, less the one thing that is not the port's to match (measured on Silverstone and the
+# Nurburgring, 2995 frames: with it out, the only differences left are real ones).  ⚠ The gear digit
+# and vdu_char_block's glyph rows USED to be excluded too, while the race font was a drawn stand-in;
+# since 2026-09-30 it is the MOS 1.20 ROM's own (src/platform/mos_font.h), so both are compared.
 WHEEL_SPIN = (set(range(0x6FC0, 0x6FC5)) | set(range(0x70F8, 0x70FD)) | set(range(0x6E85, 0x6E88))
               | set(range(0x6FBD, 0x6FC0)) | set(range(0x6E8A, 0x6E8F)) | set(range(0x6FB2, 0x6FB7)))
               # tick_wheel_spin's six EOR runs, the front tyres turning: it runs in the 50 Hz
               # interrupt, ~5 times a BBC frame and once a host frame (TICK above), so the two
               # machines' tread phases part by construction
-GLYPH = set(range(0x7990, 0x79A0))
-              # draw_gear_indicator's digit (cells 34-35): the race view's font (src/platform/
-              # mos_font.h) is this project's own drawing, not Acorn's ROM, so a glyph may differ
-VIEW = [a for a in range(0x6700, 0x7B00) if a not in WHEEL_SPIN and a not in GLYPH]
+VIEW = [a for a in range(0x6700, 0x7B00) if a not in WHEEL_SPIN]
 
 def names():
     out = {}
