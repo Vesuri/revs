@@ -1584,6 +1584,12 @@ CORE_CINCLUDES = -I"$(AMIGA_SRC)/framework/compat-include" \
 
 # Optimisation level — overridable for debug builds:
 #   make OPT='-O0' NATIVE_OPT='-O0'    (also drops -fomit-frame-pointer for clean backtraces)
+# ⭐ NATIVE_OPT MEASURED (2026-09-30, the practice baseline, Σ1..39 − ph28, PROBEFIELDS=3000):
+#   -O3 -funroll-loops 75.01 / 75.02 (two controls)   revs_native.o 216 KB
+#   -O3                75.03                          173 KB
+#   -O2                79.50  (+4.5 ms, +6%)          121 KB
+# ⇒ -O3 is worth 4.5 ms; -funroll-loops buys nothing measurable on that frame for +43 KB.  Not
+# yet priced on the race proper (QUICKQUAL=1), where the object plotter's loops run.
 OPT        ?= -O2 -fomit-frame-pointer
 NATIVE_OPT ?= -O3 -funroll-loops
 
