@@ -469,8 +469,14 @@ always meets (branch $09, store through `plot_ptr` — what `fill_dash_edge_colu
 and hands any other patch state to the C walk.  Gate: `make OBJCHECK=1` again PASS in the race (1502
 calls, all modes), the fuzzer now varies both patch operands; sabotage 5 (the fallback colour
 dropped) caught by game and fuzzer.
-**Next:** `scale_shape_vectors` (~240 instructions an object, ~13% of the draw) and
-`plot_shape_edges` (~213, ~12%) — re-trace first; `fill_object_gap` is rare.  ⭐ **And rows 40-42 are NOT fat**: `drive_one_car`
+**Re-traced with both steps in (`QUICKQUAL=1` build, 150 race frames in, 9 objects a frame):**
+the draw is ~1 520 instructions an object — `pvs_line_m68k` with its walk ~920 (~150 a call, per-call
+decision logic: the fills average <2 cells), `scale_shape_vectors` ~240, `plot_shape_edges` ~215,
+`draw_track_object` + `plot_object` ~110, `fill_object_gap` ~30.  **What is left in §2c is small:**
+asm for the two C routines would be ~1 ms of an average race (3.28 objects), the line side's own
+per-call logic is already asm, and rows 40-42 are ordinary per-car work (~8k instructions a frame).
+⇒ **§2c now ranks BELOW the practice-frame entries**; take it up again only if a design reduces the
+CALLS (≈6 line-side calls and 3 walks an object) rather than their cost.  ⭐ **And rows 40-42 are NOT fat**: `drive_one_car`
 is **113 instructions a car** (19 a frame), `check_car_pair` ~1 600 a frame, staging ~200 a
 `place_car_world_coords` — ordinary per-car work at ~13 cyc/instruction, so they are the game's
 own cost and rank below the draw.
