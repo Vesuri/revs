@@ -1,6 +1,4 @@
-# Game image and derived binaries — kept LOCAL only, never committed.
-# revs.ssd is the copyrighted source disc image; everything under disasm/files/ and
-# revs_mem.bin is derived from it, so it is equally not ours to distribute.
+# Original game images and derived binary data (local only)
 *.ssd
 *.dsd
 *.uef
@@ -11,52 +9,32 @@ disasm/revs_runtime.bin
 disasm/revs_dashcode.bin
 disasm/revs_blocks.txt
 
-# Screenshots / comparison captures — local only.
+# Local screenshots and comparison captures
 *.png
 
-# Large / regenerable artifacts
-# (gitignore has no inline-comment syntax -- a trailing "# ..." on a pattern line
-# is taken as literal glob text and matches nothing, so comments go on their own line)
-# tools/ghidra -- extracted Ghidra install (~2 GB), symlinked to a shared install
-# at ~/.local/share/ghidra (also used by the Rescue on Fractalus repo). No trailing
-# slash: a trailing-slash gitignore pattern only matches a real directory, not a
-# symlink to one.
+# Local dependencies and caches; tools/ghidra may be a symlink
 tools/ghidra
-# tools/ghidra-proj/ -- Ghidra project (the annotation DB) -- large, machine-local
 tools/ghidra-proj/
-# tools/jsbeeb/ -- vendored jsbeeb checkout, the BBC reference-loop oracle (docs/bbc-reference-loop.md)
 tools/jsbeeb/
-# tools/b2/ -- vendored b2 checkout, if/when built
 tools/b2/
 tools/__pycache__/
 *.zip
 
-# Generated, regenerable from revs.ssd via the tools
+# Generated disassembly and reports
 disasm/listing.txt
 disasm/dashcode.txt
-# the entry-point sweep report (make sweep) -- regenerable; its CONCLUSIONS live in
-# docs/static-map.md, which is committed
 disasm/sweep.txt
 
-# Generated C (regenerate with: make gen)
+# Generated sources and disc-derived data (make gen)
 src/gen/revs_gen.c
 src/gen/revs_decl.h
 src/gen/mem.h
 src/gen/revs_validate_list.h
 src/gen/revs_smc_bytes.h
-# ⚠⚠ GENERATED, AND IT MUST STAY UNTRACKED FOR A SECOND REASON: revs_tracks.c embeds the
-# Nurburgring block, which is generated from the git-ignored revs-hack-nurburgring.ssd.  Committing
-# it would put a third party's converted track data in this repository — the one dependence
-# docs/reference-sources.md concluded to avoid.  `make gen` rebuilds it from whichever discs are
-# present (five circuits without that one, and it says so).
 src/gen/revs_tracks.c
 src/gen/revs_tracks.h
-# Same reasoning, more strongly: these hold the Nurburgring's own HOOK CODE, transliterated.
 src/gen/revs_track_hooks.c
 src/gen/revs_track_hooks.h
-# ⚠ SAME REASONING AGAIN, and it is easy to miss because this one lives outside src/gen/:
-# titlescreen.h is 1 KB of 5TRSCRN — Superior/Acornsoft's teletext title page — baked into a C
-# array.  Generated, never committed (`make titlescreen`, or any `make gen`).
 src/platform/titlescreen.h
 
 # Build output
@@ -69,16 +47,15 @@ amiga/obj/
 amiga/out/
 amiga/.run/
 
-# Local probe/debug scratch — savestates, RAM dumps, ad-hoc probe scripts.
-# Regenerable / disposable; committed probes are the *.gdb files, not these.
+# Local diagnostic scratch
 /tmp/
 *.dat
 tools/live_*.sh
 amiga/*_probe.sh
 
-# OS
+# Operating system metadata
 .DS_Store
 
-# Release outputs (make dist): the archive and the assembled slaves
+# Release output
 dist/
 whdload/*.slave

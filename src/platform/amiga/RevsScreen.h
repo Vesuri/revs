@@ -56,7 +56,7 @@ public:
 
     /* ⭐ The conversion, cell by cell, DIRTY-REGION by default: only cell columns whose eight
        source bytes differ from `shadow` are converted, because only 4.9% of the frame buffer
-       changes per painted frame (measured — docs/direct-bitplane-plan.md §7b).  Pass
+       changes per painted frame (measured — docs/span-render-plan.md).  Pass
        shadow/shadowMode null to convert everything; that reference pass is `make DIRTY=0` and
        the REVS_DIRTYCHECK oracle.  Returns cell columns converted, of 1040. */
     /* ⚠ `unsigned char*`, not `uint8_t*`: this header does not pull in <stdint.h> and Util.h

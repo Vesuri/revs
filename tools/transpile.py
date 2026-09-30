@@ -709,7 +709,7 @@ VALIDATE_FUNCS = {
     # ⭐⭐ TWIN #2, $7BE2 view_paint_lines — the biggest MAIN-LOOP item, 21.8% / 151 ms
     # (docs/perf-method.md, re-profiled after twin #1).  Its shape is already measured:
     # 2093 column units run per sweep and only ~83 of them change a byte
-    # (docs/direct-bitplane-plan.md §7a), so 96% of the cost is a dirty test that finds
+    # (docs/span-render-plan.md), so 96% of the cost is a dirty test that finds
     # nothing — and in the transliteration each of those tests is an LDY with N/Z
     # bookkeeping plus a switch over a self-modified opcode slot.  The twin keeps every
     # one of them (the scan is the GAME's algorithm; removing it is §7a's separate
@@ -721,7 +721,7 @@ VALIDATE_FUNCS = {
     # make their callees faster; what it removes is the driver's own interpreter and, more to
     # the point, it is what makes the pipeline's shared data structure — the forty $80-spaced
     # source blocks and the per-scan-line buffers — readable before the representation change
-    # that docs/direct-bitplane-plan.md §7a is about.
+    # that docs/span-render-plan.md is about.
     0x24F6,
     0x1A20,
     # ⭐ TWINS #6, #7 and #8 — the three remaining SHORT DRIVERS of the 50 Hz body, taken

@@ -3,7 +3,7 @@
  *
  * ⭐ WHY THIS EXISTS AND WHY IT IS NOT A PROFILER.  `probe.h`'s phase brackets say WHERE the
  * frame goes (the dashboard is 36.1%, the road subsystem 40%).  They cannot say WHAT the work
- * is, and `docs/direct-bitplane-plan.md` §6 step 2 / §7 both turn on exactly that: ⚑ the
+ * is, and `docs/span-render-plan.md` step 2 / §7 both turn on exactly that: ⚑ the
  * predecessor project's -36% came from input-distribution counters, not from PC sampling.
  *
  * ⚠⚠ **"DASH" IN EVERY NAME HERE IS HISTORICAL AND IT MISLED §8.**  The rasteriser lives in the
@@ -12,7 +12,7 @@
  * rows 158..207.  The span census below measured that raster map directly.  So `$7BE2`'s share of
  * the frame is the ROAD VIEW's, and §8's "make the instruments sprites and the cockpit bitmap goes
  * static" is attached to the wrong routine and must be re-sized against the writers of rows
- * 158..207 before it is scheduled (`docs/direct-bitplane-plan.md` §10h).  The counter names stay:
+ * 158..207 before it is scheduled (`docs/span-render-plan.md`).  The counter names stay:
  * they are in `PROBE_SYMS` and in committed `.gdb` scripts.
  *
  * The one measurement that sizes TWO whole Phase 6 items (§7 dirty flags, §8 hardware sprites)

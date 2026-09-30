@@ -1,6 +1,6 @@
 # ⭐⭐⭐ THE SPAN EMITTER — §10j step 1, the cheap checkpoint on the span architecture.
 #
-# docs/direct-bitplane-plan.md §10.  A scan line that no producer wrote and that carries no
+# docs/span-render-plan.md.  A scan line that no producer wrote and that carries no
 # planted stop is ONE run of its background byte, so the sweep emits it as a single span straight
 # into the bitplanes instead of running forty store units.  Two questions, and they need two
 # different builds:

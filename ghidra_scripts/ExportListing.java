@@ -1,6 +1,6 @@
 // Export the full disassembly listing (address, bytes, mnemonic, comments)
 // plus a function summary, to a text file. Arg0 = output path.
-//@category Atari
+//@category BBC
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.*;

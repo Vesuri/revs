@@ -16,7 +16,7 @@
  * ⚠⚠ THE COST, MEASURED AND ACCEPTED (user decision).  Twenty of these shims call a core that
  * was `static` in `revs_native.c` and that GCC inlined away completely.  Crossing a TU boundary
  * forces those cores into existence as real functions; see revs_native_seam.h's block for the
- * list and docs/native-sweep.md for the framerate either side.
+ * list; historical measurements are in Git history.
  */
 
 #include <stdint.h>
@@ -366,7 +366,7 @@ void clamp_and_store_steer_angle(void)  { car_angle_marshal_in(); clamp_and_stor
    the twins' real callers go core-to-core — so the whole cluster is oracle-only and the
    question had to be asked as a TRANSITIVE CLOSURE: a shim whose only callers are oracle-only
    shims is oracle-only too.  Six allowlist rows in tools/cpu_lint.py had said "shim: native
-   callers" on no evidence; the grep that settles it is in docs/native-sweep.md track 3.
+   callers" on no evidence; the grep that settles it is in docs/native-maintenance.md, CPU and ABI boundaries.
    ⚠ `mul8_noinit` and `scale_by_track_gradient` also hid from the lint for a second reason:
    they speak the register file through `hook_cpu_to_regs`/`hook_regs_to_cpu` rather than
    `cpu.` directly, so the SPEAKS pattern never matched them.  It matches HookRegs now, which

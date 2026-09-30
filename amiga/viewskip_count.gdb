@@ -3,7 +3,7 @@
 # A `VIEWSKIP=1` build that quietly skips nothing reads exactly like a build whose skip buys
 # nothing, and the second conclusion is the expensive one to get wrong.  Run this against the SAME
 # binary the framerate came from and require a skipped:painted ratio near the host census (39%
-# driving).  docs/direct-bitplane-plan.md §7i.
+# driving).  docs/span-render-plan.md.
 #
 # ⚠ VIEWSKIP builds only — the counters do not exist otherwise.
 # Build: make clean && make VIEWSKIP=1 STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1

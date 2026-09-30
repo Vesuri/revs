@@ -1,9 +1,13 @@
 # Performance method — how to get a number you can trust
 
+Current work and the latest recorded practice/race context are in
+[open-work.md](open-work.md). The measurements below are evidence for specific
+experiments; their baselines are historical and must be re-measured before reuse.
+
 > ⚑ Method inherited from the Atari port (*Rescue on Fractalus!*), where each rule below was
 > learned by getting a number wrong first. The *numbers* are Revs's own. Companion docs:
 > `docs/m68k-optimisation.md` (what to do once you know where the time goes),
-> `docs/headless-fsuae.md` (how to drive the target), `docs/direct-bitplane-plan.md` (the
+> `docs/headless-fsuae.md` (how to drive the target), `docs/span-render-plan.md` (the
 > representation-level plan the current table points at).
 
 ## ⭐⭐⭐ WHAT THE ORIGINAL HARDWARE ACHIEVES — 97.0 ms a frame, 10.31 fps
@@ -34,7 +38,7 @@ and it is printed beside the figure so the figure is never read without it.
 | **the real BBC, its own hardware** | **97.0** | 1.00× |
 | the port, bracketed | ~190 | **1.96× slower** |
 | the port, less `decode()` (phase 27, work the BBC never did) | ~173 | 1.78× |
-| **the port now**, bracketed (`docs/open-work.md` header; crash reset excluded like the BBC's median does) | **95.46** | **0.98×** — 1.05× the comparable 91.0 |
+| the port at the recorded intermediate baseline, bracketed (`docs/open-work.md` header; crash reset excluded like the BBC's median does) | **95.46** | **0.98×** — 1.05× the comparable 91.0 |
 | the stated **floor**, 25 FPS | 40 | **2.43× FASTER than the original** |
 | the stated **target**, 50 FPS | 20 | **4.85× FASTER than the original** |
 
@@ -171,7 +175,7 @@ Yet the bracketed frame moved only 84.80 → 85.39, because the decoupled window
 against legacy's ~66 and its render phases measured a different workload. ⇒ **quote a decoupled
 cost from `fps_series.gdb`, and price render work in `SIMLEGACY=1`.**
 
-## ⭐⭐ THE CURRENT NUMBERS
+## Historical baseline measurements
 
 **FPS baseline** (rendered, moving car): `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
 `fps_series.gdb`, warp, 30 s. Under `FIXED_RNG`+warp the row vector is deterministic frame for
@@ -425,7 +429,7 @@ the old restoring divider. The counts are modest, but both the loops and their s
 remains is not "another twin":
 
 1. **fewer POINTS / SPANS / SOURCE VISITS, with setup and loops fused into native value pipelines**
-2. **the REPRESENTATION** (`docs/direct-bitplane-plan.md`) — the decode's port overhead, and the
+2. **the REPRESENTATION** (`docs/span-render-plan.md`) — the decode's port overhead, and the
    BBC-shaped buffer the consumer paints into which constrains it
 3. **asm, last**, and only against the post-representation arrangement
 
@@ -706,7 +710,7 @@ decomposes phase 3's 27 ms further and names where 83% of it sits.**
 
 #### ⭐⭐ AND THIS TABLE IS WHY THE PER-LINE SKIP WAS A NULL — the skip can only reach phase 1
 
-`make VIEWSKIP=1` (`docs/direct-bitplane-plan.md` §7i) deletes 39.5% of the sweep's line-visits on
+`make VIEWSKIP=1` (`docs/span-render-plan.md`) deletes 39.5% of the sweep's line-visits on
 target and moved the framerate **-0.4%**. One profile of each arm says why, and the load-bearing
 part is a set of COUNTS, not a timing — so the cross-run caveat does not apply to it:
 
@@ -1422,7 +1426,7 @@ as a **348-instruction out-of-line five-argument function**, called **25 times a
 stop moves on 9 of phase 3's 25 lines and 2 of phase 2's 16 — counted, see §the sweep's census).
 
 ⚠⚠ **That denominator was first written down as "~135 plants a frame" and it was an ASSUMPTION,
-not a count** — the exact failure mode `docs/postmortem.md` names. Counting it changes what the
+not a count** — the exact failure mode `docs/method-lessons.md` names. Counting it changes what the
 win means: −0.84 ms/frame over 25 plants is **238 effective cyc/plant**, which is the right order
 for deleting a five-argument call plus four unrolled walks; spread over 135 it would be 44, far
 too little for what was removed. ⭐ **When a win's per-call price looks implausibly cheap, the
@@ -1497,7 +1501,7 @@ phase 3's 25 lines and 2 of phase 2's 16.
 sized was built and cost +25.46 ms.** The counts here are sound and are still the reference for what
 the sweep must visit; the *pricing* in this section is what the sequel corrects.
 
-`docs/direct-bitplane-plan.md` §7j item 2 — the viewport source-event/run consumer — was the
+`docs/span-render-plan.md` item 2 — the viewport source-event/run consumer — was the
 largest un-built lever on the board and its pay-off hinged on a number nobody had measured: **how
 many cells a sweep would actually have to visit** if the consumer iterated events instead of all
 2148 slots. This section is that measurement. Instrument: `make SHAPE=1`'s run census
@@ -2617,7 +2621,7 @@ expansion-circuit real-BBC frame-buffer differential over display lines 82+** �
 instrument. On this measurement that instrument cannot be justified *by the campaign*; build it
 when a correctness question needs it (the hook seams are gated by nothing, which is its own reason)
 and take any wide-value pair it unblocks as a by-product. **The next real performance work is the
-REPRESENTATION change in `docs/direct-bitplane-plan.md`**, which attacks the machinery this
+REPRESENTATION change in `docs/span-render-plan.md`**, which attacks the machinery this
 measurement points at.
 
 ### ⭐⭐⭐ THE SPAN WALK IN 68000 ASM — ph11 **32.26 → 27.77 ms**, frame **132.90 → 128.23** (2026-09-23)

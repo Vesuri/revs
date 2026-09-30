@@ -189,7 +189,7 @@ static const uint8_t kLogicalForPen[4] = { 0, 2, 8, 10 };
    with the right colours reads exactly like a working one. */
 extern "C" { volatile unsigned long g_bandRejects = 0; }
 
-/* ⭐⭐ THE FLAT-BAND SKIP (Phase 6 item 0, step 1 — docs/direct-bitplane-plan.md §4/§4a).
+/* ⭐⭐ THE FLAT-BAND SKIP (Phase 6 item 0, step 1 — docs/span-render-plan.md).
  *
  * A band whose four Amiga colour registers all hold the SAME colour makes its bitplane content
  * unobservable, so decoding those lines produces pixels nobody can see.  The BBC's band 1 is
@@ -215,7 +215,7 @@ volatile uint16_t g_decodeFlatBands  = 0;    /* bands found flat in it          
    handful on a keypress, all 25 on a flash flip or a full repaint.  In PROBE_SYMS. */
 extern "C" { volatile uint16_t g_ttRowsDrawn = 0; }
 
-/* ⭐⭐ THE DIRTY-REGION DECODE (Phase 6 item 0, step 2's payoff — docs/direct-bitplane-plan.md §7b).
+/* ⭐⭐ THE DIRTY-REGION DECODE (Phase 6 item 0, step 2's payoff — docs/span-render-plan.md).
  *
  * MEASURED, on the target, car under power: **406 of 8320 frame-buffer bytes change per painted
  * frame (4.9%)**.  The pass converted all 8320 regardless, so ~95% of its 81 ms was re-converting
@@ -2335,7 +2335,7 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
         /* ⭐ THE PLOTTER OWNS THESE LINES.  Under REVS_PLOT_ONLY the view rasteriser no longer
            writes mem[] for its own region, so converting it would paint stale bytes over what the
            plotter drew.  The range is what the last sweep actually PAINTED, not a literal — the
-           viewport's extent is data (docs/direct-bitplane-plan.md §7e).  Whole character rows only,
+           viewport's extent is data (docs/span-render-plan.md).  Whole character rows only,
            which is why it is tested here rather than per line; the sweep's region is 77 lines, so
            the rounding costs at most one row at each end.
            ⚠ MEASUREMENT BUILD: vdu_char_def's digits compose against mem[] and are lost with it.
@@ -2396,7 +2396,7 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
     return converted;
 }
 
-/* ⭐ THE ORACLE HANDLE (docs/direct-bitplane-plan.md §5).  The direct-to-bitplane plotter writes
+/* ⭐ THE ORACLE HANDLE (docs/span-render-plan.md).  The direct-to-bitplane plotter writes
    no mem[], so `make validate` cannot check it; what CAN is the shipping decode, run over the same
    mem[] state — so it is exposed as a plain C entry point rather than reimplemented anywhere.
    ⚠ A file-static instance pointer, set by decode(): the object is a member of a function-local

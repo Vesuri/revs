@@ -2,7 +2,7 @@
 // that is referenced by instructions, with read/write counts and a sample of
 // the functions that use it. Output is a CSV for symbols.csv seeding.
 // Arg0 = output path
-//@category Atari
+//@category BBC
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;

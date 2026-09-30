@@ -30,7 +30,7 @@ void platform_indirect_jmp(uint16_t addr);
    plus carry.  ⭐ This is the WHOLE of what the dispatcher reads or writes — it
    never touches N/Z/V — so threading this struct through the boundary lets
    mos.cpp be entirely free of the global cpu struct.  See docs/bbc-hardware.md
-   §MOS calls and docs/cpu-elimination-audit.md §the MOS boundary. */
+   §MOS calls and docs/native-maintenance.md §the MOS boundary. */
 typedef struct { uint8_t a, x, y, c; } MosRegs;
 
 /* ⭐ What the MOS's SOUND / ENVELOPE OSWORD leaves in X and Y, and the buffer write pointers

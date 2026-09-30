@@ -2,7 +2,7 @@
 // auto-analysis can follow control flow.  The entry list lives in the sibling
 // file entrypoints.csv (a persistent, append-only seed list) — add a line there
 // whenever a new DLI / vector-only routine is found, NOT here.
-//@category Atari
+//@category BBC
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import ghidra.app.script.GhidraScript;

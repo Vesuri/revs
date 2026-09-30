@@ -1,6 +1,6 @@
 /* revs_native_seam.h — cluster-9 seam.  Shared vocabulary between revs_native.c
  * (the cpu-free typed cores) and revs_native_seam.c (the thin 6502-ABI shims).
- * Generated once by tools/split_seam.py; hand-maintained thereafter. */
+ * Hand-maintained native ABI boundary. */
 #ifndef REVS_NATIVE_SEAM_H
 #define REVS_NATIVE_SEAM_H
 #include <stdint.h>
@@ -400,7 +400,7 @@ REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
     return ram ? mem[addr] : (uint8_t)bus_read((uint16_t)addr);
 }
 
-/* ── ⭐⭐ THE VIEW SWEEP'S PER-LINE SKIP (docs/direct-bitplane-plan.md §7h) ──────────────────
+/* ── ⭐⭐ THE VIEW SWEEP'S PER-LINE SKIP (docs/span-render-plan.md) ──────────────────
  * `make VIEWSKIP=1`.  A scan line whose forty sources are all zero paints one flat run of its
  * background byte, so repainting it changes nothing — PROVIDED the background byte has not
  * moved and the previous paint was itself flat.  (That third part is the one a producer flag
@@ -603,7 +603,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
    skips the lanes reset_driving_variables' wipes are the only writer of).  Every marshal-OUT and
    every cpu write is on the _native side, so the mem[] mirror `make determinism` compares is
    unchanged.  Reasoning at build_track_geometry in revs_native_seam.c;
-   docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY for the measurement. */
+   docs/wide-value-cleanup.md, Marshalling contracts for the measurement. */
 GeoExit build_track_geometry_native(void);
 void check_crash_native(void);
 void draw_dash_needles_native(void);
@@ -1070,7 +1070,7 @@ void hook_horizon_clamp_guarded_nurburg(HookRegs *r);   /* Nurburgring $56C4 */
  * 3. Twenty cores that were file-static.  ⚠⚠ GCC inlined EVERY one of them away — none has
  *    a symbol in amiga/obj/revs_native.o — so giving them external linkage forces them into
  *    existence as real out-of-line functions.  That cost was measured either side of the
- *    move and is recorded in docs/native-sweep.md.  Nothing but the shims should call them
+ *    move; the measurements remain in Git history.  Nothing but the shims should call them
  *    across a TU boundary: a native caller belongs next to the core. */
 #define MUL_SRC_LO     MEM_point_delta_lo   /* point_delta_lo[0] — multiplicand low  (two's complement) */
 #define MUL_SRC_HI     (MEM_point_delta_lo + 1u)   /* point_delta_lo[1] — multiplicand high; bit 7 is its sign */

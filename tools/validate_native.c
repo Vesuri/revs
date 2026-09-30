@@ -4741,7 +4741,7 @@ extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native
 
    TWO INPUT SHAPES, because the real one is not the random one.  With random sources
    ~255 of every 256 units are dirty; the measured sweep is 96% CLEAN (2093 units, ~83
-   stores — docs/direct-bitplane-plan.md §7a), and a clean unit is the path where A
+   stores — docs/span-render-plan.md), and a clean unit is the path where A
    carries down the column from the cell above.  The `sparse` cases put the sources back
    at roughly that density so that path is the one under test.
    -------------------------------------------------------------------------- */
@@ -5749,7 +5749,7 @@ static int test_view_paint_lines(void)
        sound_stop_channel / text_script_interp read no carry before setting their own.
        Empirically confirmed too: poisoning all seven at the shim's exit leaves all five
        determinism trajectories and `make viewdiff` on all five circuits byte-identical (the
-       control — a wrong first scan line — does fail both).  docs/native-sweep.md §live masks. */
+       control — a wrong first scan line — does fail both).  docs/native-maintenance.md, Flag helpers and live masks. */
     unsigned liveMask = LIVE_S;
     unsigned long smcLegal, smcIllegal;
     int fail = 0, printed = 0, t;
@@ -7638,7 +7638,7 @@ static int test_geometry_leaves(void)
                    read nowhere before road_edge_start's own `LDX $08` at $235E, and the whole
                    road pass $2145-$2B62 has no BVS/BVC.  No circuit's ModifyGameCode patches
                    these spans and no hook re-entry point ($2490/$253B/$461B) lands in them.
-                   docs/native-sweep.md §live masks. */
+                   docs/native-maintenance.md, Flag helpers and live masks. */
                 subFail += diff_run(W[i].name, pre, c, W[i].n, W[i].o, nearMask, t, &printed);
                 if (mem[0x0008] != pre[0x0008] || mem[0x0006] != pre[0x0006]) moved++;
             }

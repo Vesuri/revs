@@ -1,6 +1,6 @@
 # ⭐⭐ THE DASHBOARD SWEEP'S SHAPE, IN THE SAME RUN AS THE PHASE SHARE.
 #
-# Phase 6 item 0 step 2 (docs/direct-bitplane-plan.md §6/§7).  `$7BE2` is the biggest row in the
+# Phase 6 item 0 step 2 (docs/span-render-plan.md).  `$7BE2` is the biggest row in the
 # profile, and "the dashboard is 36% and mostly static" was an assumption.  These two numbers,
 # taken together, decide what to do about it:
 #

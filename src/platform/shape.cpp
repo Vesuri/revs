@@ -182,7 +182,7 @@ static void run_census_after(void)
 /* ── ⭐⭐ THE SPAN CENSUS: THE COLOUR-RUN SHAPE OF ONE PAINTED LINE ──────────────────────────
    The run census above counts the cells that CHANGED, which sizes a SKIP scheme.  This counts
    how many contiguous COLOUR RUNS the sweep paints, which is a different question and the one
-   `docs/direct-bitplane-plan.md` turns on: a direct-to-bitplane renderer does not store cells,
+   `docs/span-render-plan.md` turns on: a direct-to-bitplane renderer does not store cells,
    it emits SPANS, so the run list — not the cell count — is its workload.
 
    ⭐ WHAT IT ANSWERED (driving, $63 = $2C..$32, 295 sweeps): 2155 stores a sweep are

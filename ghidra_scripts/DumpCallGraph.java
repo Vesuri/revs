@@ -1,7 +1,7 @@
 // Dump the full call graph as an edge list plus a function summary
 // (entry addr, size in bytes, callers, callees, indirect jumps).
 // Arg0 = output path
-//@category Atari
+//@category BBC
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;

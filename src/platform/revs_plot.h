@@ -2,7 +2,7 @@
 #define REVS_PLOT_H
 /* revs_plot.h — DIRECT-TO-BITPLANE PLOTTING for the 3D view rasteriser ($7BE2).
  *
- * ⭐⭐ WHY THIS EXISTS, AND WHY IT IS RUNS AND NOT CELLS.  `docs/direct-bitplane-plan.md` §7d/§7e:
+ * ⭐⭐ WHY THIS EXISTS, AND WHY IT IS RUNS AND NOT CELLS.  `docs/span-render-plan.md`:
  * measured on a real BBC, `$7BE2` writes display lines 80..157 — the viewport, not the dashboard —
  * at 2148 stores a frame, and `A` carries between its units, so a cell whose source byte is zero
  * repeats whatever the cell to its LEFT drew.  With ~83 non-zero sources across ~77 scan lines,

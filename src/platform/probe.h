@@ -151,7 +151,7 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
  *                the dashboard rows.  It was `DECODE`, the BBC frame buffer -> bitplanes pass, and
  *                that conversion now runs only on a frame where some line has no painter (i.e. the
  *                cold ones).  Still pure port overhead
- *               and the thing docs/direct-bitplane-plan.md is about.
+ *               and the thing docs/span-render-plan.md is about.
  *   28  SPIN    waiting for the next real vblank after the paint.  Should be ~0 at 1 FPS; anything
  *               large here means the loop is waiting for the display rather than the reverse.
  *

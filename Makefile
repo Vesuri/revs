@@ -128,7 +128,7 @@ CFLAGS   += -DREVS_HOLD_THROTTLE
 CXXFLAGS += -DREVS_HOLD_THROTTLE
 endif
 
-# ⭐⭐ `make VIEWSKIP=1` — the view sweep's per-line skip (docs/direct-bitplane-plan.md §7h).
+# ⭐⭐ `make VIEWSKIP=1` — the view sweep's per-line skip (docs/span-render-plan.md).
 # A scan line with no dirty source, an unmoved background byte and a flat previous paint writes
 # the bytes already in its cells, so it is not painted at all.  Measured at 38% of the scan.
 # ⚠ `make validate` cannot gate it (its fixtures write sources behind the marking hooks) — the
@@ -1086,8 +1086,8 @@ gen:
 # Rebuild the post-load memory image from the disc.
 #   make image              -> the default circuit (SILVER)
 #   make image TRACK=BRANDS -> another (SILVER BRANDS DONING NURBURG OULTON SNETTER)
-# ⚠ The image is the state BEFORE the track file patches the engine, and it is unconfirmed
-# against a real machine — see tools/ssd_load.py and docs/bbc-reference-loop.md.
+# The image is the state BEFORE the track file patches the engine; disassemble only
+# after engine relocation — see tools/ssd_load.py and docs/bbc-reference-loop.md.
 image:
 	python3 tools/ssd_load.py revs.ssd disasm $(TRACK)
 
@@ -1307,7 +1307,7 @@ viewdiff:
 	echo "viewdiff: every circuit's view matches the real BBC over display lines 82+"
 
 # ⭐⭐ THE STORE CENSUS — every frame-buffer write a REAL BBC makes, attributed to the routine that
-# made it, over the whole picture.  This is the measurement docs/direct-bitplane-plan.md §3's layout
+# made it, over the whole picture.  This is the measurement docs/span-render-plan.md's layout
 # choice was deferred behind: a direct plotter's cost is STORES, and the port's own shape counters
 # are snapshot diffs that can only see CHANGES (a re-plotted identical span costs full price and
 # shows up as nothing).  The report prints both, per routine.

@@ -1,6 +1,6 @@
 # ⭐⭐ HOW MUCH OF THE PICTURE ACTUALLY CHANGES, and WHO WRITES IT — on the TARGET.
 #
-# The measurement that gates the direct-bitplane layout choice (docs/direct-bitplane-plan.md §6
+# The measurement that gates the direct-bitplane layout choice (docs/span-render-plan.md
 # step 3): `decode()` converts all 8320 frame-buffer bytes every painted frame, and if only a few
 # hundred of them differ from the previous paint then a dirty-region pass captures most of what
 # direct plotting would, for a fraction of the work.

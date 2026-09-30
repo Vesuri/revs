@@ -1,49 +1,24 @@
-# Rendering DIRECT to bitplanes — the Phase 6 lever the plan was missing
+# Rendering architecture and design
 
-> ## ⭐⭐⭐ READ THIS FIRST — THE PLAN AND ITS STATUS (single source of truth, 2026-09-14)
->
-> **THE PLAN is §10** — *the replacement architecture: world points → spans → bitplanes* (user
-> directive, committed `ab9724c`). It **deletes** the whole `producer → BBC-framebuffer → decode`
-> chain and renders the game's own ~400-byte analytic scene (`surface_edge_0..3` + one colour per
-> line) straight to bitplanes as ≤5 longword-filled spans per line. Stages A/B/C/D, sized in §10e at
-> ~181 → **~48 ms** of per-frame work.
->
-> **THE STATUS, unambiguously:**
-> - **Step 1 (`make SPANEMIT=1`) is BUILT and BYTE-EXACT** (oracle green, §10k). It is a
->   **correctness scaffold, not the architecture** — it runs the *entire existing* `view_paint_lines`
->   sweep at full cost and merely *adds* bitplane plotting on top, removing only the mem[] store on
->   full lines. It is **additive by construction.**
-> - **Step 1 measured +54 ms** (§10L). ⭐ **This is EXPECTED and does NOT condemn §10.** Adding
->   plotting to a pipeline you have not deleted must cost more. The +54 ms tests the scaffold, not
->   the replacement.
-> - **The §10 architecture is NOT closed — it is UNPROVEN.** No build yet *deletes* `view_paint_lines`
->   (58.7 ms) and renders from the analytic scene instead; that is Stage A/B, unbuilt. The only valid
->   test is a full-line renderer that **replaces** the sweep for its lines, never one that adds to it.
-> - ⚠ Genuine risk remains (§10e's own warning): this project's record with cycle models at this seam
->   is poor, and three schemes that *bolted onto* the mem[] scan all lost (a mirror-each-store plotter
->   −9%, the source-event consumer +25 ms, this scaffold +54 ms). The architecture is different in
->   kind — it removes the scan rather than adding to it — but "different in kind" is an argument, not
->   yet a measurement.
->
-> **THE EARLIER PLAN lives in `docs/direct-bitplane-plan.md`, now marked OBSOLETE.** It was a
-> different approach — keep the mem[] framebuffer, mirror stores into bitplanes and/or skip the
-> decode, with writer-maintained dirty maps — and it did not work (three measured dead ends). Its
-> baselines were from a ~1282 ms-frame era and are meaningless now. It is kept only because shipped
-> source and other docs still cite its §1–§9 findings (the layout, several shipped optimisations); do
-> **not** follow it as a plan. Every live fact it held (the layout, the "game reads its own
-> framebuffer" constraint, the sky-band hazard, the three nulls) is restated below where it is used.
-> **This document — `docs/span-render-plan.md` — is the only live rendering plan. Follow only this.**
->
-> ---
->
-> **Origin (kept for context).** The plan began 2026-08-16 after the user pointed out that the Phase 6
-> target list (`docs/phases.md`) priced hand-asm on the hot functions and never questioned the
-> arrangement those functions render *into* — the port draws the way the BBC drew, into a BBC-shaped
-> buffer, then pays a whole extra pass to turn that into something an Amiga can display. ⚑ **The
-> predecessor project shipped a change of this kind and measured it** (`~/Documents/Rescue on
-> Fractalus`, `docs/terrain-render-plan.md` + `docs/flight-perf-log.md`).
+The default Amiga renderer paints terrain directly, with the cockpit on a second
+playfield and moving instruments on sprites. The per-frame BBC framebuffer decode
+has been removed from the normal race path. The original direct-plot proposal is
+retired; its useful layout and fidelity constraints are covered here.
 
----
+Start with section 13 for the latest source-buffer analysis and
+[open work](open-work.md) for unresolved questions. Sections 10–12 preserve the
+contracts and measurements behind the implementation; their proposed stages,
+old baselines and completed experiments are not an active work queue.
+The remaining analytic renderer is unbuilt, with an estimated ceiling of about
+5 ms and unresolved kerb-join and object-layer details.
+
+The BBC display buffer uses character-cell interleaving:
+`offset = charRow * 320 + cell * 8 + lineInRow`, based at `$5A80`.
+The original view consumer scans `$80`-spaced source blocks, carries a translated
+byte across zero entries and clears consumed entries. The game also reads parts
+of its picture for physics. A replacement must preserve those inputs, same-cell
+composition and the overlay storage reused outside a race.
+
 
 ## 10. ⭐⭐⭐ THE REPLACEMENT ARCHITECTURE — world points → spans → bitplanes (user directive, 2026-09-14)
 

@@ -325,7 +325,7 @@ the eight routines above, where BCD must be reproduced exactly.
 arithmetic through `bcd_add`/`bcd_sub` in `src/cpu/bcd.h`; every `cpu.D = 1` is gone from
 `revs_native.c` and the `SED`s are expressed as the helper call itself. The three surviving
 `cpu.D = 0` writes are the routines' own architectural CLDs (state left for the caller — one of
-them is asserted by `validate_native.c`), not decimal-mode plumbing. `docs/native-sweep.md`
+them is asserted by `validate_native.c`), not decimal-mode plumbing. `docs/native-maintenance.md`
 §The BCD routines.
 
 ⭐ **The 68000's `ABCD`/`SBCD` do the digits**, measured over all 256×256×2 inputs against the
@@ -737,7 +737,7 @@ And a name that was wrong, corrected: **`menu_key_tbl` at `$39E0` has exactly fo
 two bytes after it are not a fifth and sixth key binding — `$39E4` is the start of `car_lap_mid`, a
 20-entry per-car array, which is why they change at runtime.  Finding `sort_cars_by_key` using
 `$39E4` as a car array is what settled it.  The earlier reading ("six-entry, user-rebindable") was
-a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md` is about.
+a guess dressed as a fact, and it is the exact failure mode `docs/method-lessons.md` is about.
 
 ### ⭐ Three of those slots' DATA STRUCTURES (named 2026-08-17 with twins #6/#7/#8)
 
@@ -804,7 +804,7 @@ Settled while clearing the rename queue; all three were open questions in it.
   `edge_x` + `$10`; the walk is capped at 18 points from cursor 6 / `$2E` (`$2498 CPY #$12`) and
   `emit_edge_width_offset` skips the first three, so each half only ever fills its own 25..39 slack.
   Highest byte written is `$5E8F`/`$5EDF` — nothing reaches `$5EE0`.  This is the one aliasing fact
-  a buffer rearrangement must carry forward (`docs/direct-bitplane-plan.md` §5a).
+  a buffer rearrangement must carry forward (`docs/span-render-plan.md`).
 
 ## ⭐ Phase 5 addition — the display is fully derived, and the sky hides live code
 

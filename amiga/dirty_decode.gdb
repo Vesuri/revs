@@ -1,6 +1,6 @@
 # ⭐⭐ THE DIRTY-REGION DECODE — did it engage, and does it produce the SAME PICTURE?
 #
-# Phase 6 item 0 step 2's payoff (docs/direct-bitplane-plan.md §7b): only 4.9% of the BBC frame
+# Phase 6 item 0 step 2's payoff (docs/span-render-plan.md): only 4.9% of the BBC frame
 # buffer changes per painted frame, so decode() now converts only the cell columns whose eight
 # source bytes moved since THIS buffer (the Amiga is double-buffered) was last decoded.
 #

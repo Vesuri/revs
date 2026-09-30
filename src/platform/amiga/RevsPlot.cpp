@@ -1,5 +1,5 @@
 /* RevsPlot — the direct-to-bitplane path for the 3D view rasteriser.  See revs_plot.h for what
-   this is and why it is runs rather than cells; docs/direct-bitplane-plan.md §7d/§7e for the
+   this is and why it is runs rather than cells; docs/span-render-plan.md for the
    measurements that chose it.  Amiga-only and unvalidated by construction: the oracle is
    RevsScreen::convertRace(), not `make validate` (§5). */
 

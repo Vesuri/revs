@@ -20,9 +20,9 @@ Moxon's invention; the code is the original's.
 
 ## What this changes
 
-The two highest-leverage items in `docs/postmortem.md` were both about the cost of *discovery*:
+Two recurring discovery costs are reduced by the annotated reference:
 
-| Postmortem item | Original cost | With this reference |
+| Discovery task | Original cost | With this reference |
 |---|---|---|
 | #1.1 The exhaustive entry-point sweep — handlers reachable only via indirect vectors, discovered piecemeal over the whole RoF project | days, and every premature static conclusion was wrong | largely **already done** — the dispatch structure is documented |
 | #1.2 One concentrated behavioural-naming pass — "on a binary-only project the names are your map" | a dedicated phase | a **complete naming scheme already exists** |

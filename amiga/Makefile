@@ -6,8 +6,7 @@
 #   make PROBES=1        + headless auto-run and the timing probes (diag_run.sh needs this)
 #   make FPSCOUNT=1      the HONEST framerate build: one counter, no probe instrumentation
 #   make STRAIGHT_TO_RACE=1  ⭐ boot into a Silverstone practice session, engine running,
-#                        then hand the keyboard to the player — the only way to SEE this
-#                        port, since the MODE 7 front end is not rendered
+#                        then hand the keyboard to the player (diagnostic shortcut)
 #   ./run.sh             boot in FS-UAE (CTRL-Q quits)
 #   ./debug.sh           source-level debug via the FS-UAE GDB stub
 #   ./diag_run.sh [secs] headless probe run (needs PROBES=1)
@@ -302,7 +301,7 @@ endif
 # line-visits while driving on the host; this is the switch that turns that into a framerate.
 # ⚠ It is gated ONLY by the host differentials (determinism / -drive / -crash / -steer / -race
 # and viewdiff) — `make validate` cannot see it.  Read the effect off g_viewSkipLines /
-# g_viewSkipPaints; docs/direct-bitplane-plan.md §7i.
+# g_viewSkipPaints; docs/span-render-plan.md.
 ifdef VIEWSKIP
 EXTRA_DEFINES += -DREVS_VIEWSKIP
 PROBE_SYMS_VIEWSKIP = g_viewSkipLines g_viewSkipPaints
@@ -621,14 +620,14 @@ endif
 # four colour registers are identical (the BBC's band 1: 63 lines of flat blue hiding live engine
 # code).  ON by default; this is the A/B build for pricing it, and the fallback if a band ever
 # turns out to be flat in the record but not on screen.  See RevsScreen.cpp g_decodeFlatLines and
-# docs/direct-bitplane-plan.md §4a.
+# docs/span-render-plan.md.
 ifeq ($(FLATSKIP),0)
 EXTRA_DEFINES += -DREVS_NO_FLATSKIP
 endif
 
 # `make DIRTY=0` — convert EVERY cell of the frame buffer, instead of only the ones whose eight
 # source bytes changed since this buffer was last decoded.  ON by default; measured 4.9% of the
-# buffer changes per painted frame (docs/direct-bitplane-plan.md §7b), so this is the control build
+# buffer changes per painted frame (docs/span-render-plan.md), so this is the control build
 # for pricing it.  ⭐ The switch PRINTS its own state without needing a define of its own:
 # g_decodeCells reads 1040 of 1040 every frame here and well under it in the shipping build, which
 # is the lesson from the A/B whose control was silently rebuilt as the test (docs/method-lessons.md).
@@ -646,7 +645,7 @@ EXTRA_DEFINES += -DREVS_DIRTYCHECK
 endif
 
 # ⭐⭐ `make DIRECTPLOT=1` — the 3D view rasteriser ($7BE2) plots RUNS straight into the bitplane
-# buffer as well as writing mem[] (src/platform/revs_plot.h, docs/direct-bitplane-plan.md §7e).
+# buffer as well as writing mem[] (src/platform/revs_plot.h, docs/span-render-plan.md).
 # ⚠ In this first form it is REDUNDANT work, not a saving: the mem[] stores stay, so the picture
 # cannot break and the run plotter can be proven byte-exact before anything depends on it.
 ifeq ($(DIRECTPLOT),1)

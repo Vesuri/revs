@@ -815,7 +815,7 @@ static unsigned step_scanline(int* carry_out)
        lives in $67..$7A — so a sabotage dropping it survives `make validate`.  Kept because the
        6502 has the second ADC.  The value path IS covered: the step size and plot_ptr2's low
        byte both fail.  (The exit A/V/N/Z/C the 6502 also leaves here are dead — the routine's
-       only two callers overwrite every one of them; docs/native-sweep.md §live masks.) */
+       only two callers overwrite every one of them; docs/native-maintenance.md, Flag helpers and live masks.) */
     if (carry_out) *carry_out = (int)(hi2 >> 8);
     return next;
 }
@@ -1973,7 +1973,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
             PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40, plot_ptr_v);
             SPAN_SCAN_CHECK(line);
 #ifdef REVS_SPAN_EMIT
-            /* ── ⭐⭐⭐ THE SPAN EMITTER (docs/direct-bitplane-plan.md §10j step 1) ───────────
+            /* ── ⭐⭐⭐ THE SPAN EMITTER (docs/span-render-plan.md step 1) ───────────
                Nothing wrote this line's forty sources and no stop is planted in it, so every one
                of the forty units would consume a zero source, keep `byte`, and store it: **the
                whole line is ONE run of the background byte.**  Emit it as one span straight into
@@ -3897,7 +3897,7 @@ abandon:                                /* a trap ended the sweep; publish what 
    chain can zero a byte the driver is about to read, and **every table read must happen where the
    6502 did it** — hoisting one out of the loop changes behaviour.
 
-   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units per sweep, ~83 changing a
+   ⭐ SHAPE, MEASURED (docs/span-render-plan.md): 2093 units per sweep, ~83 changing a
    byte — 96% of the work is a dirty test that finds nothing.  That 96% is the GAME's algorithm
    and the twin keeps it; deleting the scan is a representation change tracked separately.  The
    forty unrolled units are one indexed loop over a regular structure:
@@ -3912,7 +3912,7 @@ abandon:                                /* a trap ended the sweep; publish what 
    and the oracle stores anyway).
 
    EXIT CONTRACT: **`live=S` — A/X/Y and N/V/Z/C are all dead, and that is AUDITED**, not assumed
-   (docs/native-sweep.md).  $7BBF/$7FAC do leave A = $E0 and the line counter 3, and phase 3 does
+   (docs/native-maintenance.md).  $7BBF/$7FAC do leave A = $E0 and the line counter 3, and phase 3 does
    leave C/V set, but every one of the four call sites redefines what it reads before branching.
    The chain's own intermediate flags are dead for the same reason, which is why the unit loop
    keeps no flags at all. */
@@ -4905,7 +4905,7 @@ CameraExit update_camera_and_height_core(void);
    It answers entirely in mem[] — the three near-slot cells — and nothing is live at the exit
    but S: its one caller ($23AF, inside road_edge_start) does `LDA #7 / CMP near_edge_...`
    immediately, and X is not read again before road_edge_start's own `LDX $08` at $235E.
-   docs/native-sweep.md §live masks. */
+   docs/native-maintenance.md, Flag helpers and live masks. */
 void clamp_near_edge_cursor_core(uint8_t candidate)
 {
     unsigned slot = (candidate + 1u) & 0xFFu;         /* $12DC INX */
@@ -7560,7 +7560,7 @@ uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
    body in any of its nine scenarios, so the mirror is not keeping a transpiled reader alive.
    It also costs the port nothing: `--gc-sections` links zero `__t6502` symbols into Revs.exe,
    so a marshal that exists only to keep `make validate`'s fixture byte-exact is free on the
-   target (docs/wide-value-cleanup.md §ORACLE-ONLY MARSHALLING COSTS THE SHIPPING BUILD NOTHING).
+   target (docs/wide-value-cleanup.md, Pricing further work).
 
    ⚠ What DOES still read the mirror in production is a TWIN: advance_player_section_core takes
    element 2's high byte as `heading_step_hi` ($62E2).  That is the remaining class — two native
@@ -7884,7 +7884,7 @@ static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t
 }
 
 /* The two boundary tables are the arguments because they are the one thing a change of view
-   representation moves (docs/direct-bitplane-plan.md §7a); the column and line numbers are
+   representation moves (docs/span-render-plan.md); the column and line numbers are
    the viewport's own geometry and stay immediates. */
 SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc)
 {
@@ -8034,7 +8034,7 @@ void copy_dash_data_core(uint8_t dirFlag)
    unnormalised operands (the user's "true 68000 ratio" decision), and the only callers left of
    `div16by8()` are the two `__t6502` oracle bodies in revs_gen.c.  So the loop below costs the shipping build nothing per frame, and replacing it
    would mean relaxing two fixtures that still compare V in order to speed up the ORACLE.  Same
-   shape as `scale16_by_y`'s PHP/PLP: it is the oracle being an oracle (docs/native-sweep.md). */
+   shape as `scale16_by_y`'s PHP/PLP: it is the oracle being an oracle (docs/native-maintenance.md). */
 
 /* The numerator is ONE 16-bit value; the 6502 keeps its top half in A and its bottom half in
    math_lo, which the loop consumes bit by bit and hands back as the quotient, so the shim
@@ -12781,7 +12781,7 @@ void store_slip_clamped_core(uint8_t valueHi)
        against slip_magnitude's high byte alone and never looks at the low lanes.  Written wide
        the two are different predicates whenever the high bytes are equal, so the compare stays
        a byte compare even though the value it selects is a word
-       (docs/wide-value-cleanup.md §The wrap test). */
+       (docs/wide-value-cleanup.md, Wrap semantics). */
     uint8_t hi = valueHi;
     if (hi >= mem[SLIP_MAG_HI]) {                   /* $4B47 CMP / $4B49 BCC — at/over it: clamp */
         math_lo = mem[SLIP_MAG_LO];                 /* $4B4B-$4B4D — the clamp's own low lane */
@@ -14534,8 +14534,7 @@ static void build_road_sign_core(void)
 void build_road_sign(void)      { car_heading_marshal_in();  view_origin_marshal_in();
                                   build_road_sign_native(); }
 /* ⭐ The frame driver's entry, one level below the two wipe-only INs (car_heading, view_origin —
-   the arrays are authoritative in production: docs/wide-value-cleanup.md §DROPPING THE
-   IN-MARSHALS).  The three multi-tenant zero-page pairs keep their IN, and every OUT stays. */
+   the arrays are authoritative in production: docs/wide-value-cleanup.md, Marshalling contracts).  The three multi-tenant zero-page pairs keep their IN, and every OUT stays. */
 void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
                                   build_road_sign_core();
                                   hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
@@ -17999,7 +17998,7 @@ void clear_race_clock_core(uint8_t x)
        predicate is "the decrement would leave bit 15 set", and the reload is one assignment.
        ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
        patch it at runtime, so it is read wide per call rather than relocated to a global
-       (docs/wide-value-cleanup.md §FOURTH eligibility test). */
+       (docs/wide-value-cleanup.md, Eligibility and the fourth eligibility test). */
     uint16_t dist = car_distance_16[x];
     /* ⚠ the low lane is only decremented once, at the end; the 6502 borrows into the high lane
        ONLY when the low one is already zero, so the sign test is gated on that. */
@@ -18682,7 +18681,7 @@ void reset_driving_variables_core(void)
        audit build that compared every `*_marshal_in`'s reconstruction against the live value
        over eleven scenarios found the lanes diverging only here — one model_state divergence in
        51896 race round trips, elem 2, $FFFF vs $0000, at exactly this wipe
-       (docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY).
+       (docs/wide-value-cleanup.md, Marshalling contracts).
        It writes no mem[] byte, so it is invisible to every differential today: the in-marshals
        still re-read the zeroes a moment later.  It is the PREREQUISITE for dropping them. */
     car_heading_v   = 0x0000u;
@@ -19463,7 +19462,7 @@ void build_player_car_core(void)
     /* $11D9-$11E8 — the camera sits where the car is: a component-wise copy of the whole world
        coordinate.  object_coord is still a plane split in mem[] (it is elements $FD..$FF of the
        256-entry section table, which does not pay a whole-array marshal — see
-       docs/wide-value-cleanup.md §SECTION_COORD), so the read side rebuilds each word by hand
+       docs/wide-value-cleanup.md, Table representation), so the read side rebuilds each word by hand
        and only the destination is relocated. */
     for (int axis = 2; axis >= 0; axis--)
         view_origin_16[axis] = (uint16_t)(mem[MEM_object_coord_lo + axis]

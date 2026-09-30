@@ -24,7 +24,7 @@ ALLOWED = {
   #    all.  The ambient register file IS the subject of that seam code -- the "caller" is
   #    whatever foreground the interrupt preempted, so there is nothing to thread an argument
   #    from -- but that is an argument for where it lives, not for it living in a core file.
-  #    g_irqClobberCount asserts the contract on both backends (docs/native-sweep.md track 4).
+  #    g_irqClobberCount asserts the contract on both backends (docs/native-maintenance.md, CPU and ABI boundaries).
 
   # -- class 3: the STACK POINTER.  `cpu.S` here is an ADDRESS, not a value in a register --
   #    the routine is talking about a byte at $0100+S.  C has no equivalent to drop it into.

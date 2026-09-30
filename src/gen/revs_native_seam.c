@@ -1,5 +1,5 @@
 /* revs_native_seam.c — the thin 6502-ABI marshalling shims for the cpu-free cores
- * in revs_native.c.  Cluster-9 seam relocation (tools/split_seam.py).  Each shim reads
+ * in revs_native.c.  Hand-maintained ABI boundary.  Each shim reads
  * cpu/mem[], calls the typed core, and marshals the result + exit ABI back. */
 #include "revs_native_seam.h"
 
@@ -245,7 +245,7 @@ void build_track_geometry(void)
    wide value whose byte lanes are zeroed ONLY by reset_driving_variables' two wipes, and that
    routine now zeroes the relocated copies too -- so in production the lanes can tell these
    arrays nothing they do not already hold, and the read is pure waste (MEASURED over eleven
-   scenarios: docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY).  It cannot simply be
+   scenarios: docs/wide-value-cleanup.md, Marshalling contracts).  It cannot simply be
    deleted, because `make validate` randomises mem[] and enters through this shim, and
    build/validate_native links the very same objects as build/revs, so there is no compile-time
    flag to hide it behind.  So it stays HERE, on the 6502-ABI path the harness uses, and native
@@ -1542,7 +1542,7 @@ void stage_nearby_car_at_core(uint8_t orderIndex)
    per call and move_and_draw_cars_core calls it seven times a frame, so the camera was being
    rebuilt from its byte lanes fourteen times a frame for a value nothing in the pass moves
    (view_origin diverged 6 times in 142258 round trips, car_heading 0 in 77840 --
-   docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY).  `make validate` enters at each
+   docs/wide-value-cleanup.md, Marshalling contracts).  `make validate` enters at each
    shim and still gets its read; the native caller enters at move_and_draw_cars_core. */
 void stage_nearby_car(void) { view_origin_marshal_in(); stage_nearby_car_at_core(cpu.X); }
 
@@ -1891,7 +1891,7 @@ void hw_init(void) { hw_init_core(cpu.Y); }   /* Y is the OSBYTE $9A call's inpu
 
    EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured on a
    real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
-   seam (g_irqClobberCount, and see docs/native-sweep.md track 4).  A arrives via mos_irq_a,
+   seam (g_irqClobberCount, and see docs/native-maintenance.md, CPU and ABI boundaries).  A arrives via mos_irq_a,
    which only the MOS's own IRQ ENTRY ever writes; `PLA/TAX` restores X; Y is never touched;
    flags and S come back from the RTI. */
 void irq1v_band_schedule(void)
