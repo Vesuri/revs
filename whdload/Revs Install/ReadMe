@@ -46,7 +46,9 @@
  Install icon and, when asked for the disc image, select the .ssd file. Its
  filename does not matter: the installer copies it to the game drawer as
  "revs.ssd". Both images are 204800 bytes and carry the same game engine; the
- circuits are built into the port, so either one gives all six.
+ circuits are built into the port, so either one gives all six. When updating
+ an existing installation, the installer offers to keep the disc image that is
+ already installed, and then does not ask for the file again.
 
  The game checks the disc image when it starts and reads the engine from it.
  If the check fails, make sure the file is one of the two images above and not

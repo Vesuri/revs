@@ -10,6 +10,7 @@ sizes. The user's decisions behind all of it are `docs/phases.md` §Phase 7.
 | `whdload/Revs Install/` | the install package, derived from WHDLoad's Install Template through RoF's (Install, ReadMe, icons) |
 | `tools/package_whdload.py` | stages and archives `dist/Revs-<version>.lha`; refuses any member carrying REVS2 bytes |
 | `tools/test_whdload.py` | the game under WHDLoad in FS-UAE, judged from WHDLoad's core dump |
+| `tools/test_installer.py` | the Install script under the real Installer 43.3 in FS-UAE, six disc-image scenarios |
 | `make dist` (repo root) | `engine-image` → clean `DIST=1` exe → slave → package |
 
 ## What ships and what does not
@@ -74,6 +75,30 @@ and the game owns the VERTB vector — on a 68000 the run simply never ends (mea
 400 s). ⚠ And without `FILELOG`: logging every one of LoadSeg's small reads on a 68000 outlasted a
 150 s ceiling before the game started.
 
-The Install script is not run by any automated test (Installer is interactive): ✅ **the user ran
-the install on their own setup and it works as expected (2026-09-30, a pre-release build of the same Install script)**. Re-run it by hand after
-any change to `whdload/Revs Install/Install`.
+## The Install script (`tools/test_installer.py`)
+
+✅ **The user ran the install on their own setup and it works as expected** (2026-09-30, before the
+disc-image reuse below existed).
+
+**Reusing an installed disc image.** When `data/revs.ssd` is already in the target drawer (and is
+204800 bytes), the script asks "Use existing" / "Select again" *before* the drawer question, and
+"Use existing" skips the file requester. The drawer question defaults to **Delete**, so a kept image
+is parked beside the drawer as `Revs.revs-ssd` while the drawer is deleted and moved back into the
+new `data/`; a cancelled install that leaves it parked gets it offered next time. Modelled on the
+Vette port's "Reinstall / Use existing".
+
+`tools/test_installer.py` runs Commodore's Installer 43.3 on the real script in FS-UAE (an A1200,
+Kickstart 3.1, the Workbench 2.04 floppy), with the requesters answered from a scenario and every
+`message` logged instead of shown. Six scenarios — `fresh`, `keep-delete`, `keep-skip`,
+`again-delete`, `stash`, `bad-size` — each check which questions were asked, which `revs.ssd` was
+installed, whether the old drawer's contents survived and that the exe, slave and icon are the new
+ones. ✅ all six PASS; the pre-change script FAILS `keep-delete` and `keep-skip` (sabotage).
+Two traps it hit:
+
+- ⚠ **A boot without `ENV:` hangs the Installer on "Please insert volume ENV:"** at the script's
+  first `getenv` — a hand-written startup-sequence must make `ENV:` and `ENVARC:`.
+- ⚠ **Installer's `textfile` fails when its file already exists** (a requester, so another hang):
+  every logged form writes a file of its own.
+
+The interactive half — the requesters' wording and layout — is still checked by eye: re-run the
+install by hand after changing a prompt.
