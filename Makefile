@@ -903,6 +903,18 @@ tracks: track-fixtures $(TRACKS_OBJS) | build
 	$(CC) $(CFLAGS) -o build/validate_tracks $(TRACKS_OBJS)
 	./build/validate_tracks
 
+# ⭐⭐ THE RELEASE: dist/Revs-<version>.lha (docs/whdload.md).  A clean DIST build of the exe (no
+# counters, no instruments — amiga/Makefile §DIST), the slave, and the WHDLoad install package,
+# archived by tools/package_whdload.py — which REFUSES any member carrying a block of REVS2.
+# The circuit table and the title page are generated from the local discs first (they ship in
+# the exe by the user's decision), so a fresh clone gets the same six circuits.
+.PHONY: dist
+dist: engine-image
+	$(MAKE) --no-print-directory titlescreen
+	bash -c '. amiga/env.sh && $(MAKE) --no-print-directory -C amiga clean && $(MAKE) --no-print-directory -C amiga -j8 DIST=1'
+	$(MAKE) --no-print-directory -C whdload Revs.slave
+	python3 tools/package_whdload.py
+
 # ⭐⭐ THE RELEASE'S STARTUP LOADER (src/platform/engine_image.c) against the dev image.  The
 # release exe carries no engine bytes: it reads REVS2 off the player's disc image and replays the
 # engine's own unpack.  This builds that image from each supported disc down the same path and

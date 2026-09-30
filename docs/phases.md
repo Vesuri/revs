@@ -1317,7 +1317,14 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 
 ---
 
-## Phase 7 — Packaging ⬜
+## Phase 7 — Packaging ✅ (0.1, 30.09.2026)
+
+**Shipped as `dist/Revs-0.1.lha` (`make dist`)** — the design, the tests and the memory sizes are
+`docs/whdload.md`. Every step below is done and gated: the startup loader (`make engine-image`),
+the release profile (`make DIST=1`, `dist-audit`), CTRL-Q (`amiga/quit_test.gdb`), memory on a
+512 + 512 KB machine (`amiga/mem_target.gdb`), and the slave + install package under WHDLoad on the
+Kickstart 1.3 kickemu (`tools/test_whdload.py`: run, quit, nodisc — and run again from the files
+extracted out of the archive itself).
 
 ### The decisions (user, 2026-09-30)
 

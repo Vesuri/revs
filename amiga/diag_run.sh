@@ -12,6 +12,8 @@ DELAY="${1:-14}"
 # $AMIGA_MODEL=A1200 re-runs the same probe on a 68020 to expose beam-timing races that a
 # faster CPU moves into the danger window.
 MODEL="${AMIGA_MODEL:-A500+}"
+# $CHIP_KB / $FAST_KB size the machine (FS-UAE keeps the FIRST value of a repeated option, so
+# EXTRA_ARGS cannot override them); slow RAM goes in EXTRA_ARGS, e.g. --slow_memory=512.
 # Optional extra fs-uae args, e.g. EXTRA_ARGS="--cpu=68040 --jit_compiler=1".
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -36,7 +38,7 @@ cp -f "${REVS_DISC:-../revs.ssd}" "$DH1/revs.ssd"
 
 fsuae_claim_port
 "$FSUAE" \
-  --amiga_model="$MODEL" --chip_memory=1024 --fast_memory=8192 \
+  --amiga_model="$MODEL" --chip_memory="${CHIP_KB:-1024}" --fast_memory="${FAST_KB:-8192}" \
   --kickstart_file="$ROM" \
   --hard_drive_0="$DH0" --hard_drive_1="$DH1" \
   --automatic_input_grab=0 --fullscreen=0 --window_width=720 --window_height=568 \

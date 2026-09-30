@@ -182,6 +182,8 @@ make track-patch           #   what each circuit's ModifyGameCode writes (VERIFY
 make trackmenu             # ⭐ the CIRCUIT MENU vs the real REVSMEN, byte for byte (PPM=tmp/tm)
 make trackmenu-fixture     #   ...re-record those pages off jsbeeb
 make titlescreen           #   regenerate the embedded 5TRSCRN page (git-ignored: disc bytes)
+make engine-image          # ⭐ the exe's STARTUP LOADER (REVS2 off the .ssd + the unpack in C) vs revs_runtime.bin
+make dist                  # ⭐ THE RELEASE: clean DIST=1 exe + slave -> dist/Revs-<ver>.lha (docs/whdload.md)
 ```
 
 ⚠ **`make tracks` and `make track-run` answer DIFFERENT questions and you need both.** `tracks`
@@ -206,6 +208,9 @@ ground truth is FS-UAE + gdb on the Amiga build. The host build exists for `make
 . env.sh        # put the ~/.local Amiga toolchain on PATH (source it, SAME shell command)
 make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every link)
 make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
+make DIST=1     # the RELEASE build: every REVS_DIAG() counter stripped (src/platform/diag.h), dist-audit
+                #   fails the link if one survives.  ⚠ A NEW always-compiled counter must be written
+                #   REVS_DIAG(...) and listed in DIAG_SYMS — and never wrap a counter the code READS
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL-Q quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 make SIMLEGACY=1 # the engine's own loop (one sim step per painted frame) — the default build
@@ -282,6 +287,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | **`docs/postmortem.md`** | **Early, once, in full.** The retrospective this project is built on |
 | **`docs/open-work.md`** ⭐⭐ | **"What is next?" — THE QUEUE.** Ranked open items with their ms sizes and their gates, plus ⛔ one line per measured dead end. `make todo` prints it + a live marker sweep |
 | `docs/phases.md` | The gating between phases, and what each phase owes |
+| **`docs/whdload.md`** | The RELEASE: the slave, the install package, `make dist`, the memory sizes. ⚠ The exe carries NO engine bytes — it reads REVS2 off the player's `.ssd` at startup (`src/platform/engine_image.h`), and every Amiga build does, so `../revs.ssd` is staged next to the exe by the FS-UAE scripts |
 | **`docs/reference-sources.md`** ⭐ | **Before any disassembly work.** The annotated reconstruction, its licence limits, what is on this disc |
 | `docs/bbc-reference-loop.md` ⭐ | Anything about ground truth, jsbeeb/b2, or trusting an image |
 | `docs/entrypoint-sweep.md` ⭐ | Before generating C; whenever you find a dispatch table or vector |

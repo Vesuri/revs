@@ -78,3 +78,7 @@ amiga/*_probe.sh
 
 # OS
 .DS_Store
+
+# Release outputs (make dist): the archive and the assembled slaves
+dist/
+whdload/*.slave

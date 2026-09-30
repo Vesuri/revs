@@ -1,0 +1,98 @@
+
+ THIS PACKAGE COMES WITH ABSOLUTELY NO WARRANTY OF ANY KIND, EITHER EXPRESS OR
+ IMPLIED, STATUTORY OR OTHERWISE. THE ENTIRE RISK AS TO USE, RESULTS AND
+ PERFORMANCE OF THE PACKAGE IS ASSUMED BY YOU AND IF THE PACKAGE SHOULD PROVE
+ TO BE DEFECTIVE, YOU ASSUME THE ENTIRE COST OF ALL NECESSARY SERVICING,
+ REPAIR OR OTHER REMEDIATION.
+ UNDER NO CIRCUMSTANCES, CAN THE AUTHOR BE HELD RESPONSIBLE FOR ANY DAMAGE
+ CAUSED IN ANY USUAL, SPECIAL, OR ACCIDENTAL WAY, ALSO IF THE OWNER OR A THIRD
+ PARTY HAS BEEN POINTED AT SUCH POSSIBILITIES OF DAMAGE.
+
+ This install applies to "Revs", an unofficial Amiga port of the 1985 BBC
+ Micro Formula 3 racing simulation by Geoff Crammond, published by Acornsoft.
+ It is the "Revs Plus Revs 4 Tracks" release: Silverstone, Brands Hatch,
+ Donington Park, Oulton Park and Snetterton, plus the Nurburgring.
+
+ Requirements:
+ -------------
+ This install requires WHDLoad version 17.0 or better and a PAL Amiga with at
+ least 2 MB of RAM. The installed program uses 400 KB ChipMem and 768 KB
+ OtherMem.
+
+ The game also requires an A500 Kickstart 1.3 image named "kick34005.A500" in
+ "Devs:Kickstarts". It can be extracted from an A500 with GrabKick or a similar
+ tool. The matching relocation file "kick34005.A500.RTB", found in the Aminet
+ archive "util/boot/skick346.lha", must be placed in the same directory.
+
+ Without WHDLoad the game runs from Workbench or a Shell on any PAL Amiga with
+ Kickstart 1.3 or better, a 68000 or better, 512 KB ChipMem and 512 KB of other
+ memory. It then needs the disc image (see below) as "revs.ssd" next to it.
+ Shell users on Kickstart 1.3 must change to the game's drawer first.
+
+
+ Installation:
+ -------------
+ The install does not include the original game. Before running it, download
+ either of these BBC Micro disc images from bbcmicro.co.uk:
+
+ Revs Plus Revs 4 Tracks:  https://www.bbcmicro.co.uk/game.php?id=2203
+                           DiscA15-RevsPlusRevs4Tracks.ssd, SHA-256
+   d014b19d58e5bb1616b8a5ab089c8f27d31d1b37f9bd7d78b936367cf4725afd
+ Revs+ [hack]:             https://www.bbcmicro.co.uk/game.php?id=4179
+                           DiscA16-RevsHack.ssd, SHA-256
+   571f6dede00c702917e94cda2cca28245ef4fb30e41df81c806a8729de9e0792
+
+ If the download is a ZIP archive, extract the .ssd file from it first. Run the
+ Install icon and, when asked for the disc image, select the .ssd file. Its
+ filename does not matter: the installer copies it to the game drawer as
+ "revs.ssd". Both images are 204800 bytes and carry the same game engine; the
+ circuits are built into the port, so either one gives all six.
+
+ The game checks the disc image when it starts and reads the engine from it.
+ If the check fails, make sure the file is one of the two images above and not
+ another version of Revs (the 1985 single-circuit and "Revs 4 Tracks" discs
+ carry an older engine and are not supported).
+
+
+ Controls:
+ ---------
+ The keys are the BBC Micro's: L and ; steer (or the cursor keys), S is the
+ throttle and A the brake (or up and down), Q and Tab change gear, T is the
+ starter and Space fine steering. SHIFT+F2 selects mouse steering, where the
+ right mouse button accelerates, the left one brakes and the middle one changes
+ gear. The other SHIFT+function key commands are as in the original manual,
+ with the BBC's f0 on F10 and COPY (pause) on Help.
+
+
+ Quitting:
+ ---------
+ The game can be quit by pressing CTRL-Q, immediately and without
+ confirmation, at any point in the game. The WHDLoad QuitKey (keypad "*", key
+ can be changed with Tooltype "QuitKey=") works only on a 68010 or better. F10
+ is not the QuitKey, because it is a game key.
+
+
+ History:
+ --------
+ version 0.1 (30.09.2026):
+ - initial release
+
+
+ Credits:
+ --------
+ Revs was written by Geoff Crammond and published by Acornsoft in 1985.
+ Amiga port by Vesuri.
+
+
+ Contact:
+ --------
+ If you have problems with this installation please try and get a newer
+ version of this package from the WHDLoad WWW-Page. If that doesn't help try
+ some Tooltypes like NOCACHE, NOAUTOVEC, EXPCHIP, NOMMU or PAL. If that also
+ fails, please inform the author via the Bug-Report-Form which can be accessed
+ on the WHDLoad WWW-Page.
+
+ For the full WHDLoad package, other installs and updates refer to:
+	http://www.whdload.de/
+ or	aminet:dev/misc/whdload#?
+ and	aminet:game/patch/
