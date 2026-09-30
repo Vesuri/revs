@@ -1326,16 +1326,22 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 1. **Nothing from the original ships.** The reverse-engineered code — the transliteration, the
    twins, the circuit hook bodies — is ours and ships; every original byte (the engine image, the
    track files, the title page) is read at STARTUP from a disc image the player supplies, as the
-   latest Rescue on Fractalus and Vette releases do. Supported sources are the bbcmicro.co.uk
-   entries: the matching version is id 4179, and the others should work where possible.
+   latest Rescue on Fractalus and Vette releases do. ⭐ **ONE supported disc: *Revs Plus Revs 4
+   Tracks*, bbcmicro.co.uk id 2203** (user, 2026-09-30, narrowing an earlier "4179 and the others
+   where possible") — `DiscA15-RevsPlusRevs4Tracks.ssd`, SHA-256 `d014b19d…7afd`, byte-identical
+   to `revs.ssd`. So there is one engine and one circuit set, and the loader rejects any other
+   image by hash. The circuit geometry, like the engine's tables, is read from that disc; the
+   circuit HOOK code is our C and ships. The race-view font stays our drawn one (the real one
+   lives in Acorn's MOS ROM, not on the disc); the teletext font ships (user).
 2. **Packaging as Rescue on Fractalus and Vette:** an `.lha` holding an executable that runs as it
    is, plus a WHDLoad slave and an install script. The WHDLoad ReadMe follows the Install
    Template's format. (WHDLoad and Installer docs: `~/Documents/Stunt Car Racer/data`.)
 3. **Target: Kickstart 1.3, a 68000, ~0.5 MB chip + ~0.5 MB other RAM.** ⇒ a `kick13.s` slave,
    Rescue on Fractalus's model (`~/Documents/Rescue on Fractalus/docs/whdload-slave.md`), not Vette's
    `kick31.s` + 68020 one.
-4. **The circuits offered follow the disc image chosen**, since a track file cannot be used as
-   data alone (below).
+4. **The circuits are the disc's five.** ⚠ The Nürburgring (the sixth option, from id 4179) has
+   no source once 4179 is unsupported — its geometry is a third party's data — so it leaves the
+   release unless the user decides otherwise.
 5. **The release build has no hidden options, and no diagnostic counters.** Quit moves off the
    mouse to **CTRL-Q** (the game is mouse-driven).
 6. **Credits: Geoff Crammond / Acornsoft. No licence.**
