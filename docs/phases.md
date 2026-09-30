@@ -1317,9 +1317,9 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 
 ---
 
-## Phase 7 — Packaging ✅ (0.1, 30.09.2026)
+## Phase 7 — Packaging ✅ (0.90, 30.09.2026)
 
-**Shipped as `dist/Revs-0.1.lha` (`make dist`)** — the design, the tests and the memory sizes are
+**Shipped as `dist/Revs-0.90.lha` (`make dist`)** — the design, the tests and the memory sizes are
 `docs/whdload.md`. Every step below is done and gated: the startup loader (`make engine-image`),
 the release profile (`make DIST=1`, `dist-audit`), CTRL-Q (`amiga/quit_test.gdb`), memory on a
 512 + 512 KB machine (`amiga/mem_target.gdb`), and the slave + install package under WHDLoad on the
@@ -1371,7 +1371,7 @@ extracted out of the archive itself).
 - **No hidden options**: DIST refuses PROBES/FPSCOUNT/STRAIGHT_TO_RACE/HOLD_THROTTLE/FIXED_RNG/
   TRACK/SIMLEGACY, and the exe takes no arguments.
 - **CTRL-Q quits** (`make QUITTEST=n` + `amiga/quit_test.gdb`).
-- **`$VER: Revs 0.1 (30.09.2026)`** (`src/platform/amiga/version.s`), checked by `dist-audit`.
+- **`$VER: Revs 0.90 (30.09.2026)`** (`src/platform/amiga/version.s`), checked by `dist-audit`.
 
 ### What the port takes from the disc today — the asset audit's starting point (measured 2026-09-30)
 

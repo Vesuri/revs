@@ -14,8 +14,9 @@ sizes. The user's decisions behind all of it are `docs/phases.md` §Phase 7.
 
 ## What ships and what does not
 
-The archive holds the exe, the slave, the Install script, the ReadMe and four icons. **No original
-engine byte**: the exe reads REVS2 off the player's `.ssd` at startup (`src/platform/engine_image.h`,
+The archive (0.90: 173 494 bytes; the DIST exe 315 412 — no symbol hunk, `NATIVE_OPT` without
+`-funroll-loops`, both in `amiga/Makefile`) holds the exe, the slave, the Install script, the
+ReadMe and four icons. **No original engine byte**: the exe reads REVS2 off the player's `.ssd` at startup (`src/platform/engine_image.h`,
 proved against `disasm/revs_runtime.bin` by `make engine-image`), and `package_whdload.py` scans every
 member for any of REVS2's 256-byte blocks and refuses to build on a hit. The circuit data, the title
 page and both fonts DO ship in the exe (user decision).
@@ -64,7 +65,7 @@ RoF's the WHDLoad install needs a **2 MB** machine; the plain exe does not.
 | Mode | CPU | Result |
 |---|---|---|
 | `run` — the DIST exe, WHDLoad `TIMEOUT` then core dump | 68010 | PASS: 65 of 65 engine code blocks verbatim in the dump — REVS2 read off `data/revs.ssd` and rebuilt on the 1.3 kickemu |
-| `run` — the exe and slave EXTRACTED FROM `Revs-0.1.lha` | 68010 | PASS, same |
+| `run` and `nodisc` — the exe and slave EXTRACTED FROM `Revs-0.90.lha` | 68010 / 68000 | PASS, same |
 | `quit` — a `QUITTEST=1500` exe (CTRL-Q held from field 1500) | 68000 | PASS: "Return OK." |
 | `nodisc` — no `revs.ssd` | 68000 | PASS: WHDLoad shows the slave's "Revs could not start…" |
 
@@ -74,5 +75,5 @@ and the game owns the VERTB vector — on a 68000 the run simply never ends (mea
 150 s ceiling before the game started.
 
 The Install script is not run by any automated test (Installer is interactive): ✅ **the user ran
-the 0.1 install on their own setup and it works as expected (2026-09-30)**. Re-run it by hand after
+the install on their own setup and it works as expected (2026-09-30, a pre-release build of the same Install script)**. Re-run it by hand after
 any change to `whdload/Revs Install/Install`.

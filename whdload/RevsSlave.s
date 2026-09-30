@@ -74,12 +74,12 @@ slv_CurrentDir	dc.b	"data",0
 slv_name	dc.b	"Revs",0
 slv_copy	dc.b	"1985 Geoff Crammond / Acornsoft",0
 slv_info	dc.b	"Amiga port by Vesuri",10
-		dc.b	"version 0.1 (30.09.2026)",-1
+		dc.b	"version 0.90 (30.09.2026)",-1
 		dc.b	"An unofficial, non-commercial fan project.",-1
 		dc.b	"CTRL-Q quits.",10
 		dc.b	"Keypad * also quits, on a 68010 or better.",0
 slv_config	dc.b	0
-		dc.b	"$VER: Revs.slave 0.1 (30.09.2026)",0
+		dc.b	"$VER: Revs.slave 0.90 (30.09.2026)",0
 	EVEN
 
 _program	dc.b	"Revs",0
