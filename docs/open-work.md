@@ -420,24 +420,24 @@ does for 81..116) is the shape that has the rate; a strip re-expand is not.
 GEOMETRY. The two dash needles are a 36-entry pixel list plus a rectangle copy now, with no
 `mem[]` traffic, no undo list and no re-expand — `make NEEDLE=1`.
 
-### 2c. ⚠⚠⚠ THE OTHER CARS — **24.7 ms of a RACE frame, MEASURED**, and every baseline hides all of it
+### 2c. ⚠⚠ THE OTHER CARS — **~21 ms of a RACE frame (24.7 before the object asm), MEASURED**, and every baseline hides all of it
 Phase 17 (`move_and_draw_cars`) reads **0.21 ms** in every practice measurement because
 `STRAIGHT_TO_RACE` is a practice session and the player is alone on track.  Measured in the race
 proper on the target (2026-09-29: `make PROBES=1 FIXED_RNG=1 RACEPROPER=1 PROBERACE=1
 PROBEFIELDS=3000 SIMLEGACY=1 CARSPLIT=1` + `phase4_prof.gdb`, `diag_run.sh 1900` under warp; the
 window opens at the race start, `raceOpen=` non-zero, 3000 fields, 523 frames, throttle held):
 
-| row | job | ms/frame |
-|---|---|---:|
-| 43 | `draw_car_field` — the object plotter | **13.55** |
-| 40 | `drive_other_cars` — the per-car AI, 19 cars | 4.01 |
-| 42 | the six `stage_nearby_car` → `place_car_world_coords` → four projections each | 3.80 |
-| 41 | `check_car_pair` — the overtaking pass | 2.80 |
-| 44+17 | the car ahead's staging + the entry | 0.54 |
+| row | job | ms/frame | now (2026-09-30, object asm, `QUICKQUAL=1`) |
+|---|---|---:|---:|
+| 43 | `draw_car_field` — the object plotter | **13.55** | **9.97** |
+| 40 | `drive_other_cars` — the per-car AI, 19 cars | 4.01 | 4.15 |
+| 42 | the six `stage_nearby_car` → `place_car_world_coords` → four projections each | 3.80 | 3.67 |
+| 41 | `check_car_pair` — the overtaking pass | 2.80 | 2.83 |
+| 44+17 | the car ahead's staging + the entry | 0.54 | ~0.6 |
 
 The race frame is **~101 ms** (`Σ(1..44) − ph28`) against practice's 75.10, so **the standing
 baseline understates a real race by ~25 ms** — five times the ~5 ms the host-census estimate said.
-The road sign (phases 14+15, ~2.5 ms here) is at its local optimum (§the object plotter in
+The road sign (phases 14+15) shares the object plotter, so the asm below took its ph15 3.08 → 2.16 too; its C was at its local optimum (§the object plotter in
 `docs/perf-method.md`; `scale_shape_vectors` ~0.69 ms at 765 cyc/vertex).
 ⭐ **Priced per object**: a host census over the same first 523 race frames (a temporary counter at
 draw_track_object's plot, `RELEASE=1 RACEPROPER=1 HOLD_THROTTLE=1`, FIXED_RNG) plots **3.28 objects a

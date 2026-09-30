@@ -825,9 +825,9 @@ Rules that must survive without opening `docs/perf-method.md`:
 - ⚠⚠⚠ **AND THE BASELINE TRAJECTORY DECIDES WHICH CODE EXISTS AT ALL, NOT JUST HOW HOT IT IS.**
   `STRAIGHT_TO_RACE` is a **PRACTICE** session: the player is alone on track, every car slot is
   empty, and `move_and_draw_cars` (phase 17) therefore reads **0.21 ms** in every measurement this
-  project has taken — 22 empty-slot tests and nothing else. **In the race proper it is 24.7 ms**
-  (object plotter 13.55 at 3.28 objects a frame, AI 4.0, staging 3.8, overtaking 2.8), so the
-  standing baseline hides ~25 ms of a real race — measure one with `make PROBERACE=1 RACEPROPER=1
+  project has taken — 22 empty-slot tests and nothing else. **In the race proper it is ~21 ms**
+  (object plotter 9.97 at 3.28 objects a frame after its asm, AI 4.0, staging 3.7, overtaking 2.8),
+  so the standing baseline hides ~20 ms of a real race — measure one with `make PROBERACE=1 RACEPROPER=1
   CARSPLIT=1 QUICKQUAL=1` (a one-minute qualifying, ~7700 fields a run; `docs/open-work.md` §2c).
   ⚠ Under host load a race arm outlives the tool's background limit: launch it `nohup … &` and
   watch its log. ⭐ And **gate a session census on the session it is
