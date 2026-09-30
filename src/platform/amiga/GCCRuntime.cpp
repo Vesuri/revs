@@ -13,6 +13,9 @@ __attribute__((constructor)) static void initSysBase() { SysBase = *(struct Exec
 // Set by main() after OpenLibrary("graphics.library").
 struct GfxBase* GfxBase = 0;
 
+// Set by main() (src/main.cpp) before the platform is constructed; closed after it is gone.
+struct DosLibrary* DOSBase = 0;
+
 // ---- C++ heap via AllocMem --------------------------------------------------
 void* operator new(unsigned long n)   { unsigned long* p = (unsigned long*)AllocMem(n + sizeof(unsigned long), MEMF_ANY | MEMF_CLEAR); if (!p) return 0; *p = n + sizeof(unsigned long); return p + 1; }
 void* operator new[](unsigned long n) { return operator new(n); }

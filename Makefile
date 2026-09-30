@@ -369,6 +369,7 @@ TARGET   := build/revs
 
 
 .PHONY: determinism-lights determinism-lights-record
+.PHONY: engine-image
 .PHONY: todo cpu-lint macro-lint fatscan all clean gen validate image runtime dashcode sweep endian-lint refloop bbcprof refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
@@ -902,6 +903,18 @@ tracks: track-fixtures $(TRACKS_OBJS) | build
 	$(CC) $(CFLAGS) -o build/validate_tracks $(TRACKS_OBJS)
 	./build/validate_tracks
 
+# ⭐⭐ THE RELEASE'S STARTUP LOADER (src/platform/engine_image.c) against the dev image.  The
+# release exe carries no engine bytes: it reads REVS2 off the player's disc image and replays the
+# engine's own unpack.  This builds that image from each supported disc down the same path and
+# requires all 64 KB to equal disasm/revs_runtime.bin, then requires a flipped REVS2 byte and a
+# missing REVS2 to be REFUSED — and the 1985 discs ('!' = must refuse) too, when present.
+ENGINE_DISCS ?= revs.ssd $(wildcard tmp/discs/DiscA15-RevsPlusRevs4Tracks.ssd tmp/discs/DiscA16-RevsHack.ssd) \
+                $(addprefix !,$(wildcard tmp/discs/Disc015-Revs.ssd tmp/discs/Disc063-Revs4Tracks.ssd))
+ENGINE_IMAGE_OBJS := src/platform/engine_image.o src/gen/revs_tracks.o tools/engine_image_test.o
+engine-image: $(ENGINE_IMAGE_OBJS) | build
+	$(CC) $(CFLAGS) -o build/engine_image_test $(ENGINE_IMAGE_OBJS)
+	./build/engine_image_test disasm/revs_runtime.bin $(ENGINE_DISCS)
+
 # ⭐⭐ DOES THE CIRCUIT'S OWN CODE ACTUALLY EXECUTE?  `make tracks` proves the DATA path; this
 # proves the CODE path, and the two are genuinely different questions — an expansion circuit can
 # install byte-perfectly and then run Silverstone's control flow over its geometry, which is not a
@@ -1176,7 +1189,8 @@ clean:
 	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native \
 	      tools/validate_mode7.o build/validate_mode7 \
 	      tools/validate_sound.o build/validate_sound \
-	      tools/validate_tracks.o build/validate_tracks
+	      tools/validate_tracks.o build/validate_tracks \
+	      tools/engine_image_test.o build/engine_image_test
 	rm -f $(OBJS:.o=.d) tools/*.d
 
 # ⭐ Replay the engine's own startup unpack -> disasm/revs_runtime.bin.

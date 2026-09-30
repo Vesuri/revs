@@ -138,6 +138,7 @@ CORE_C_SRCS := \
     $(REPO)/src/cpu/cpu.c \
     $(REPO)/src/platform/sound.c \
     $(REPO)/src/platform/track.c \
+    $(REPO)/src/platform/engine_image.c \
     $(REPO)/src/platform/trackmenu.c \
     $(wildcard $(REPO)/src/gen/revs_tracks.c) \
     $(wildcard $(REPO)/src/gen/revs_gen.c) \
@@ -147,9 +148,9 @@ CORE_C_SRCS := \
     $(wildcard $(REPO)/src/gen/revs_native_abi.c) \
     $(wildcard $(REPO)/src/gen/revs_manual.c)
 
-# Support runtime (freestanding CRT: program entry, memset…) + incbin'd assets.
+# Support runtime (freestanding CRT: program entry, memset…) + the AmigaOS $VER: string.
 SUPPORT_C_SRCS := $(SUPPORT)/gcc8_c_support.c
-ASM_SRCS       := $(SUPPORT)/gcc8_a_support.s $(AMIGA_SRC)/incbin.s $(SPANASM_SRCS)
+ASM_SRCS       := $(SUPPORT)/gcc8_a_support.s $(AMIGA_SRC)/version.s $(SPANASM_SRCS)
 
 # Framework hand-written m68k asm (Motorola syntax, assembled by vasm -> ELF).  The
 # matching GCC register-marshalling bridges live under
@@ -1855,16 +1856,14 @@ obj/teletext_m68k.o : $(AMIGA_SRC)/teletext_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(TTASM_SABOTAGE) -o $@ "$<"
 
-# ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
-# this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk
-# file looks correct.  Paths are relative to this amiga/ directory.
-INCBIN_DEPS := ../disasm/revs_runtime.bin
-obj/incbin.o : $(AMIGA_SRC)/incbin.s $(INCBIN_DEPS)
+# The engine image is NOT linked in: the exe reads REVS2 off the player's disc at startup
+# (src/platform/engine_image.h), so nothing here is .incbin'd.
+obj/version.o : $(AMIGA_SRC)/version.s
 	$(info ASM  $<)
-	@$(AS) $(ASFLAGS) -o $@ "$(abspath $(AMIGA_SRC)/incbin.s)"
+	@$(AS) $(ASFLAGS) -o $@ "$(abspath $<)"
 
 # Framework hand-written asm (vasm, Motorola syntax -> ELF).  Static pattern rule so it
-# doesn't collide with the gas-assembled gcc8_a_support.s / incbin.s explicit rules.
+# doesn't collide with the gas-assembled gcc8_a_support.s / version.s explicit rules.
 $(FRAMEWORK_ASM_OBJS) : obj/%.o : %.s
 	$(info VASM $<)
 	@$(VASM) $(VASMFLAGS) -o $@ "$(abspath $<)"

@@ -30,6 +30,9 @@ RUN=.run; DH0="$RUN/dh0"; DH1="$RUN/dh1"; GDBHOME="$RUN/gdbhome"
 mkdir -p "$DH0/s" "$DH1" "$RUN/state" "$GDBHOME"
 printf 'cd dh1:\nRevs\n' > "$DH0/s/startup-sequence"
 cp -f out/Revs.exe "$DH1/Revs"
+# The engine image is read off the player's BBC disc at startup (src/platform/engine_image.h).
+# $REVS_DISC picks another one, e.g. the Revs+ disc.
+cp -f "${REVS_DISC:-../revs.ssd}" "$DH1/revs.ssd"
 
 fsuae_claim_port
 "$FSUAE" \

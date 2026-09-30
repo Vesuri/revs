@@ -1356,7 +1356,7 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 
 | Embedded now | What it is | At release |
 |---|---|---|
-| `disasm/revs_runtime.bin` (`incbin.s`) | the whole 64 KB image after REVS2's self-unpack: engine code + tables + Silverstone's track file | built at startup from the disc's REVS2: DFS read → the unpack replay (`tools/relocate.py`'s job, in C); the track extents come from the exe |
+| ~~`disasm/revs_runtime.bin` (`incbin.s`)~~ | the whole 64 KB image after REVS2's self-unpack: engine code + tables + Silverstone's track file | ✅ **built at startup** (`src/platform/engine_image.c`, every Amiga build): DFS catalogue → REVS2 (length + CRC32 `83E95A44`) → the unpack replayed in C → Silverstone's two extents from the exe. Byte-identical to `revs_runtime.bin` on both discs, refusals proven: `make engine-image` |
 | `src/gen/revs_tracks.c` | per circuit: the $5300 block, the $7800 tail, `ModifyGameCode`'s patch list | ships in the exe (user) — laid over the disc's engine image at circuit selection, as now |
 | `src/gen/revs_track_hooks.c` | the circuits' hook BODIES, transliterated 6502 | ships (ours) |
 | `src/platform/titlescreen.h` | the `5TRSCRN` MODE 7 page | ships in the exe (user) — ⚠ now git-ignored as disc bytes, so it must be checked in (or generated into the release build) |

@@ -16,6 +16,10 @@
    system header FIRST, AmigaHardware.h LAST. */
 #include <proto/exec.h>
 #include <proto/graphics.h>
+#include <proto/dos.h>
+#include <proto/intuition.h>
+#include <dos/dosextens.h>
+#include <intuition/intuition.h>
 #include <exec/execbase.h>
 #include <exec/interrupts.h>
 #include <exec/nodes.h>
@@ -31,6 +35,7 @@
 #include "../probe.h"   /* PROBE_VBI(): advance the phase-bracket beam epoch */
 #include "../track.h"      /* circuit selection */
 #include "../trackmenu.h"  /* ...and the menu that makes it the PLAYER's */
+#include "../engine_image.h" /* the engine image, from the player's own disc */
 
 #include "../../cpu/mem_decl.h"
 extern "C" MEM_QUAL uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
@@ -185,18 +190,108 @@ static uint32_t vbiHandler()
 }
 
 // ---------------------------------------------------------------------------
-// Embedded boot image (incbin.s)
+// The engine image, from the player's disc (src/platform/engine_image.h)
 // ---------------------------------------------------------------------------
-extern "C" uint8_t revs_runtime_bin[];
-extern "C" uint8_t revs_runtime_bin_end[];
+// ⭐ The exe carries no original engine bytes (docs/phases.md §Phase 7): REVS2 is read off the
+// player's own .ssd here, while dos.library still owns the machine, and engine_build_image()
+// replays the engine's self-unpack into mem[] — byte-identical to disasm/revs_runtime.bin
+// (`make engine-image`).  Nothing between here and loadImage() writes mem[].
+//
+// Where the disc is looked for: next to the exe, then in its data/ drawer, first as the name the
+// installer gives it and then under the two names bbcmicro.co.uk ships.  PROGDIR: exists from
+// V36; on Kickstart 1.3 the CURRENT directory stands in for it, which main() sets to the icon's
+// drawer for a Workbench launch and which the WHDLoad slave's data/ directory already is.
+static const char* const kDiscNames[] = {
+    "revs.ssd", "DiscA15-RevsPlusRevs4Tracks.ssd", "DiscA16-RevsHack.ssd" };
+
+static BPTR openDisc()
+{
+    static const char* const kDirs[] = { "PROGDIR:", "PROGDIR:data/", "", "data/" };
+    char path[64];
+    for (unsigned d = 0; d < sizeof kDirs / sizeof kDirs[0]; d++) {
+        if (kDirs[d][0] == 'P' && ((struct Library*)DOSBase)->lib_Version < 36) continue;
+        for (unsigned n = 0; n < sizeof kDiscNames / sizeof kDiscNames[0]; n++) {
+            unsigned k = 0;
+            for (const char* c = kDirs[d]; *c; c++) path[k++] = *c;
+            for (const char* c = kDiscNames[n]; *c; c++) path[k++] = *c;
+            path[k] = 0;
+            BPTR fh = Open((CONST_STRPTR)path, MODE_OLDFILE);
+            if (fh) return fh;
+        }
+    }
+    return 0;
+}
+
+static bool readAt(BPTR fh, long offset, uint8_t* dst, long n)
+{
+    if (Seek(fh, offset, OFFSET_BEGINNING) < 0) return false;
+    while (n > 0) {
+        LONG got = Read(fh, dst, n);
+        if (got <= 0) return false;
+        dst += got;
+        n   -= got;
+    }
+    return true;
+}
+
+// Say why the game cannot start: on the Shell's console when there is one, and as a requester
+// for a Workbench launch, which has none.  AutoRequest is the V33 call; EasyRequest is V36.
+static void reportStartupFailure(const char* why)
+{
+    static const char kHead[] = "Revs cannot start: ";
+    static const char kTail[] = ".\nIt needs the BBC Micro disc image \"Revs Plus Revs 4 Tracks\" or \"Revs+\",\n"
+                                "saved as revs.ssd next to the game (see the ReadMe).\n";
+    BPTR out = Output();
+    if (out) {
+        Write(out, (APTR)kHead, sizeof kHead - 1);
+        long n = 0; while (why[n]) n++;
+        Write(out, (APTR)why, n);
+        Write(out, (APTR)kTail, sizeof kTail - 1);
+        return;
+    }
+    struct Library* IntuitionBase = OpenLibrary((CONST_STRPTR)"intuition.library", 33);
+    if (!IntuitionBase) return;
+    static struct IntuiText line3 = { 0, 1, JAM1, 8, 26, 0, (UBYTE*)"saved as revs.ssd next to the game.", 0 };
+    static struct IntuiText line2 = { 0, 1, JAM1, 8, 16, 0, (UBYTE*)"It needs the Revs Plus Revs 4 Tracks disc image,", &line3 };
+    static struct IntuiText line1 = { 0, 1, JAM1, 8, 6, 0, 0, &line2 };
+    static struct IntuiText ok    = { 0, 1, JAM1, 6, 3, 0, (UBYTE*)"OK", 0 };
+    line1.IText = (UBYTE*)why;
+    AutoRequest(0, &line1, 0, &ok, 0, 0, 420, 80);
+    CloseLibrary(IntuitionBase);
+}
+
+static bool loadEngineImage()
+{
+    int status = ENGINE_READ_FAILED;
+    struct Process* me = (struct Process*)FindTask(0);
+    APTR oldWindow = me->pr_WindowPtr;
+    me->pr_WindowPtr = (APTR)-1;                 // a missing volume fails, it does not ask
+    BPTR fh = DOSBase ? openDisc() : 0;
+    if (fh) {
+        static uint8_t catalogue[ENGINE_CATALOGUE_BYTES];
+        unsigned long offset = 0;
+        if (readAt(fh, 0, catalogue, ENGINE_CATALOGUE_BYTES)) {
+            status = engine_find_revs2(catalogue, &offset);
+            if (status == ENGINE_OK)
+                status = readAt(fh, (long)offset, mem + ENGINE_REVS2_LOAD, ENGINE_REVS2_LENGTH)
+                       ? engine_build_image(mem) : ENGINE_READ_FAILED;
+        }
+        Close(fh);
+    }
+    me->pr_WindowPtr = oldWindow;
+    if (status == ENGINE_OK) return true;
+    reportStartupFailure(fh ? engine_status_text(status) : "the disc image revs.ssd was not found");
+    return false;
+}
 
 // ---------------------------------------------------------------------------
 PlatformAmiga::PlatformAmiga(const char* /*imagePath*/)
 {
-    // Open graphics.library here so run()'s display takeover can reach GfxBase.  On
-    // failure set quit so main() bails instead of dereferencing a null GfxBase.
+    // Open graphics.library here so run()'s display takeover can reach GfxBase, and read the
+    // engine image while DOS is still ours to use.  On either failure set quit so main() bails
+    // before anything is taken over.
     GfxBase = (struct GfxBase*)OpenLibrary((CONST_STRPTR)"graphics.library", 33);
-    quit = (GfxBase == 0);
+    quit = (GfxBase == 0) || !loadEngineImage();
 }
 
 PlatformAmiga::~PlatformAmiga()
@@ -217,14 +312,9 @@ void PlatformAmiga::tickVBI()
 
 int PlatformAmiga::loadImage(const char* /*path*/)
 {
-    // The 6502 image is linked in (incbin.s) rather than loaded from disc, so every
-    // build boots the SAME initial state and code path.  It is the POST-UNPACK runtime
-    // image: the generated C is a transliteration of the relocated layout and replaces
-    // REVS2's unpack stub rather than running it (docs/static-map.md).
-    const uint8_t* src = revs_runtime_bin;
-    uint32_t n = (uint32_t)(revs_runtime_bin_end - revs_runtime_bin);
-    if (n > 65536u) n = 65536u;
-    for (uint32_t i = 0; i < n; i++) mem[i] = src[i];
+    // Already in mem[]: the constructor built it from the player's disc (loadEngineImage), while
+    // DOS still owned the machine.  The generated C is a transliteration of that POST-UNPACK
+    // layout and replaces REVS2's unpack stub rather than running it (docs/static-map.md).
     return 0;
 }
 

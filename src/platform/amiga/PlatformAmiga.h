@@ -54,7 +54,7 @@ public:
     virtual void     flushKeyboard()                    override;
     virtual uint8_t  adcButtons()                       override;
     virtual uint16_t adcAxis(uint8_t channel)           override;
-    virtual int     loadImage(const char* path)         override;  // embedded -> copies incbin
+    virtual int     loadImage(const char* path)         override;  // no-op: the ctor read the disc
     virtual void    setInterrupt(void (*fn)(void))      override;  // real VBI -> no-op
     virtual int     framesPerSecond()                   override;  // 50 (PAL)
 

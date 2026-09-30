@@ -16,30 +16,53 @@ extern "C" void revs_announce_spanscan(void);
 
 #if defined(REVS_PLATFORM_AMIGA)
   #include "PlatformAmiga.h"        /* src/platform/amiga — on the cross-build's -I path */
+  #include <proto/exec.h>
+  #include <proto/dos.h>
+  #include <dos/dosextens.h>        /* struct Process — pr_CLI, pr_MsgPort */
+  #include <workbench/startup.h>    /* struct WBStartup */
 #else
   #include "platform/host/PlatformHost.h"
 #endif
 
-/* Default to the post-load memory image built from revs.ssd by tools/ssd_load.py,
-   so every build boots the SAME initial state and code path.
-   NOTE: the Amiga freestanding CRT (_start) calls main() with NO arguments, so the
-   Amiga main takes none — a mismatched signature reads garbage off the stack. */
 #if defined(REVS_PLATFORM_AMIGA)
-int main(void) {
-    const char* image = "revs.bin";   /* unused: the Amiga image is linked in (incbin.s) */
-#else
-int main(int argc, char* argv[]) {
-    /* ⚠ The RUNTIME image (`make runtime`), not revs_mem.bin: REVS2 unpacks itself
-       before running and src/gen/revs_gen.c is a transliteration of the unpacked
-       layout, so the pre-unpack image would put every address in the wrong place.
-       docs/static-map.md. */
-    const char* image = (argc > 1) ? argv[1] : "disasm/revs_runtime.bin";
+/* --- Workbench launch protocol -------------------------------------------------------
+   A program started from an icon is a NEW DOS process, and Workbench posts it a WBStartup
+   message: it must be taken off our port before any dos.library call (the port belongs to DOS),
+   and replied as the very last thing the program does — the reply is what lets Workbench
+   UnLoadSeg() us.  A compiler's startup module would do both; this port's freestanding CRT
+   (_start) does neither.  RKM Libraries ch. 14 (14-2-2, 14-5-1, the warning at the end of
+   14-5-2); the same code as the Rescue on Fractalus port's.
+   pr_CLI is non-NULL for a Shell launch and for the WHDLoad slave (a real CLI process under the
+   kickemu), and then there is no message. */
+static struct WBStartup* wbGetStartupMessage(void) {
+    struct Process* me = (struct Process*)FindTask(0);
+    if (me->pr_CLI != 0) return 0;
+    WaitPort(&me->pr_MsgPort);
+    return (struct WBStartup*)GetMsg(&me->pr_MsgPort);
+}
+
+/* Forbid() first and never Permit(): once replied, Workbench may unload the code we are still
+   returning through; the forbid holds it off until the task is gone. */
+static void wbReplyStartupMessage(struct WBStartup* msg) {
+    if (!msg) return;
+    Forbid();
+    ReplyMsg(&msg->sm_Message);
+}
 #endif
 
+/* A function of its own so that on the Amiga the PlatformClass destructor has run before main()
+   replies the Workbench message — nothing may happen after that reply. */
+static int runGame(const char* image) {
     /* Constructing PlatformClass brings the platform up (window/DMA/audio, loads
        the memory image) and sets the global Platform* the C bridge uses. */
     PlatformClass plt(image);
-    if (plt.quit) return 1;
+    if (plt.quit) {
+#if defined(REVS_PLATFORM_AMIGA)
+        return 20;   /* AmigaDOS FAIL: the WHDLoad slave turns it into a message */
+#else
+        return 1;
+#endif
+    }
 
     /* ⚠ Any one-shot lookup-table build goes HERE, before any game code runs —
        never lazily on first use.  On the Atari port a 64 KB table built lazily
@@ -62,3 +85,29 @@ int main(int argc, char* argv[]) {
     plt.run();   /* runs the game; returns when the user quits */
     return 0;
 }
+
+/* NOTE: the Amiga freestanding CRT (_start) calls main() with NO arguments, so the Amiga main
+   takes none — a mismatched signature reads garbage off the stack.  The Amiga image is built
+   from the player's disc (PlatformAmiga's constructor), so the path is unused there. */
+#if defined(REVS_PLATFORM_AMIGA)
+int main(void) {
+    struct WBStartup* wbMsg = wbGetStartupMessage();     /* before any DOS call */
+    DOSBase = (struct DosLibrary*)OpenLibrary((CONST_STRPTR)"dos.library", 33);
+    BPTR oldDir = 0;
+    const bool changeDir = DOSBase && wbMsg && wbMsg->sm_NumArgs > 0 && wbMsg->sm_ArgList[0].wa_Lock;
+    if (changeDir) oldDir = CurrentDir(wbMsg->sm_ArgList[0].wa_Lock);   /* the icon's drawer */
+    int rc = DOSBase ? runGame(0) : 20;
+    if (changeDir) CurrentDir(oldDir);
+    if (DOSBase) { CloseLibrary((struct Library*)DOSBase); DOSBase = 0; }
+    wbReplyStartupMessage(wbMsg);   /* strictly last */
+    return rc;
+}
+#else
+int main(int argc, char* argv[]) {
+    /* ⚠ The RUNTIME image (`make runtime`), not revs_mem.bin: REVS2 unpacks itself
+       before running and src/gen/revs_gen.c is a transliteration of the unpacked
+       layout, so the pre-unpack image would put every address in the wrong place.
+       docs/static-map.md. */
+    return runGame((argc > 1) ? argv[1] : "disasm/revs_runtime.bin");
+}
+#endif
