@@ -1,72 +1,68 @@
-# Revs for Amiga
+# Revs — Amiga
 
-An Amiga port of Geoff Crammond’s BBC Micro racing simulation, based on
-*Revs Plus Revs 4 Tracks* (Superior/Acornsoft, 1986). The engine is reconstructed
-from the BBC binary, translated to C, and implemented with native C and 68000
-routines behind an Amiga hardware layer.
+An unofficial Amiga port of Geoff Crammond’s BBC Micro Formula 3 racing
+simulation, originally published by Acornsoft in 1985. Race against a full grid,
+practise laps and tune your car’s wings.
 
-The port includes the race view, menus, sound, mouse and keyboard controls, five
-original circuits and optional Nürburgring data. Version 0.90 includes a WHDLoad
-installer. Development continues on performance and fidelity checks.
+The port reconstructs the original engine in C and 68000 assembly, with native
+Amiga graphics, sound and input. It targets *Revs Plus Revs 4 Tracks* and includes
+Silverstone, Brands Hatch, Donington Park, Oulton Park and Snetterton, plus
+Nürburgring.
 
-## Playing
+## Requirements and installation
 
-The plain executable targets a 68000 Amiga with 1 MB RAM (512 KB chip plus 512 KB
-slow RAM). The WHDLoad package requires 2 MB and a Kickstart 1.3 image for its
-kickemu slave. See [release and installation details](docs/whdload.md).
+- PAL Amiga with a 68000 or better and Kickstart 1.3 or better.
+- Standalone: 512 KB Chip RAM and 512 KB other RAM.
+- WHDLoad: version 17+, at least 2 MB RAM, and an A500 Kickstart 1.3 image
+  (`kick34005.A500`) with its matching RTB file in `Devs:Kickstarts`.
+- A supported BBC Micro disc image: *Revs Plus Revs 4 Tracks* or *Revs+ [hack]*.
 
-You must supply the original `revs.ssd` disc image. The executable loads its engine
-at startup; the repository does not distribute the disc. See the
-[controls](docs/controls.md) and packaged [ReadMe](whdload/Revs%20Install/ReadMe).
+The release is `Revs-0.90.lha`. Open its **Revs Install** drawer, run **Install**
+and select your extracted `.ssd` disc image. Either supported image provides
+all six circuits. To run without WHDLoad, place the image beside the executable
+as `revs.ssd` and start the game from Workbench or a Shell.
+
+The original disc image is not included; the game reads its engine at startup.
+See [the release ReadMe](whdload/Revs%20Install/ReadMe) for supported images and
+full installation instructions.
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| Arrow keys | Steer, accelerate and brake |
+| L / ; | Steer left / right |
+| S / A | Accelerate / brake |
+| Q / Tab | Change up / down; hold to disengage the clutch |
+| T | Starter motor |
+| Space | Fine steering |
+| Shift + F1 / F2 | Select keyboard / mouse steering |
+| Shift + Help / Backspace | Pause / resume |
+| Ctrl + Q | Quit the game |
+
+Hold **T**, **S** and **Q** together to start the engine in gear, then release
+**Q** to engage the clutch. With mouse steering, the right button accelerates,
+the left brakes and the middle changes gear. See [the controls guide](docs/controls.md)
+for pit stops, steering assistance and other commands.
 
 ## Building
 
-This is not a standalone source checkout: the disc, generated sources, Ghidra
-listing and external toolchains are local prerequisites. Follow
-[the toolchain guide](docs/toolchain.md) to reconstruct them.
-
-With the generated inputs available:
-
-```sh
-make                         # headless development executable
-make validate                # native routines against the 6502 translation
-make endian-lint macro-lint cpu-lint
-```
-
-For an Amiga build:
+A fresh checkout needs the original disc, generated engine sources and a local
+Ghidra setup. The Amiga build uses `m68k-amiga-elf-gcc`, vasm and `elf2hunk`;
+release packaging also needs the WHDLoad development files and archive tools.
+Follow [the toolchain guide](docs/toolchain.md) to prepare these prerequisites, then:
 
 ```sh
-cd amiga
-. ./env.sh
-make
-./run.sh                     # FS-UAE; requires a local Kickstart ROM
+. amiga/env.sh
+make dist
 ```
 
-Run `make dist` from the repository root to create the WHDLoad archive. Clean
-before switching build flags. The host executable has no renderer: jsbeeb is the
-BBC visual reference and FS-UAE runs the Amiga output.
+See [release packaging](docs/whdload.md) and the
+[documentation index](docs/README.md) for development and validation details.
 
-## Repository guide
+## Credits
 
-| Directory | Contents |
-|---|---|
-| `src/gen/` | Handwritten native engine and ABI seams; generated oracle files stay local |
-| `src/cpu/` | 6502 state model and 68000 arithmetic helpers |
-| `src/platform/` | Shared hardware models and host/Amiga backends |
-| `amiga/` | Cross-build, emulator runners and reusable debugger probes |
-| `tools/` | Generation, validation, profiling and release tools |
-| `disasm/` | Curated symbols and binary analysis; derived images stay local |
-| `ghidra_scripts/` | Analysis scripts and indirect entry points |
-| `whdload/` | Slave and installer sources |
-| `docs/` | Architecture, validation, maintenance and reference documentation |
-
-Start with the [documentation index](docs/README.md).
-[Open work](docs/open-work.md) and `make todo` track remaining tasks.
-[CLAUDE.md](CLAUDE.md) contains contributor and agent working rules.
-
-## Original material
-
-Game images and generated game data are excluded from Git. The annotated BBC
-source reconstruction is used as a reference, not copied into this project.
-See [reference sources and provenance](docs/reference-sources.md) and the
-[vendored framework provenance](src/platform/amiga/framework/UPSTREAM.md).
+Revs was written by Geoff Crammond and published by Acornsoft. Amiga port by
+Vesuri. This is an unofficial fan port; the original game and assets belong to
+their respective copyright holders. See [reference sources and provenance](docs/reference-sources.md)
+and [framework credits](src/platform/amiga/framework/UPSTREAM.md).
