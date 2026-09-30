@@ -73,6 +73,6 @@ and the game owns the VERTB vector — on a 68000 the run simply never ends (mea
 400 s). ⚠ And without `FILELOG`: logging every one of LoadSeg's small reads on a 68000 outlasted a
 150 s ceiling before the game started.
 
-⚠ The Install script itself is not run by any test (Installer is interactive). Its one changed
-section is RoF's working ROM step with the file, size and prompts swapped, and its brackets balance;
-run the Install icon once on a real setup before a public release.
+The Install script is not run by any automated test (Installer is interactive): ✅ **the user ran
+the 0.1 install on their own setup and it works as expected (2026-09-30)**. Re-run it by hand after
+any change to `whdload/Revs Install/Install`.
