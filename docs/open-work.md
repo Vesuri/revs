@@ -629,9 +629,9 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 ## The rest of the port
 
 ### ⬜ Phase 7 — packaging (`docs/phases.md` §Phase 7 — the user's decisions, 2026-09-30)
-Nothing original ships: the engine image, track files and title page are loaded at startup from the
-player's disc image — *Revs Plus Revs 4 Tracks* (id 2203) or *Revs+ [hack]* (id 4179), checked by
-hash; ⚠ 4179's own five circuit files need their hooks transliterated (today only its Nürburgring is). An `.lha` with a runnable exe +
+Only the ENGINE image (REVS2 — byte-identical on both discs) loads at startup, from the player's
+disc: *Revs Plus Revs 4 Tracks* (id 2203) or *Revs+ [hack]* (id 4179), checked by hash. The six
+circuits and the title page ship IN the exe, as the port runs them today (user). An `.lha` with a runnable exe +
 a Kickstart 1.3 WHDLoad slave + an install script, Rescue on Fractalus's model; KS 1.3 / 68000 /
 ~0.5+0.5 MB; CTRL-Q quits; no hidden options or diagnostic counters in the release build.
 Steps, in order: the startup loader (DFS + unpack + patch replay, byte-compared against today's

@@ -1324,26 +1324,30 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 1. **Nothing from the original ships.** The reverse-engineered code — the transliteration, the
    twins, the circuit hook bodies — is ours and ships; every original byte (the engine image, the
    track files, the title page) is read at STARTUP from a disc image the player supplies, as the
-   latest Rescue on Fractalus and Vette releases do. ⭐ **TWO supported discs** (user, 2026-09-30,
-   final — after first "4179 and the others where possible", then "2203 only"):
+   latest Rescue on Fractalus and Vette releases do — except the CIRCUITS (user, 2026-09-30, final):
+   ⭐ **THE EXE CARRIES THE TRACK DATA AND THE TITLE PAGE; THE DISC SUPPLIES ONLY THE ENGINE.** The
+   six circuits ship in the executable exactly as the port runs them today (2203's five + 4179's
+   Nürburgring, with their transliterated hooks), and so does the title page it shows today
+   (`5TRSCRN`), whichever disc is used. The disc is for REVS2 alone — the engine's own tables and
+   graphics, i.e. what `revs_runtime.bin` holds outside the track extents.
+   **Two supported discs**, accepted by hash, anything else rejected:
    - ***Revs Plus Revs 4 Tracks*, bbcmicro.co.uk id 2203** — `DiscA15-RevsPlusRevs4Tracks.ssd`,
-     SHA-256 `d014b19d…7afd`, byte-identical to `revs.ssd`: the five commercial circuits.
+     SHA-256 `d014b19d…7afd`, byte-identical to `revs.ssd`;
    - ***Revs+ [hack]*, id 4179** — `DiscA16-RevsHack.ssd`, SHA-256 `571f6ded…0792`, byte-identical
-     to `revs-hack-nurburgring.ssd`: ITS OWN five circuit files plus the Nürburgring.
-   Both carry the same 1986 engine, so there is one engine; the loader accepts either image by hash
-   and rejects anything else. The circuits offered are the chosen disc's, so ⚠ **4179's rewritten
-   Brands/Donington/Oulton/Snetterton and its EXECUTABLE Silverstone need their hook code
-   transliterated too** — today the port runs 2203's files plus 4179's Nürburgring only. The
-   geometry, like the engine's tables, is read from the disc; the hook code is our C and ships.
-   Both fonts ship (user): the SAA5050 teletext set, and the race view's font, which is now the
-   MOS 1.20 ROM's own rather than a drawn stand-in.
+     to `revs-hack-nurburgring.ssd`.
+   ⭐ **Their REVS2 is byte-identical** (SHA-256 `db274487…`, measured), so there is one engine
+   image whichever disc is given, and the loader can check REVS2's hash rather than the disc's.
+   (The discs' title pages differ in 13 bytes — the subtitle, "Revs + Revs 4 Tracks" against
+   4179's "Revs+" — which no longer matters: the exe's own page is shown.)
+   Both fonts ship (user): the SAA5050 teletext set, and the race view's, which is the MOS 1.20
+   ROM's own.
 2. **Packaging as Rescue on Fractalus and Vette:** an `.lha` holding an executable that runs as it
    is, plus a WHDLoad slave and an install script. The WHDLoad ReadMe follows the Install
    Template's format. (WHDLoad and Installer docs: `~/Documents/Stunt Car Racer/data`.)
 3. **Target: Kickstart 1.3, a 68000, ~0.5 MB chip + ~0.5 MB other RAM.** ⇒ a `kick13.s` slave,
    Rescue on Fractalus's model (`~/Documents/Rescue on Fractalus/docs/whdload-slave.md`), not Vette's
    `kick31.s` + 68020 one.
-4. **The circuits are the chosen disc's**: five from 2203, six from 4179.
+4. **The six circuits are in the exe** (1 above), so the menu is the same whichever disc is used.
 5. **The release build has no hidden options, and no diagnostic counters.** Quit moves off the
    mouse to **CTRL-Q** (the game is mouse-driven).
 6. **Credits: Geoff Crammond / Acornsoft. No licence.**
@@ -1352,10 +1356,10 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 
 | Embedded now | What it is | At release |
 |---|---|---|
-| `disasm/revs_runtime.bin` (`incbin.s`) | the whole 64 KB image after REVS2's self-unpack: engine code + tables + Silverstone's track file | built at startup: DFS read → the unpack replay (`tools/relocate.py`'s job, in C) |
-| `src/gen/revs_tracks.c` | per circuit: the $5300 block, the $7800 tail, `ModifyGameCode`'s patch list | read from the disc's track file; the patch replay (`tools/track_patch.py`) done at startup |
-| `src/gen/revs_track_hooks.c` | the circuits' hook BODIES, transliterated 6502 | ships (ours) — ⚠ so a circuit is playable only if its file's hook code was compiled in: identify each file by hash |
-| `src/platform/titlescreen.h` | the `5TRSCRN` MODE 7 page | read from the disc (`PLUSCRN` on 4179; none on the 1985 discs) |
+| `disasm/revs_runtime.bin` (`incbin.s`) | the whole 64 KB image after REVS2's self-unpack: engine code + tables + Silverstone's track file | built at startup from the disc's REVS2: DFS read → the unpack replay (`tools/relocate.py`'s job, in C); the track extents come from the exe |
+| `src/gen/revs_tracks.c` | per circuit: the $5300 block, the $7800 tail, `ModifyGameCode`'s patch list | ships in the exe (user) — laid over the disc's engine image at circuit selection, as now |
+| `src/gen/revs_track_hooks.c` | the circuits' hook BODIES, transliterated 6502 | ships (ours) |
+| `src/platform/titlescreen.h` | the `5TRSCRN` MODE 7 page | ships in the exe (user) — ⚠ now git-ignored as disc bytes, so it must be checked in (or generated into the release build) |
 | `teletext_font.h` | the SAA5050 character generator — BBC hardware, not the game | ships (user) |
 | `mos_font.h` | the MOS 1.20 ROM's font — BBC system ROM, not the game | ships (user) |
 
