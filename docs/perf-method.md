@@ -3933,3 +3933,48 @@ only route and must not be proposed as one.**
 ✅ **The `move_and_draw_cars` discrepancy is SETTLED** — a PC-range bracket over its practice
 delay pad reads **6.0 ms** on the real machine: the routine's cost is a busy-wait twin #179 drops
 on purpose. The port skips nothing. (`symbols.csv` said it "returns immediately"; corrected.)
+
+### §7 — the twenty never-profiled small phase rows (closed 2026-09-30)
+
+⭐ **Closed by single-stepping every row still worth a look (`amiga/steptrace.gdb`, a driving `STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 FIXED_RNG=1 SIMLEGACY=1` build).** Practice rows at the time, `PROBEFIELDS=3000`: ph3 1.92, ph4 3.65, ph7 0.92, ph9/12/20 0.52/0.44/0.37, ph14 1.10, ph15 2.33, ph23 0.37.
+
+- **ph14 `build_road_sign`: 545 instructions a call** (657 on a frame the sign commits), 58% in the body and the rest in `bearing_to_section` 81, `project_point` 67, `write_object_slot` 41, `note_object_contact` 28. The five per-circuit SMC table loads are ~17 instructions each with the hardware test already on the base, the three origin shifts ~29 each, the marshals ~40. No single term is worth building; ≤0.3 ms for a rewrite. The earlier "at its local optimum" verdict stands.
+- **ph15**: the object plotter went to 68000 asm under §2c (practice 2.64 → 2.33, race 3.08 → 2.16).
+- **ph9/12/20 `engine_sound_update`: 108 instructions a call**, 557 on the one call in ten that issues an OSWORD 7 (`sound_osword_core` → `snd_sound` → `mos_sound_exit`). A row of ~0.4 ms is ~0.12 ms of probe transition (the 96-instruction PROBE_PHASE pair) plus ~0.25 ms of game — three calls a frame at the BBC's own structure.
+- **ph7 `advance_player_section`**: its time is `build_section_ahead` — real section building while driving.
+- ⚠⚠ **ph3 `read_driving_controls` is ~80% INSTRUMENT: 963 instructions a call in the measurement build**, of which `PlatformAmiga::keyDown` 198, `RevsInput::keyDown` 178, `pressBbcKey` 156, `AutoRun::keyDown` 150, `platform_key_down` 84 and `AutoRun::done` 36 — the autorun steady state answers every poll through the full path, because `g_keyDirect` stays 0 until `done()`, which a HOLD_THROTTLE build never reaches. The shipping game answers in line (`revs_keys.h`, ~247 a call). ⇒ **the practice baseline over-reads the shipping frame by ~1.4 ms in ph3 alone.** Left as it is on purpose: making the steady state cheap means answering from a per-frame key set instead of per poll, which moves the trajectory and restates every recorded arm; quote the ~1.4 ms beside the baseline instead.
+- ph4 `apply_driving_model` already beats the real BBC 2.2×; ph23 `check_crash` is ~0.25 ms net of the probe.
+
+⭐ **The transferable half: a small row is partly the PROBE.** At ~0.12 ms a bracket, the ~30 sub-0.5 ms rows carry ~3.5 ms of instrument between them — their sum was never the ~16 ms "never profiled" prize the queue once gave it, and a row under ~0.3 ms is mostly the bracket.
+
+The entry as it stood in the queue, verbatim:
+
+#### (was queue §7) ⭐ THE TWENTY NEVER-PROFILED SMALL PHASE ROWS — ~16 ms, plus phases 3/4/15 at 11.8
+Nobody has looked inside these, and the phase table's integer `ms/frame` column rounds most of them
+to `0`, which is why they stayed invisible — **compute them from `ticks / frames / (frozen/3000/20)`
+instead**. What the first pass through them found (2026-09-20):
+
+- ✅ **The block ops were byte loops** — `fastmem.c`, −1.05 ms across phases 10 and 24. CLOSED.
+- ⚠ **Phase 34 is a ONE-SHOT, not a per-frame row: `calls=1`.** `view_low_build` runs once and its
+  2.7 ms is that single run amortised over the window's 333 frames, so **the real recurring frame is
+  ~169 ms, not 172** — and a longer run reports a smaller number for the same binary. Any A/B that
+  straddles it is comparing two different amortisations. Check `calls=` on every row before diffing.
+- ✅ **Phase 3 (`read_driving_controls`) — the key tests are DONE, in three steps.** It was ~7 OSBYTE
+  129s a frame through a `MosRegs` round trip, two virtual calls and a 33-entry linear scan. The
+  reverse map and the direct `platform_key_down` answer took ~4 ms out; what remained was still
+  ~50 instructions a poll behind the virtual `Platform::keyDown` chain — **74% of the routine's 660
+  instructions a call**, single-stepped — so the race's answer is now IN LINE (`revs_keys.h`):
+  **660 → 247 instructions a call**, ~11 a poll, with the front end's tap latch, unmapped codes and
+  the autorun scaffolding still routed through `RevsInput::keyDown`. `make KEYSTIM=1
+  STRAIGHT_TO_RACE=1` + `straight_to_race.gdb` is its end-to-end proof (road speed must rise).
+  ⚠ The "~1.7 ms a step" once quoted for the controls was traced on an AUTORUN build, where the
+  script's per-poll `pressBbcKey` is a third of the cost; the shipping step was ~0.9 ms.
+- The rest, unexamined: phase 4 `apply_driving_model` 3.60 (real 6502 arithmetic, the BBC paid it
+  too), **phases 14+15 `build_road_sign` + `draw_track_object` 5.15 ms for ONE billboard** — the
+  next thing to read here — phase 23 `check_crash` 0.50, phases 9/12/20 `engine_sound_update` 1.79.
+
+⚠⚠ **THE CEILING IS HONEST AND SMALL: this whole block is ~28 ms of a 172 ms frame, and deleting
+every one of them leaves 144 against a 48 ms target.** It is worth doing because it is cheap and
+certain, not because it changes the arithmetic — that still rests on `draw_road` (34) and
+`build_track_geometry` (26).
+

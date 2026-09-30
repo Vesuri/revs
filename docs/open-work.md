@@ -77,7 +77,7 @@ the port adds on top of the game's own, so each is a defect to find, not a trade
 by certainty × size:
 1. `read_driving_controls` **−4.0**, certain — seven key tests a frame through a virtual
    `mosCall` → OSBYTE switch → virtual `keyDown` → a 33-entry linear scan. A reverse rawkey map
-   and a direct entry (§7).
+   and a direct entry (closed §7, perf-method §THE CLOSED QUEUE ENTRIES).
 2. `draw_road` **−17.8** — 5819 cyc/span for 1.1 DDA lines and 1.3 columns a span, 1088 per
    plotted column. Still carries the 6502's self-modifying opcode SLOTS (`span_step_take`,
    `sw_marker`, the page-$00 alias guard) that the governing directive says must go. §2.
@@ -314,9 +314,9 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 5.93 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED | — |
 | 5.65 | 32 | ...the consumer's tail | ⚠ with 24/33 |
 | 5.11 | 14+15 | `build_road_sign` + `draw_track_object` — ONE billboard | — |
-| 5.10 | 3 | `read_driving_controls` — 7 MOS key tests; **a named unbuilt fix, §7** | — |
+| 5.10 | 3 | `read_driving_controls` — 7 MOS key tests; **done, closed §7** | — |
 | 3.61 | 4 | `apply_driving_model` — real 6502 arithmetic, the BBC paid it too | — |
-| ~7 | rest | twenty rows under 1.3 ms each (§7) | — |
+| ~7 | rest | twenty rows under 1.3 ms each (closed §7) | — |
 
 ⭐⭐ **WHICH SPLITS ARE WORTH RE-READING, and it is not the big two.** The producers were not
 touched by the ownership campaign and their splits still describe them; the CONSUMER's do not —
@@ -515,35 +515,6 @@ everything else is at or near the 92 µs instrument floor. ⚠ **Do not merge th
 pass** — `make sound` compares chip state tick by tick against a real MOS and the intermediate
 state is part of the contract.
 
-### 7. ⭐ THE TWENTY NEVER-PROFILED SMALL PHASE ROWS — ~16 ms, plus phases 3/4/15 at 11.8
-Nobody has looked inside these, and the phase table's integer `ms/frame` column rounds most of them
-to `0`, which is why they stayed invisible — **compute them from `ticks / frames / (frozen/3000/20)`
-instead**. What the first pass through them found (2026-09-20):
-
-- ✅ **The block ops were byte loops** — `fastmem.c`, −1.05 ms across phases 10 and 24. CLOSED.
-- ⚠ **Phase 34 is a ONE-SHOT, not a per-frame row: `calls=1`.** `view_low_build` runs once and its
-  2.7 ms is that single run amortised over the window's 333 frames, so **the real recurring frame is
-  ~169 ms, not 172** — and a longer run reports a smaller number for the same binary. Any A/B that
-  straddles it is comparing two different amortisations. Check `calls=` on every row before diffing.
-- ✅ **Phase 3 (`read_driving_controls`) — the key tests are DONE, in three steps.** It was ~7 OSBYTE
-  129s a frame through a `MosRegs` round trip, two virtual calls and a 33-entry linear scan. The
-  reverse map and the direct `platform_key_down` answer took ~4 ms out; what remained was still
-  ~50 instructions a poll behind the virtual `Platform::keyDown` chain — **74% of the routine's 660
-  instructions a call**, single-stepped — so the race's answer is now IN LINE (`revs_keys.h`):
-  **660 → 247 instructions a call**, ~11 a poll, with the front end's tap latch, unmapped codes and
-  the autorun scaffolding still routed through `RevsInput::keyDown`. `make KEYSTIM=1
-  STRAIGHT_TO_RACE=1` + `straight_to_race.gdb` is its end-to-end proof (road speed must rise).
-  ⚠ The "~1.7 ms a step" once quoted for the controls was traced on an AUTORUN build, where the
-  script's per-poll `pressBbcKey` is a third of the cost; the shipping step was ~0.9 ms.
-- The rest, unexamined: phase 4 `apply_driving_model` 3.60 (real 6502 arithmetic, the BBC paid it
-  too), **phases 14+15 `build_road_sign` + `draw_track_object` 5.15 ms for ONE billboard** — the
-  next thing to read here — phase 23 `check_crash` 0.50, phases 9/12/20 `engine_sound_update` 1.79.
-
-⚠⚠ **THE CEILING IS HONEST AND SMALL: this whole block is ~28 ms of a 172 ms frame, and deleting
-every one of them leaves 144 against a 48 ms target.** It is worth doing because it is cheap and
-certain, not because it changes the arithmetic — that still rests on `draw_road` (34) and
-`build_track_geometry` (26).
-
 ### 9b. 🧹 THE RENDERING-PATH REVIEW (user, 2026-09-26: "a full review of all the functions on the in-game rendering path … Implementation details don't need verification, results do")
 Method: one whole loop iteration single-stepped (54.5k instructions, `tmp/price/steptrace_frame.gdb`
 shape — break at `build_track_geometry_native`'s EXACT entry, `break *fn`, and step to its next entry;
@@ -673,6 +644,7 @@ for later and continue on other unfinished business"). **Do not start it unasked
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+- ⛔ **§7, the twenty never-profiled small phase rows: every row read, nothing left to build** (2026-09-30) — single-stepped: `build_road_sign` 545 instructions a call spread over eight callees (1.10 ms, ≤0.3 available); `engine_sound_update` 108 a call (557 on the one call in ten that issues an OSWORD); `advance_player_section` is real section building; ph15 went to asm under §2c.  ⚠ Each small row also carries ~0.12 ms of probe transition, and ph3's 1.92 ms is ~80% AUTORUN scaffolding (963 instructions a call against the shipping ~247) — the practice baseline over-reads the game by ~1.4 ms there.  The entry's full text is `docs/perf-method.md` §THE CLOSED QUEUE ENTRIES.
 - ⛔ **the TRANSPOSED SCAN (10.00 ms): both routes to it measured and closed** — the entry's full text is `docs/perf-method.md` §THE CLOSED QUEUE ENTRIES.
 - ⛔ **the view sweep's DRIVER code: every candidate closed; an objdump delta over-reads this driver ~6x, and §12 deleted phases 2+3** — the entry's full text is `docs/perf-method.md` §THE CLOSED QUEUE ENTRIES.
 - ⛔ **the source-block reader audit: DONE (`make srcaudit`, span-render-plan §12b)** — the entry's full text is `docs/perf-method.md` §THE CLOSED QUEUE ENTRIES.
