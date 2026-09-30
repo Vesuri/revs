@@ -1778,9 +1778,10 @@ COMMA := ,
 
 all: $(OUT).exe
 
+# -s: no symbol hunk (~40 KB).  Every debugger here reads $(OUT).elf, never the exe.
 $(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $@)
-	@elf2hunk $(OUT).elf $(OUT).exe
+	@elf2hunk $(OUT).elf $(OUT).exe -s
 ifdef DIST
 	@$(MAKE) --no-print-directory dist-audit
 endif
