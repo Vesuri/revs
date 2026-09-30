@@ -32,6 +32,8 @@
 	.equ	Z_DEFER,    0x0048      | span_defer_pending
 	.equ	Z_PTRLO,    0x0070      | plot_ptr
 	.equ	Z_PTRHI,    0x0071
+	.equ	Z_PTR2LO,   0x0072      | plot_ptr2
+	.equ	Z_PTR2HI,   0x0073
 	.equ	Z_HALF,     0x0074      | PVS_HALF      (math_lo)
 	.equ	Z_76,       0x0076      | shared_temp_76 — the edge colour
 	.equ	Z_COLP,     0x0078      | PVS_COLOUR_P  (hypot_min_lo)
@@ -49,6 +51,9 @@
 	.equ	Z_8C,       0x008C      | shared_temp_8c — the deferred keep mask
 	.equ	Z_OTHCOL,   0x008D      | PVS_OTHER_COL  (projected_line)
 	.equ	Z_OTHX,     0x008F      | PVS_OTHER_X    (plot_ptr3_hi)
+	.equ	GAP_BRANCH, 0x1DD5      | column_gap_walk's patched branch operand ($09 skip / $EF map)
+	.equ	GAP_FALLBK, 0x1DDC      | its fallback colour operand
+	.equ	GAP_PTR,    0x1DDE      | its store pointer's zero-page number
 	.equ	LA0,        0x0400      | line_attr_0
 	.equ	LA1,        0x0450      | line_attr_1
 	.equ	SE0,        0x0554      | surface_edge_0..3
@@ -73,6 +78,58 @@
 	bpl.s	1f
 	addq.b	#1,\r
 1:	asr.b	#1,\r
+	.endm
+
+| surface_colour_at (twin #40): line in d0 (a clean word), position in d6 -> the colour in d1.
+| Clobbers a0/a1.  surface_colours is read LIVE (it sits in a source block's tail).
+	.macro	CLASSIFY
+	cmp.b	Z_HORIZ(a5),d0
+	bhi.s	cl_sky\@                    | above the horizon: sky
+	lea	(a5,d0.w),a0
+	cmp.b	SE0(a0),d6
+	bcc.s	cl_c3\@                     | past the outermost boundary
+	cmp.b	SE2(a0),d6
+	bcs.s	cl_n2\@
+	cmp.b	Z_LA1LIM(a5),d0
+	bcc.s	cl_c3\@
+	moveq	#0x7F,d1
+	and.b	LA1(a0),d1
+	bra.s	cl_attr\@
+cl_n2\@:
+	cmp.b	SE3(a0),d6
+	bcc.s	cl_c0\@
+	cmp.b	SE1(a0),d6
+	bcs.s	cl_in\@
+	cmp.b	Z_LA0LIM(a5),d0
+	bcc.s	cl_c3\@
+	moveq	#0x7F,d1
+	and.b	LA0(a0),d1
+cl_attr\@:
+	lea	ESPREV(a5),a1
+	move.b	(a1,d1.w),d1                | the edge point's style...
+	.if SABOTAGE == 2
+	and.w	#7,d1                       | SABOTAGE 2: the colour index takes a bit too many
+	.else
+	and.w	#3,d1                       | ...whose low bits are the colour
+	.endif
+	lea	SC(a5),a1
+	move.b	(a1,d1.w),d1
+	bra.s	cl_done\@
+cl_in\@:
+	moveq	#3,d1
+	and.b	VLS(a0),d1                  | inside everything: the line's own background class
+	lea	SC(a5),a1
+	move.b	(a1,d1.w),d1
+	bra.s	cl_done\@
+cl_sky\@:
+	move.b	SC+1(a5),d1
+	bra.s	cl_done\@
+cl_c3\@:
+	move.b	SC+3(a5),d1
+	bra.s	cl_done\@
+cl_c0\@:
+	move.b	SC(a5),d1
+cl_done\@:
 	.endm
 
 	.section .text.pvs_line_m68k,"ax",@progbits
@@ -312,58 +369,61 @@ pl_rblank:
 
 	| $1D5D — an untouched cell first takes the surface's colour (surface_colour_at, twin #40)
 pl_classify:
-	cmp.b	Z_HORIZ(a5),d0
-	bhi.s	cl_sky                      | above the horizon: sky
-	lea	(a5,d0.w),a0
-	cmp.b	SE0(a0),d6
-	bcc.s	cl_c3                       | past the outermost boundary
-	cmp.b	SE2(a0),d6
-	bcs.s	cl_n2
-	cmp.b	Z_LA1LIM(a5),d0
-	bcc.s	cl_c3
-	moveq	#0x7F,d1
-	and.b	LA1(a0),d1
-	bra.s	cl_attr
-cl_n2:
-	cmp.b	SE3(a0),d6
-	bcc.s	cl_c0
-	cmp.b	SE1(a0),d6
-	bcs.s	cl_in
-	cmp.b	Z_LA0LIM(a5),d0
-	bcc.s	cl_c3
-	moveq	#0x7F,d1
-	and.b	LA0(a0),d1
-cl_attr:
-	lea	ESPREV(a5),a1
-	move.b	(a1,d1.w),d1                | the edge point's style...
-	.if SABOTAGE == 2
-	and.w	#7,d1                       | SABOTAGE 2: the colour index takes a bit too many
-	.else
-	and.w	#3,d1                       | ...whose low bits are the colour
-	.endif
-	lea	SC(a5),a1
-	move.b	(a1,d1.w),d1
-	jbra	pl_merge
-cl_in:
-	moveq	#3,d1
-	and.b	VLS(a0),d1                  | inside everything: the line's own background class
-	lea	SC(a5),a1
-	move.b	(a1,d1.w),d1
-	jbra	pl_merge
-cl_sky:
-	move.b	SC+1(a5),d1
-	jbra	pl_merge
-cl_c3:
-	move.b	SC+3(a5),d1
-	jbra	pl_merge
-cl_c0:
-	move.b	SC(a5),d1
+	CLASSIFY
 	jbra	pl_merge
 pl_rdone:
 
 	| ---- $1D6F-$1D7B: every mode but 1 also closes the column's own gaps
 	cmp.b	#1,d7
 	jbeq	pl_ret
+	| column_gap_walk (twin #42's walk) on the NEXT column, from span_line_cursor down to
+	| blockStart.  ⭐ The object path meets it in the configuration fill_dash_edge_columns' pass A
+	| leaves — branch $09 (a non-zero cell is skipped) and the store through plot_ptr itself (an
+	| empty cell takes the surface's colour, or the fallback, in place) — so that shape runs here,
+	| and any other patch state goes to the C walk.  Both are exact, so the choice cannot show.
+	cmp.b	#0x09,GAP_BRANCH(a5)
+	jbne	pl_gapc
+	cmp.b	#Z_PTRLO,GAP_PTR(a5)
+	jbne	pl_gapc
+	addq.b	#1,d6                       | EDGE_COLUMN + 1 (the C bumps the cell and restores it)
+	cmp.b	#0x28,d6
+	jbcc	pl_prevcol                  | $1DAF — no source column there: nothing is written
+	moveq	#0,d0
+	move.w	d6,d0
+	lsl.w	#7,d0
+	add.w	#BLOCKS,d0                  | $1DB5 — plot_ptr = the next column's block
+	move.w	d0,plot_ptr_v
+	move.b	d0,Z_PTRLO(a5)
+	lea	(a5,d0.l),a4
+	lsr.w	#8,d0
+	move.b	d0,Z_PTRHI(a5)
+	move.b	Z_PTR2HI(a5),d1             | plot_ptr2 is marshalled IN, as the C walk does
+	lsl.w	#8,d1
+	move.b	Z_PTR2LO(a5),d1
+	move.w	d1,plot_ptr2_v
+	move.b	GAP_FALLBK(a5),d2
+	moveq	#0,d0
+	move.b	Z_CURSOR(a5),d0
+pl_gloop:
+	cmp.b	d5,d0
+	beq.s	pl_gdone
+	tst.b	(a4,d0.w)
+	beq.s	pl_gempty                   | $1DD4 BNE +$09 — a painted cell is skipped
+pl_gnext:
+	subq.b	#1,d0
+	bra.s	pl_gloop
+pl_gdone:
+	jbra	pl_prevcol
+pl_gempty:                              | $1DD6 — out of line: keeps the skip loop's branches short
+	CLASSIFY
+	tst.b	d1
+	.if SABOTAGE != 5                   | SABOTAGE 5: a colourless cell stored as 0, not the fallback
+	bne.s	1f
+	move.b	d2,d1
+	.endif
+1:	move.b	d1,(a4,d0.w)
+	jbra	pl_gnext
+pl_gapc:
 	move.l	d5,-(sp)
 	move.l	d7,-(sp)
 	jsr	pvs_asm_gap_walk

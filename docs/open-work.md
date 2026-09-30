@@ -26,8 +26,8 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**⚠⚠ THIS IS A PRACTICE FRAME — the player alone.  The RACE PROPER measures 98.15 ms (§2c: the other cars are ~22.4 ms of it).**
-**2026-09-29: the object plotter's line side in 68000 asm — practice 75.80 → 75.33 (ph15 2.64 → 2.33), race 100.44 → 98.15 (ph43 13.61 → 11.52), same-session controls `OBJASM=0`.**
+**⚠⚠ THIS IS A PRACTICE FRAME — the player alone.  The RACE PROPER measures 95.72 ms (§2c: the other cars are ~21 ms of it).**
+**2026-09-30: the object plotter's line side AND its gap walk in 68000 asm — race 100.62 → 95.72 (ph43 13.77 → 9.97, ph15 3.08 → 2.16), `QUICKQUAL=1` arms against `OBJASM=0`; practice ph15 2.64 → 2.33 for the line side alone.**
 **Where the frame stands:** **Σ(1..39) − ph28 = 75.10 ms bracketed** (after the rendering-path review's second pass — the VERTB ISR 1002 → 671 µs a field, the line-surface sweep four lines a step, the on-track crash test's redundant publish, §9b — and its first cuts — the MOS round trip, the edge-buffer clear, the PF2 outline — and the source scan's hits stopped being calls, the ownership map stopped being cleared before its template overwrote it, and a run-B seed stopped computing its list's head, ph24 17.69 → 16.11 → 15.87 → 15.51; before it the geometry walk stopped storing eight dead 6502 working cells a point, ph5 10.59 → 10.02; before it three `draw_road` producer cuts, ph11 16.17 → 13.78: `fill_line_attr`'s walk over locals −1.20, the span pass's twelve dead scratch stores −1.00 and `fill_line_attr` un-unrolled −0.15; before them the 6502-residue cleanup, §9 — 84.80 → 83.26 in a field-matched pair at `8d8a45b`; before it the terrain painter stopped repainting unchanged lines, ph33 7.99 → 5.09; before that `buildLineModes` was memoised, ph27 −1.22, and the needle sprites were keyed on the DDA's input so a hit skips the walk, ph32 3.52 → 2.18) (149.18 at the plan's start, which also carried
 ~3-4 ms of crash reset — see below) — **0.77× the real BBC's 97.0 (0.83× its comparable 91.0), and ~1.11× real-time game speed in the legacy loop (the default build now runs game time at real time)**.
 ⚠⚠ 2026-09-25: **BASELINE RESTATED −1.71 ms with no code sped up** — a STRAIGHT_TO_RACE window's ~12 front-end frames
@@ -459,10 +459,18 @@ PROBERACE arms at 3000 fields; practice ph15 2.64 → 2.33).  It stores every ce
 record moved.  Gate: `make OBJCHECK=1` + `amiga/obj_check.gdb`, all 64 KB a call: 1502 race calls
 (all three modes) and a 400-case fuzzer at 0 mismatches, four sabotages caught (the classifier's only
 by the fuzzer; the zero-byte `$55` only by the game until the fuzzer's tables were biased to zero).
-⚠ The ~5 ms prediction paid half: the gap walk (`column_gap_walk_core`, ~21% of the draw's
-instructions, 3.1 calls an object) and `fill_object_gap` are still C, called from the asm.
-**Next:** single-step the asm build's car pass (`amiga/race_steptrace.gdb`) to re-rank what is left
-— the gap walk, `scale_shape_vectors` (240 an object) and `plot_shape_edges` (213).  ⭐ **And rows 40-42 are NOT fat**: `drive_one_car`
+✅ **AND THE GAP WALK, −3.06 ms MORE — ph43 11.80 → 9.97, ph15 2.62 → 2.16, frame 98.78 → 95.72**
+(three `QUICKQUAL=1` arms, one trajectory: C 100.62 / line side 98.78 / + gap walk 95.72).
+Re-single-stepped after the first step: the asm line side ran ~122 instructions a call against the
+C's 156 — its fills average <2 cells, so it is per-call decision logic and won on cheaper operands —
+and the C gap walk ~118 a call, almost all setup (marshals, three `walk_stores_are_private`, a
+`zp_pointer`, an `adc_overflow`).  So the asm walks it inline in the configuration the object path
+always meets (branch $09, store through `plot_ptr` — what `fill_dash_edge_columns`' pass A leaves)
+and hands any other patch state to the C walk.  Gate: `make OBJCHECK=1` again PASS in the race (1502
+calls, all modes), the fuzzer now varies both patch operands; sabotage 5 (the fallback colour
+dropped) caught by game and fuzzer.
+**Next:** `scale_shape_vectors` (~240 instructions an object, ~13% of the draw) and
+`plot_shape_edges` (~213, ~12%) — re-trace first; `fill_object_gap` is rare.  ⭐ **And rows 40-42 are NOT fat**: `drive_one_car`
 is **113 instructions a car** (19 a frame), `check_car_pair` ~1 600 a frame, staging ~200 a
 `place_car_world_coords` — ordinary per-car work at ~13 cyc/instruction, so they are the game's
 own cost and rank below the draw.

@@ -15306,7 +15306,9 @@ static void obj_compare(uint8_t mode, uint8_t sel, volatile unsigned long* bad,
    source blocks (mostly empty, some $55), the block starts, the pixel and pattern tables, the
    surface boundaries, attributes, limits and horizon, the styles, and the whole zero-page entry
    state — and requires both to agree on all 64 KB and both pointers.  mem[] is restored after.
-   The gap walk's two SMC operands keep the game's values: a random one is its trap arm. */
+   The gap walk's patch operands take the two configurations the engine makes (branch $09 or $EF,
+   store through plot_ptr or plot_ptr2) — the asm walks the first inline and hands the rest to the
+   C walk — never a random one, which is its trap arm. */
 static void obj_fuzz(void)
 {
     uint32_t x = 0x9E3779B9u;
@@ -15368,8 +15370,14 @@ static void obj_fuzz(void)
         span_line_cursor   = (uint8_t)(OBJ_MOD(OBJ_RND(), 0x50u));
         span_top_line      = (uint8_t)(OBJ_MOD(OBJ_RND(), 0x50u));
         plot_x             = (uint8_t)OBJ_RND();
+        mem[GAP_BRANCH_OPERAND]     = (k2 & 0x3000u) == 0 ? 0xEFu : 0x09u;
+        mem[MEM_gap_ptr_operand]    = (k2 & 0xC000u) == 0 ? MEM_plot_ptr2_lo : MEM_plot_ptr_lo;
+        mem[MEM_gap_colour_fallback_operand] = (uint8_t)OBJ_RND();
         plot_ptr_v = (uint16_t)OBJ_RND();  plot_ptr2_v = (uint16_t)OBJ_RND();
         plot_ptr_lo = (uint8_t)plot_ptr_v; plot_ptr_hi = (uint8_t)(plot_ptr_v >> 8);
+        /* plot_ptr2 inside the source blocks, as the engine's table passes leave it */
+        mem[MEM_plot_ptr2_lo] = (uint8_t)OBJ_RND();
+        mem[MEM_plot_ptr2_hi] = (uint8_t)(0x30u + OBJ_MOD(OBJ_RND(), 0x13u));
         obj_compare(mode, (uint8_t)(k2 >> 16), &g_objFuzzMismatch, &g_objFuzzMismatchAt);
         for (i = 0x3000u; i < 0x4400u; i++)       /* (no memcmp in the freestanding runtime) */
             if (s_objBefore[i] != s_objAfterC[i]) { g_objFuzzPainted++; break; }
@@ -20577,6 +20585,14 @@ void front_end_menus_core(void)
     for (;;) {                                       /* L_641F — the championship cycle */
         text_script_interp_core(0x16);               /* $641F — the qualifying-length menu */
         qualify_minutes = mem[MEM_qualify_minutes_tbl + menu_wait_key_core(0x03)];   /* $6424 */
+#ifdef REVS_QUICK_QUALIFY
+        /* ⚠ MEASUREMENT BUILDS ONLY (`make QUICKQUAL=1`, amiga/Makefile): a ONE-minute qualifying
+           session instead of the menu's shortest four, so a race-proper pricing run reaches the
+           grid in ~a quarter of the fields.  The deadline ($106F) is the only reader of the value
+           besides its practice sign bit, so the session simply ends sooner; the race it leads to
+           is deterministic under FIXED_RNG and identical on both arms of an A/B. */
+        qualify_minutes = 0x00u;
+#endif
         all_cars_reset_best_lap_core();              /* $642F */
 
         player_car = 0x14;                           /* $6432 */

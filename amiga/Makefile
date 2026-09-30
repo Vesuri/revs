@@ -965,6 +965,13 @@ endif
 ifeq ($(PROBERACE),1)
 EXTRA_DEFINES += -DREVS_PROBE_RACE
 endif
+# ⭐ `make QUICKQUAL=1` (with RACEPROPER=1) — a ONE-minute qualifying session, so a race-proper
+# pricing run opens its window after ~a quarter of the fields (src/gen/revs_native.c §QUICK_QUALIFY).
+# MEASUREMENT ONLY: the race it reaches is deterministic under FIXED_RNG and the same on both arms,
+# but it is not the race a four-minute session leads to.
+ifeq ($(QUICKQUAL),1)
+EXTRA_DEFINES += -DREVS_QUICK_QUALIFY
+endif
 # `make CARSPLIT=1 PROBES=1` — phase 17 split into its five jobs, phases 40-44 (probe.h §CARSPLIT).
 ifeq ($(CARSPLIT),1)
 EXTRA_DEFINES += -DREVS_CAR_SPLIT

@@ -828,7 +828,9 @@ Rules that must survive without opening `docs/perf-method.md`:
   project has taken — 22 empty-slot tests and nothing else. **In the race proper it is 24.7 ms**
   (object plotter 13.55 at 3.28 objects a frame, AI 4.0, staging 3.8, overtaking 2.8), so the
   standing baseline hides ~25 ms of a real race — measure one with `make PROBERACE=1 RACEPROPER=1
-  CARSPLIT=1` (`docs/open-work.md` §2c). ⭐ And **gate a session census on the session it is
+  CARSPLIT=1 QUICKQUAL=1` (a one-minute qualifying, ~7700 fields a run; `docs/open-work.md` §2c).
+  ⚠ Under host load a race arm outlives the tool's background limit: launch it `nohup … &` and
+  watch its log. ⭐ And **gate a session census on the session it is
   about**: `determinism-race` spends ~12000 of its 12600 frames in QUALIFYING, alone on track, so
   an ungated count reads 42% low. Ask what the chosen trajectory never populates.
 - ⚠⚠ **SIZE A ROAD-PASS ROUTINE WHILE DRIVING, NOT PARKED — it is 8x.** `div16by8` runs 7.8 times a
