@@ -20,6 +20,7 @@
  * Linked into BOTH backends; anything Amiga-only belongs in revs_native_amiga.cpp.
  */
 #include <string.h>            /* memset: the constant-byte mem[] fills */
+#include "../platform/diag.h"
 #include "../cpu/cpu.h"
 #include "../cpu/bus.h"
 #include "../cpu/m68k_math.h"   /* revs_mulu16: MULU.W, the 68000 op mul8 stands in for */
@@ -491,13 +492,13 @@ static void view_build_tables(void)
         for (k = 0; k < 2; k++) {                    /* the unit start, then unit+$05 */
             uint16_t a = (uint16_t)(start + (k ? 5 : 0));
             cell = &g_viewUnitOf[(a >> 8) - VIEW_LOW_PAGE][a & 0xFF];
-            if (*cell) g_viewTableCollisions++;
+            if (*cell) REVS_DIAG(g_viewTableCollisions++);
             *cell = (unsigned char)(i + 1 + (k ? 0x80 : 0));
         }
         if (g_viewSlotP[i]) {
             unsigned a = (unsigned)(g_viewSlotP[i] - mem);
             cell = &g_viewSlotOf[(a >> 8) - VIEW_LOW_PAGE][a & 0xFF];
-            if (*cell) g_viewTableCollisions++;
+            if (*cell) REVS_DIAG(g_viewTableCollisions++);
             *cell = (unsigned char)(i + 1);
         }
     }
@@ -1722,7 +1723,7 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
     for (line = lo; line <= hi; line++)
         g_viewEvEnd[line]->start = 0xFFu;      /* the sentinel — see the note above */
 
-    g_viewEvents += found;
+    REVS_DIAG(g_viewEvents += found);
 }
 
 /* ⭐⭐ ONE OUT-OF-LINE COPY PER RANGE, AND THAT IS A MEASURED DECISION, NOT TIDINESS.  Inlined
@@ -1825,7 +1826,9 @@ static __attribute__((noinline)) void view_scan_all(void)
 #endif
     }
 #else
-    g_viewEvents += view_scan_asm();
+    const unsigned long found = view_scan_asm();
+    REVS_DIAG(g_viewEvents += found);
+    (void)found;
 #endif
 }
 #else
@@ -2839,7 +2842,7 @@ static void view_low_build(void)
         }
     }
 #endif
-    g_terrainClipBad += bad;
+    REVS_DIAG(g_terrainClipBad += bad);
     if (!bad) s_lowBuilt = 1;
 }
 
@@ -4589,11 +4592,11 @@ uint8_t race_main_loop_core(RestartDepth depth)
             unsigned frameTicks = 0u;
             for (unsigned step = 0; step < steps; step++) {
                 const uint16_t headingBefore = car_heading_v;
-                g_simSteps++;
+                REVS_DIAG(g_simSteps++);
                 sim_note_accrue();
                 sim_tick_step = (uint8_t)sim_slow_tick_due();
                 if (sim_tick_step) {
-                    g_simSlowTicks++;
+                    REVS_DIAG(g_simSlowTicks++);
                     frameTicks++;
                     PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
                     PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  (void)starting_lights_advance_core();
@@ -11122,7 +11125,7 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
    store really can reach the cells that drive the walk, i.e. a hazard in the GAME and not in
    the fixture.  Incremented only on that path, so the shipping build provably pays nothing. */
 unsigned long g_gapWalkSlow;
-#define GAP_WALK_SLOW()  (g_gapWalkSlow++)
+#define GAP_WALK_SLOW()  REVS_DIAG(g_gapWalkSlow++)
 
 static int walk_stores_are_private(unsigned base)
 {

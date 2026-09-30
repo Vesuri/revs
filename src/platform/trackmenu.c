@@ -4,6 +4,7 @@
  * of them is checked against a page recorded off a real BBC by `make trackmenu`.
  */
 #include "trackmenu.h"
+#include "diag.h"
 #include "titlescreen.h"
 #include "track.h"
 #include "../cpu/cpu.h"          /* mem[] — the teletext page lives in it */
@@ -172,11 +173,11 @@ static int same_name(const char* upper, const char* mixed)
 static void cross_check(void)
 {
     unsigned n;
-    g_tmMisrouted = 0;
+    REVS_DIAG(g_tmMisrouted = 0);
     for (n = 1; n <= s_options; n++) {
         unsigned char t = kOptions[n - 1].track;
         if (t >= REVS_TRACK_COUNT || !same_name(kOptions[n - 1].label, revs_tracks[t].name))
-            g_tmMisrouted++;
+            REVS_DIAG(g_tmMisrouted++);
     }
 }
 
@@ -199,7 +200,7 @@ void tm_begin(unsigned options)
     g_tmPhase  = TM_TITLE;
     g_tmOption = 0;
     g_tmTrack  = 0;
-    g_tmFields = 0;
+    REVS_DIAG(g_tmFields = 0);
     s_dwell    = 0;
     s_spaceSeenUp = 0;
     s_allKeysSeenUp = 1;
@@ -222,7 +223,7 @@ void tm_begin(unsigned options)
 
 void tm_tick(unsigned keys, unsigned fields)
 {
-    g_tmFields += fields;
+    REVS_DIAG(g_tmFields += fields);
 
     switch (g_tmPhase) {
     case TM_TITLE:
@@ -290,7 +291,7 @@ unsigned tm_track(void)   { return g_tmTrack; }
 
 void tm_reject(void)
 {
-    g_tmRefusals++;
+    REVS_DIAG(g_tmRefusals++);
     /* Un-highlight the row, say why, and take the choice back.  The page is otherwise left
        standing: repainting it whole would clear the message on the same field it was written. */
     if (g_tmOption) option_row(g_tmOption, 0);

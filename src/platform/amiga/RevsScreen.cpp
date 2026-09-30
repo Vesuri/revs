@@ -2,6 +2,7 @@
    src/platform/bbc_screen.h; this file only re-hosts it. */
 #define ECS_SPECIFIC
 #include <hardware/custom.h>
+#include "../diag.h"
 #include <hardware/dmabits.h>
 #include <graphics/display.h>
 #include <proto/exec.h>
@@ -646,7 +647,7 @@ void RevsScreen::initialize()
        cockpit has something to say.  Bitmap::allocate clears. */
     m_cockpit = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
     if (!m_cockpit) return;
-    g_screenCockpitAddr = (uint32_t)m_cockpit->data;
+    REVS_DIAG(g_screenCockpitAddr = (uint32_t)m_cockpit->data);
 #endif
 
     /* ⭐ BOTH plane buffers to the plot module, once — the glyph domain's delta painter keeps a
@@ -668,8 +669,8 @@ void RevsScreen::initialize()
     AmigaHardware::setDMAChannels(DMAF_BLITTER, true);
     m_ttBitmap = Bitmap::allocate(kTtW, kTtH, kTtBP, /*interleaved*/true);
     m_ttCopper = CopperList::allocate(TT_LIST_LENGTH);
-    if (!m_ttBitmap) g_ttAllocFailed |= 1u;
-    if (!m_ttCopper) g_ttAllocFailed |= 2u;
+    if (!m_ttBitmap) REVS_DIAG(g_ttAllocFailed |= 1u);
+    if (!m_ttCopper) REVS_DIAG(g_ttAllocFailed |= 2u);
 
     setConstantRegisters();
 
@@ -751,10 +752,10 @@ void RevsScreen::initialize()
        exactly one place instead of two that can disagree. */
     buildTeletextCopper();
 
-    g_screenCopperAddr  = (uint32_t)m_copper->data();
-    g_screenCopperWords = LIST_LENGTH;
-    g_screenFrontAddr  = (uint32_t)m_bitmap[0]->data;
-    g_screenBytes      = (uint16_t)revs_mulu16(kH, kRowBytes);
+    REVS_DIAG(g_screenCopperAddr  = (uint32_t)m_copper->data());
+    REVS_DIAG(g_screenCopperWords = LIST_LENGTH);
+    REVS_DIAG(g_screenFrontAddr  = (uint32_t)m_bitmap[0]->data);
+    REVS_DIAG(g_screenBytes      = (uint16_t)revs_mulu16(kH, kRowBytes));
 
     /* Start black.  The game's first band cycle installs the real palette; showing black
        until then matches the BBC, which also sets all four colours to black across the
@@ -1140,8 +1141,8 @@ void RevsScreen::decodeTeletext()
     }
 
     m_ttRowDbl     = newDbl;
-    g_ttRowsDrawn  = decoded;
-    g_ttCellsDrawn = painted;
+    REVS_DIAG(g_ttRowsDrawn  = decoded);
+    REVS_DIAG(g_ttCellsDrawn = painted);
 #ifdef REVS_TT_SPLIT
     const uint32_t tw = tt_beam_lines();
 #endif
@@ -1300,7 +1301,7 @@ int RevsScreen::applyMode()
        writes — so the two derivations are independent and a disagreement means one of them is
        wrong.  Counted rather than resolved here, because guessing which to believe is how an
        assumption calcifies; the counter says whether there is anything to resolve. */
-    if ((unsigned char)((mem[0x64] & 0x80u) ? 1u : 0u) != want) g_ttModeDisagree++;
+    if ((unsigned char)((mem[0x64] & 0x80u) ? 1u : 0u) != want) REVS_DIAG(g_ttModeDisagree++);
 
     if (want == m_ttOnScreen) return 0;
     /* ⚠ VALIDATE BEFORE LATCHING.  Latching m_ttOnScreen first and then bailing on a missing
@@ -1314,22 +1315,22 @@ int RevsScreen::applyMode()
         /* ⭐ No forced repaint: decodeTeletext() compares the page against the bytes the bitmap
            was drawn from, and nothing else writes the bitmap, so whatever the page holds now is
            painted on the next decode and nothing that is already right is painted twice. */
-        g_screenCopperAddr  = (uint32_t)m_ttCopper->data();
-        g_screenCopperWords = TT_LIST_LENGTH;
-        g_screenFrontAddr   = (uint32_t)m_ttBitmap->data;
-        g_screenBytes       = (uint16_t)revs_mulu16(kTtH, kTtRowBytes);
-        g_screenPlanes      = kTtBP;
-        g_screenHeight      = kTtH;
+        REVS_DIAG(g_screenCopperAddr  = (uint32_t)m_ttCopper->data());
+        REVS_DIAG(g_screenCopperWords = TT_LIST_LENGTH);
+        REVS_DIAG(g_screenFrontAddr   = (uint32_t)m_ttBitmap->data);
+        REVS_DIAG(g_screenBytes       = (uint16_t)revs_mulu16(kTtH, kTtRowBytes));
+        REVS_DIAG(g_screenPlanes      = kTtBP);
+        REVS_DIAG(g_screenHeight      = kTtH);
         g_screenMode7       = 1;
         AmigaHardware::setCopperList(*m_ttCopper, /*immediate*/true);
     } else {
         s_copperBandsStale  = 1u;                 /* back on the race list: rebuild its bands */
-        g_screenCopperAddr  = (uint32_t)m_copper->data();
-        g_screenCopperWords = LIST_LENGTH;
-        g_screenFrontAddr   = (uint32_t)m_bitmap[m_back ^ 1u]->data;
-        g_screenBytes       = (uint16_t)revs_mulu16(kH, kRowBytes);
-        g_screenPlanes      = kDisplayBP;
-        g_screenHeight      = kH;
+        REVS_DIAG(g_screenCopperAddr  = (uint32_t)m_copper->data());
+        REVS_DIAG(g_screenCopperWords = LIST_LENGTH);
+        REVS_DIAG(g_screenFrontAddr   = (uint32_t)m_bitmap[m_back ^ 1u]->data);
+        REVS_DIAG(g_screenBytes       = (uint16_t)revs_mulu16(kH, kRowBytes));
+        REVS_DIAG(g_screenPlanes      = kDisplayBP);
+        REVS_DIAG(g_screenHeight      = kH);
         g_screenMode7       = 0;
         AmigaHardware::setCopperList(*m_copper, /*immediate*/true);
     }
@@ -1438,8 +1439,8 @@ void RevsScreen::buildLineModes()
         for (unsigned r = 0; r < s_gapRanges; r++)
             if (own_has_gap(s_gapLo[r], s_gapHi[r])) { gap = 1u; break; }
         s_frameHasGap = gap;
-        if (gap) { g_decodeGapFrames++; g_decodeGapLastAt = g_decodeFrames; }
-        g_decodeFrames++;
+        if (gap) { REVS_DIAG(g_decodeGapFrames++); REVS_DIAG(g_decodeGapLastAt = g_decodeFrames); }
+        REVS_DIAG(g_decodeFrames++);
         return;
     }
     s_modesBuilt = 0u;
@@ -1451,13 +1452,13 @@ void RevsScreen::buildLineModes()
     /* ⚠ AND `s_frameHasGap` KEEPS ITS PREVIOUS VALUE ON THIS PATH, deliberately: the previous
        frame's plan stands, so the previous frame's answer to "is every line claimed?" describes
        exactly the modes that are still in the table. */
-    if (s.count != 5) { g_bandRejects++; return; }
+    if (s.count != 5) { REVS_DIAG(g_bandRejects++); return; }
     unsigned slot[5];
     for (unsigned i = 0; i < 5; i++) slot[i] = 0xFFu;
     for (unsigned i = 0; i < 5; i++) {
         unsigned st = s.state[i];
         if (st == 0xFFu) st = 4;
-        if (st > 4 || slot[st] != 0xFFu) { g_bandRejects++; return; }
+        if (st > 4 || slot[st] != 0xFFu) { REVS_DIAG(g_bandRejects++); return; }
         slot[st] = i;
     }
 
@@ -1528,14 +1529,14 @@ void RevsScreen::buildLineModes()
     }
     m_plan.valid = 1;
     REVS_PLOT_BANDS(m_plan.line, bandMode, 5);
-    g_decodeFlatLines = flatLines;
-    g_decodeFlatBands = flatBands;
+    REVS_DIAG(g_decodeFlatLines = flatLines);
+    REVS_DIAG(g_decodeFlatBands = flatBands);
     s_frameHasGap     = gap;
     s_gapRanges       = ranges;
     s_modesBuilt      = 1u;
     s_copperBandsStale = 1u;                      /* a new plan: the copper's bands follow it */
-    if (gap) { g_decodeGapFrames++; g_decodeGapLastAt = g_decodeFrames; }
-    g_decodeFrames++;
+    if (gap) { REVS_DIAG(g_decodeGapFrames++); REVS_DIAG(g_decodeGapLastAt = g_decodeFrames); }
+    REVS_DIAG(g_decodeFrames++);
 }
 
 void RevsScreen::buildBands()
@@ -1646,7 +1647,7 @@ void RevsScreen::present()
 #else
     m_copper->showBitmap(IDX_BPL, *m_bitmap[m_back], 1, 1, 0, 0, kBP);
 #endif
-    g_screenFrontAddr = (uint32_t)m_bitmap[m_back]->data;
+    REVS_DIAG(g_screenFrontAddr = (uint32_t)m_bitmap[m_back]->data);
     m_back  ^= 1u;
     m_ready  = false;
 
@@ -1735,7 +1736,7 @@ void RevsScreen::snapshotBands()
     /* ⚠ A rejected record leaves the snapshot as it was, and so leaves s_bandsChanged clear:
        the previous plan stands, exactly as a rebuild from the unchanged snapshot would leave it. */
     s_bandsChanged = 0u;
-    if (g_bandCount != 5) { g_bandRejects++; return; }
+    if (g_bandCount != 5) { REVS_DIAG(g_bandRejects++); return; }
     unsigned diff = m_bandSnap.count ^ 5u;
     m_bandSnap.count = 5;
     for (unsigned i = 0; i < 5; i++) {
@@ -1767,9 +1768,9 @@ void RevsScreen::snapshotBands()
 void RevsScreen::noteVbiEntry()
 {
     const uint16_t line = beamLine();
-    g_beamEntryLine = line;
-    g_beamEntries++;
-    if (line >= kDisplayTop && line < kDisplayTop + kH) g_beamEntriesLate++;
+    REVS_DIAG(g_beamEntryLine = line);
+    REVS_DIAG(g_beamEntries++);
+    if (line >= kDisplayTop && line < kDisplayTop + kH) REVS_DIAG(g_beamEntriesLate++);
 }
 
 void RevsScreen::vbiUpdate()
@@ -1798,12 +1799,12 @@ void RevsScreen::vbiUpdate()
        copper had already read these words this field, and that is decided by where the beam is
        when the write starts.  See beamLine() above for why this is here at all. */
     const uint16_t line = beamLine();
-    g_beamPresentLine = line;
-    if (line < g_beamPresentMin) g_beamPresentMin = line;
-    if (line > g_beamPresentMax) g_beamPresentMax = line;
-    g_beamPresents++;
+    REVS_DIAG(g_beamPresentLine = line);
+    REVS_DIAG(if (line < g_beamPresentMin) g_beamPresentMin = line);
+    REVS_DIAG(if (line > g_beamPresentMax) g_beamPresentMax = line);
+    REVS_DIAG(g_beamPresents++);
     /* kDisplayTop..kDisplayTop+kH is the display window; a swap inside it raced the beam. */
-    if (line >= kDisplayTop && line < kDisplayTop + kH) g_beamPresentsLate++;
+    if (line >= kDisplayTop && line < kDisplayTop + kH) REVS_DIAG(g_beamPresentsLate++);
 
     buildBands();
     present();
@@ -2015,7 +2016,7 @@ static int revs_cockpit_runs(void)
         uint8_t* const r  = s_cockRun[y - COCK_Y0];
         uint8_t a0, a1, b0, b1;
         if (le == 0xFFu) {
-            g_cockpitBadSlot++;
+            REVS_DIAG(g_cockpitBadSlot++);
             a0 = 0; a1 = BBC_SCREEN_CELLS - 1u; b0 = 1; b1 = 0;   /* no car: PF1 keeps the line */
         } else if (y < COCK_PHASE3_Y0) {
             /* Phase 2: the left run starts at cell 0 and the right run is its mirror about
@@ -2026,7 +2027,7 @@ static int revs_cockpit_runs(void)
             const unsigned re = s_slotCellA[mem[0x3080u + X]];
             const unsigned rs = s_slotCellB[mem[0x30D0u + X]];
             if (re == 0xFFu || rs == 0xFFu) {
-                g_cockpitBadSlot++;
+                REVS_DIAG(g_cockpitBadSlot++);
                 a0 = 0; a1 = BBC_SCREEN_CELLS - 1u; b0 = 1; b1 = 0;
             } else {
                 a1 = (uint8_t)le;
@@ -2151,7 +2152,7 @@ static void revs_cock_line(const uint8_t* base, uint8_t* cock, unsigned char mod
                 const uint8_t b = src[c * 8u];
                 lo = (uint8_t)~s_expandHi[b];
                 hi = (uint8_t)~s_expandLo[b];
-                if (s_expandLo[b] & s_expandHi[b]) g_cockpitPen3++;      /* the tripwire */
+                if (s_expandLo[b] & s_expandHi[b]) REVS_DIAG(g_cockpitPen3++);      /* the tripwire */
             }
         }
         q[c]             = lo;
@@ -2197,7 +2198,7 @@ static void revs_cock_line(const uint8_t* base, uint8_t* cock, unsigned char mod
             const unsigned m = b[i].mask, f = b[i].fill;
             const uint8_t  keep = s_expandLo[m];              /* plane bits the terrain keeps */
             const uint8_t  dash = (uint8_t)~keep;             /* ...and the ones the dash owns */
-            if (s_expandHi[m] != keep) { g_cockpitMaskBad++; continue; }
+            if (s_expandHi[m] != keep) { REVS_DIAG(g_cockpitMaskBad++); continue; }
             if (b[i].cell >= BBC_SCREEN_CELLS) continue;
             q[b[i].cell]             = (uint8_t)((uint8_t)~s_expandHi[f] & dash);
             q[b[i].cell + kPlaneGap] = (uint8_t)((uint8_t)~s_expandLo[f] & dash);
@@ -2235,7 +2236,7 @@ static void revs_cockpit_paint(const uint8_t* base, uint8_t* cock, const unsigne
        notice the race view's blocks going live, ~1/64 of the price.  `force` keeps the poll
        every frame until the first successful build. */
     if (force || (poll = (unsigned char)((poll + 1u) & 63u)) == 0u) {
-        if (revs_cockpit_runs()) { force = 1; g_cockpitRuns++; }
+        if (revs_cockpit_runs()) { force = 1; REVS_DIAG(g_cockpitRuns++); }
     }
     for (i = 0; i < (COCK_ROWS * BBC_SCREEN_LINES) / 4u; i++)
         if (s_cockMode[i] != lw[i]) { s_cockMode[i] = lw[i]; force = 1; }
@@ -2244,7 +2245,7 @@ static void revs_cockpit_paint(const uint8_t* base, uint8_t* cock, const unsigne
     if (!force) return;
     force = 0;
     s_cockOutlineStale = 1u;
-    g_cockpitFulls++;
+    REVS_DIAG(g_cockpitFulls++);
     for (y = COCK_Y0; y <= COCK_Y1; y++) revs_cock_line(base, cock, lineMode[y], y);
 }
 
@@ -2322,7 +2323,7 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
                         shadowMode[y + l] = mode[l];
                     }
                 }
-                g_decodeModeDirty++;
+                REVS_DIAG(g_decodeModeDirty++);
             }
         }
 
@@ -2388,7 +2389,7 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
                 if (!(modeChanged & (1u << l))) continue;
                 revs_expand_line(rowBase + l, rowDst + revs_mulu16((uint16_t)l, kRowBytes),
                                  mode[l]);
-                g_decodeModeLines++;
+                REVS_DIAG(g_decodeModeLines++);
             }
         }
     }
@@ -2635,7 +2636,7 @@ void RevsScreen::prepareFrame()
 
     const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
     uint8_t* dst = (uint8_t*)bm->data;
-    g_screenBackAddr = (uint32_t)dst;
+    REVS_DIAG(g_screenBackAddr = (uint32_t)dst);
 
 #ifdef REVS_FILLWATCH
     /* ⭐ The tear detector's FIRST pass, and it is its own loop rather than a hitch-hiker inside
@@ -2697,11 +2698,12 @@ void RevsScreen::prepareFrame()
             revs_line_modes_stale();      /* next frame restores the painters' modes */
         }
 #endif
-        g_decodeCells       = (uint16_t)convertRace(dst, 0, 0);
-        g_decodeCellsTotal += g_decodeCells;
-        g_decodeFullFrames++;
+        const unsigned cells = convertRace(dst, 0, 0);
+        REVS_DIAG(g_decodeCells       = (uint16_t)cells);
+        REVS_DIAG(g_decodeCellsTotal += g_decodeCells);
+        REVS_DIAG(g_decodeFullFrames++);
     } else {
-        g_decodeCells = 0;
+        REVS_DIAG(g_decodeCells = 0);
     }
 #else
     {
@@ -2710,10 +2712,10 @@ void RevsScreen::prepareFrame()
 #else
         const unsigned cells = convertRace(dst, (uint8_t*)s_shadow[m_back], s_shadowMode[m_back]);
 #endif
-        g_decodeCells       = (uint16_t)cells;
-        g_decodeCellsTotal += cells;
-        if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
-        if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
+        REVS_DIAG(g_decodeCells       = (uint16_t)cells);
+        REVS_DIAG(g_decodeCellsTotal += cells);
+        REVS_DIAG(if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells);
+        if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) REVS_DIAG(g_decodeFullFrames++);
     }
 #endif
 #ifdef REVS_DECODE_SPLIT
@@ -2730,8 +2732,8 @@ void RevsScreen::prepareFrame()
 #else
     PROBE_PHASE(PROBE_PHASE_PREPARE);
 #endif
-    g_cockpitCells       = (uint16_t)s_cockCells;
-    g_cockpitCellsTotal += s_cockCells;
+    REVS_DIAG(g_cockpitCells       = (uint16_t)s_cockCells);
+    REVS_DIAG(g_cockpitCellsTotal += s_cockCells);
 
 #ifdef REVS_DUAL_CHECK
     /* ⭐⭐ THE ORACLE FOR THE DECOMPOSITION, and it runs HERE because here is the only place the

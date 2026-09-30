@@ -57,6 +57,7 @@
    none of them: it fills raw sprite DATA WORDS and the caller (RevsScreen.cpp) owns the Sprite
    objects, their control words and their positions.  Same convention as RevsPlot.cpp. */
 #include "RevsTyres.h"
+#include "../diag.h"
 #include "../bbc_screen.h"
 #include "../../cpu/mem_decl.h"
 
@@ -239,7 +240,7 @@ int revs_tyres_build(unsigned short* leftA, unsigned short* leftB,
         tyreSnapshot(&again);
         pg = &again.b[0][0][0];
         for (i = 0; i < 2u * TYRE_LINES * 2u; i++) if (pa[i] != pg[i]) bad++;
-        if (bad) { g_tyrePeriodBad += bad; tyreRestore(&back); return 0; }
+        if (bad) { REVS_DIAG(g_tyrePeriodBad += bad); tyreRestore(&back); return 0; }
     }
     tyreRestore(&back);      /* ⚠ back to the state the game left, before the outline replaces it */
 
@@ -274,7 +275,7 @@ int revs_tyres_build(unsigned short* leftA, unsigned short* leftB,
                         if (!((anim >> pp) & 1u)) continue;
                         if (((((va >> (7u - pp)) & 1u) << 1) | ((va >> (3u - pp)) & 1u)) == 0u ||
                             ((((vb >> (7u - pp)) & 1u) << 1) | ((vb >> (3u - pp)) & 1u)) == 0u)
-                            g_tyreZeroAnim++;
+                            REVS_DIAG(g_tyreZeroAnim++);
                     }
                 }
     }
@@ -302,7 +303,7 @@ int revs_tyres_build(unsigned short* leftA, unsigned short* leftB,
         s_keepReady = 1;
     }
 
-    g_tyreBuilds++;
+    REVS_DIAG(g_tyreBuilds++);
     return 1;
 }
 

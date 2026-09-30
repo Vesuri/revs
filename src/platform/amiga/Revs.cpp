@@ -1,5 +1,6 @@
 /* Revs — the Amiga application/scene.  See Revs.h; this is the bring-up skeleton. */
 #include "Revs.h"
+#include "../diag.h"
 #include "PlatformAmiga.h"
 #include "framework/AmigaHardware.h"
 #include "framework/CopperList.h"
@@ -177,7 +178,7 @@ void Revs::drainTicks()
     unsigned ran = 0;
     while (s_pendingTicks) { s_pendingTicks--; runBandCycle(); ran++; }
     s_inBody = false;
-    if (ran) { g_bodyDrains++; g_bodyTicks += ran; }
+    if (ran) { REVS_DIAG(g_bodyDrains++); REVS_DIAG(g_bodyTicks += ran); }
     g_bodyPending = s_pendingTicks;
 }
 
@@ -392,7 +393,7 @@ void Revs::vbi()
        without bound — dropping them slows game time, which is visible and debuggable, where an
        unbounded counter would eventually run thousands of ticks in one burst. */
     if (s_pendingTicks < 200u) s_pendingTicks++;
-    else                       g_bodyTicksDropped++;
+    else                       REVS_DIAG(g_bodyTicksDropped++);
 #endif
 
 #ifdef REVS_ISRWATCH

@@ -23,6 +23,7 @@
  * which is the one thing that must not vary between them.
  */
 #include "platform.h"
+#include "diag.h"
 #include "teletext.h"
 #include "sound.h"
 #include "mos_font.h"
@@ -147,7 +148,7 @@ static MosRegs osbyte(MosRegs r)
             r.y = 0x00;
         } else {
             /* Timed read of a character.  Not a site Revs has; report rather than guess. */
-            g_mosUnknownEntry = 0xFFF4; g_mosUnknownA = 0x81; g_mosUnknownCount++;
+            REVS_DIAG(g_mosUnknownEntry = 0xFFF4); REVS_DIAG(g_mosUnknownA = 0x81); REVS_DIAG(g_mosUnknownCount++);
             r.x = 0x00; r.y = 0xFF;   /* "timed out, no character" */
         }
         break;
@@ -172,9 +173,9 @@ static MosRegs osbyte(MosRegs r)
     default:
         /* ⚠ Not in the Phase 2 inventory.  Either the inventory is incomplete or a
            self-modified site produced a new reason code — both are findings. */
-        g_mosUnknownEntry = 0xFFF4;
-        g_mosUnknownA     = r.a;
-        g_mosUnknownCount++;
+        REVS_DIAG(g_mosUnknownEntry = 0xFFF4);
+        REVS_DIAG(g_mosUnknownA     = r.a);
+        REVS_DIAG(g_mosUnknownCount++);
         break;
     }
     return r;
@@ -281,7 +282,7 @@ static MosRegs osword(MosRegs r)
        The glyphs are the MOS 1.20 ROM's (mos_font.h). */
     case 0x0A: {
         uint8_t code = mem[blk];
-        g_mosCharDefCount++;
+        REVS_DIAG(g_mosCharDefCount++);
         if (code >= MOS_FONT_FIRST && code <= MOS_FONT_LAST) {
             const uint8_t *glyph = g_mosFont[code - MOS_FONT_FIRST];
             for (int i = 0; i < 8; i++) mem[(uint16_t)(blk + 1 + i)] = glyph[i];
@@ -290,16 +291,16 @@ static MosRegs osword(MosRegs r)
                definition at $0C00+; Revs has never asked for one, so report it instead of
                inventing a shape — a blank glyph reads exactly like a working renderer. */
             for (int i = 1; i <= 8; i++) mem[(uint16_t)(blk + i)] = 0x00;
-            g_mosCharDefOutOfRange++;
-            g_mosCharDefLastBad = code;
+            REVS_DIAG(g_mosCharDefOutOfRange++);
+            REVS_DIAG(g_mosCharDefLastBad = code);
         }
         break;
     }
 
     default:
-        g_mosUnknownEntry = 0xFFF1;
-        g_mosUnknownA     = r.a;
-        g_mosUnknownCount++;
+        REVS_DIAG(g_mosUnknownEntry = 0xFFF1);
+        REVS_DIAG(g_mosUnknownA     = r.a);
+        REVS_DIAG(g_mosUnknownCount++);
         break;
     }
     return r;
@@ -365,9 +366,9 @@ MosRegs Platform::mosCall(uint16_t entry, MosRegs in)
         return in;
 
     default:
-        g_mosUnknownEntry = entry;
-        g_mosUnknownA     = in.a;
-        g_mosUnknownCount++;
+        REVS_DIAG(g_mosUnknownEntry = entry);
+        REVS_DIAG(g_mosUnknownA     = in.a);
+        REVS_DIAG(g_mosUnknownCount++);
         return in;
     }
 }

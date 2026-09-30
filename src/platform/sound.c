@@ -5,6 +5,7 @@
  * `tools/validate_sound.c` can link it on its own and diff it against a real BBC.
  */
 #include "sound.h"
+#include "diag.h"
 
 /* ⭐⭐ THE STATS ARE A PROBE, NOT THE MODEL — and this file runs 100 times a second forever.
  * Each counter is a `volatile unsigned long` read-modify-write to absolute memory: on a 68000
@@ -259,7 +260,7 @@ void snd_reset(void)
 void snd_envelope(const uint8_t blk[14])
 {
     uint8_t n = (uint8_t)(blk[0] & 0x0F);
-    g_sndEnvelopes++;
+    REVS_DIAG(g_sndEnvelopes++);
     if (n < 1 || n > 4) return;    /* the MOS defines four; a fifth is not a thing to guess at */
     {
         SndEnvDef* e = &s_env[n - 1];
@@ -280,9 +281,9 @@ void snd_sound(const uint8_t blk[8])
     SndChan* c = &s_chan[chan];
     SndCmd cmd;
 
-    g_sndCommands++;
-    if (sync) g_sndSyncRequests++;
-    if (hold) g_sndHoldRequests++;
+    REVS_DIAG(g_sndCommands++);
+    if (sync) REVS_DIAG(g_sndSyncRequests++);
+    if (hold) REVS_DIAG(g_sndHoldRequests++);
 
     /* Only the LOW byte of each parameter word is significant — see sound.h.  Revs leaves the
        amplitude high byte at $FF, so treating the pair as a signed 16-bit value reads -256. */
@@ -298,8 +299,8 @@ void snd_sound(const uint8_t blk[8])
         SND_WAKE();
         return;
     }
-    if (c->qCount >= SND_QUEUE) { g_sndQueueDrops++; return; }
-    g_sndQueued++;
+    if (c->qCount >= SND_QUEUE) { REVS_DIAG(g_sndQueueDrops++); return; }
+    REVS_DIAG(g_sndQueued++);
     c->queue[(c->qHead + c->qCount) % SND_QUEUE] = cmd;
     c->qCount++;
     SND_WAKE();
@@ -310,7 +311,7 @@ void snd_flush_channel(uint8_t channel)
     SndChan* c;
     channel &= 3;
     c = &s_chan[channel];
-    g_sndFlushes++;
+    REVS_DIAG(g_sndFlushes++);
     c->active = 0; c->qHead = 0; c->qCount = 0; c->level = 0; c->pitch = 0;
     /* ⚠ DEFENSIVE, NOT LOAD-BEARING — and the argument is worth keeping because a sabotage of
        this line SURVIVES `make sound` (validation-harness.md §FIFTEENTH: "no change at all").
@@ -403,7 +404,7 @@ static int start_next(uint8_t chan)
     }
     if (cmd.amp >= 1 && cmd.amp <= 4) {
         c->env = cmd.amp;
-        if (!s_env[cmd.amp - 1].defined) { g_sndBadEnvelope++; c->env = 0; }
+        if (!s_env[cmd.amp - 1].defined) { REVS_DIAG(g_sndBadEnvelope++); c->env = 0; }
         c->level = 0;
     } else {
         /* A static amplitude, held as the two's-complement byte $F1..$FF = -15..-1. */

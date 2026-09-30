@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "diag.h"
 #if !defined(REVS_PLATFORM_AMIGA)
 #include <stdio.h>    /* host only: the Amiga build is freestanding (no stdio/stdlib) */
 #include <stdlib.h>
@@ -43,8 +44,8 @@ volatile uint16_t      g_brkPC   = 0;
 volatile unsigned long g_brkCount = 0;
 
 void Platform::brk(uint16_t pc) {
-    g_brkPC = pc;
-    g_brkCount++;
+    REVS_DIAG(g_brkPC = pc);
+    REVS_DIAG(g_brkCount++);
 #if !defined(REVS_PLATFORM_AMIGA)
     /* ⚠ ABORT IS THE DEFAULT AND MUST STAY THE DEFAULT.  A run that continues past a BRK
        has stopped executing the program it thinks it is executing.
@@ -81,9 +82,9 @@ void Platform::brk(uint16_t pc) {
 }
 
 void Platform::smcUnhandled(uint16_t site, uint16_t value) {
-    g_smcSite  = site;
-    g_smcValue = value;
-    g_smcUnhandled++;
+    REVS_DIAG(g_smcSite  = site);
+    REVS_DIAG(g_smcValue = value);
+    REVS_DIAG(g_smcUnhandled++);
 #if !defined(REVS_PLATFORM_AMIGA)
     /* ⭐ REVS_SMC_CONTINUE=1 — count and carry on instead of aborting.  The one caller that
        wants this is `make validate`: an unhandled operand is a real, reachable path in a

@@ -28,6 +28,7 @@
  * observes.  Where a real VIA is more subtle than this, the comment says so.
  */
 #include "platform.h"
+#include "diag.h"
 #include "bbc_screen.h"
 #include "teletext.h"       /* tt_set_active — leaving MODE 7 is a CRTC write, see hwWrite */
 #include "platform_c.h"     /* g_irqClobberCount/Which — the interrupt register contract */
@@ -167,8 +168,8 @@ uint8_t Platform::hwRead(uint16_t addr)
        low byte, negated.  The origin is arbitrary — only 8 bits are ever observed. */
     case 0xFE68: {
         const uint8_t v = (uint8_t)(0u - hwMicros());   /* virtual: the backend's finest clock */
-        g_viaT2Last = v;
-        g_viaT2Reads++;
+        REVS_DIAG(g_viaT2Last = v);
+        g_viaT2Reads++;                  /* ⚠ NOT a counter: the fallback clock steps on it (hwMicros) */
         if (g_viaT2Note) g_viaT2Note(v);
         return v;
     }
@@ -182,8 +183,8 @@ uint8_t Platform::hwRead(uint16_t addr)
     default:
         /* ⚠ Outside the 19-register inventory.  Either the inventory missed something or
            a self-modified address landed here — both worth knowing about. */
-        g_hwUnknownAddr = addr;
-        g_hwUnknownReads++;
+        REVS_DIAG(g_hwUnknownAddr = addr);
+        REVS_DIAG(g_hwUnknownReads++);
         return 0x00;
     }
 }
@@ -233,7 +234,7 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
             } else {
                 /* More bands in one field than the five the handler has arms for.  Not
                    absorbed: a sixth band means this model has the cycle wrong. */
-                g_bandOverflow++;
+                REVS_DIAG(g_bandOverflow++);
             }
         }
         break;
@@ -341,7 +342,7 @@ void Platform::fireIrq1v(void)
        Saved and restored here, and COUNTED, because "the handler never uses it" is a claim about
        reachability through 33 sites and one indirect dispatch — not something to assume. */
     const uint8_t unwind0 = cpu_unwind;
-    if (unwind0) g_irqUnwindPending++;   /* preempted mid-drop: the window is real, count it */
+    if (unwind0) REVS_DIAG(g_irqUnwindPending++);   /* preempted mid-drop: the window is real, count it */
 
     /* ⭐ Which band this call is about to service, read BEFORE the handler steps $4F43. */
     const int band = mem[0x4F43];
@@ -351,14 +352,14 @@ void Platform::fireIrq1v(void)
     irq1v_band_schedule();
     PROBE_IRQ_END(band);
 
-    if (cpu_unwind != unwind0) { g_irqUnwindTouched++; cpu_unwind = unwind0; }
-    if (cpu.S != s0) g_irqStackImbalance++;   /* the handler must leave the 6502 stack as it found it */
+    if (cpu_unwind != unwind0) { REVS_DIAG(g_irqUnwindTouched++); cpu_unwind = unwind0; }
+    if (cpu.S != s0) REVS_DIAG(g_irqStackImbalance++);   /* the handler must leave the 6502 stack as it found it */
 
     uint8_t which = 0;
     if (cpu.A != a0) which |= 1;
     if (cpu.X != x0) which |= 2;
     if (cpu.Y != y0) which |= 4;
-    if (which) { g_irqClobberCount++; g_irqClobberWhich |= which; }
+    if (which) { REVS_DIAG(g_irqClobberCount++); REVS_DIAG(g_irqClobberWhich |= which); }
 }
 
 /* ---------------------------------------------------------------------------
@@ -465,10 +466,10 @@ static bool band_inputs_unchanged(void)
     /* ...and the three strays.  The horizon pair gets its own counter, because it is the input
        that makes this test worth running at all (see g_bandHorizonMoves). */
     if (mem[0x4F1F] != s_bandInputs[40]) {
-        s_bandInputs[40] = mem[0x4F1F]; g_bandHorizonMoves++; same = false;
+        s_bandInputs[40] = mem[0x4F1F]; REVS_DIAG(g_bandHorizonMoves++); same = false;
     }
     if (mem[0x4F20] != s_bandInputs[41]) {
-        s_bandInputs[41] = mem[0x4F20]; g_bandHorizonMoves++; same = false;
+        s_bandInputs[41] = mem[0x4F20]; REVS_DIAG(g_bandHorizonMoves++); same = false;
     }
     if (mem[0x4F43] != s_bandInputs[42]) {
         s_bandInputs[42] = mem[0x4F43]; same = false;
@@ -558,7 +559,7 @@ unsigned Platform::fireIrq1vField(void)
         PROBE_PHASE(PROBE_PHASE_DRAIN);
         cpu.A = a0; cpu.X = x0; cpu.Y = y0;
 
-        g_bandSkips++;
+        REVS_DIAG(g_bandSkips++);
         return 0;
     }
 #endif
@@ -575,7 +576,7 @@ unsigned Platform::fireIrq1vField(void)
     }
     BODY_PHASE(PROBE_PHASE_DRAIN);
     s_bandCachedCount = g_bandCount;
-    g_bandRuns++;
+    REVS_DIAG(g_bandRuns++);
     return dispatched;
 }
 

@@ -1,5 +1,6 @@
 /* track.c — install one circuit's data into mem[].  See track.h for the whole model. */
 #include "track.h"
+#include "diag.h"
 #include "../cpu/cpu.h"                /* mem[] */
 #include "../gen/revs_smc_bytes.h"
 #include "../gen/revs_track_hooks.h"  /* the GENERATED per-circuit hook dispatch */
@@ -87,7 +88,7 @@ unsigned short revs_track_check(unsigned char index)
     t = &revs_tracks[index];
     for (i = 0; i < t->patchCount; i++) {
         if (!honoured(t->patchAddr[i])) {
-            if (g_trackUnhonoured == 0) g_trackUnhonouredAddr = t->patchAddr[i];
+            REVS_DIAG(if (g_trackUnhonoured == 0) g_trackUnhonouredAddr = t->patchAddr[i]);
             g_trackUnhonoured++;
         }
     }
@@ -98,7 +99,7 @@ unsigned short revs_track_check(unsigned char index)
        repeat the reporting defect the fallback note below is about. */
     for (i = 0; i < t->hookCount; i++) {
         if (!hook_implemented(index, t->hookAddr[i])) {
-            if (g_trackHooksUnbuilt == 0) g_trackHooksUnbuiltAddr = t->hookAddr[i];
+            REVS_DIAG(if (g_trackHooksUnbuilt == 0) g_trackHooksUnbuiltAddr = t->hookAddr[i]);
             g_trackHooksUnbuilt++;
         }
     }
@@ -133,7 +134,7 @@ int revs_track_install(unsigned char index)
        produce a half-and-half engine.  Re-installing the SAME circuit is harmless (identical
        bytes) and stays allowed, because that is what an unattended build does when the menu
        answers itself with the circuit revs_track_boot() already chose. */
-    if (g_trackInstalled != 0xFF && index != g_trackInstalled) { g_trackOverinstalls++; return 0; }
+    if (g_trackInstalled != 0xFF && index != g_trackInstalled) { REVS_DIAG(g_trackOverinstalls++); return 0; }
     if (revs_track_check(index)) return 0;    /* REFUSED — the caller reports it */
     install_data(&revs_tracks[index]);
     g_track = index;

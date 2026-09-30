@@ -502,7 +502,7 @@ ifdef TAPTEST
 EXTRA_DEFINES += -DREVS_TAPTEST
 endif
 # `make QUITTEST=<field>` + quit_test.gdb: the ISR holds CTRL-Q from that field on (see
-# PlatformAmiga.cpp); the script passes when the platform is torn down.
+# PlatformAmiga.cpp); the script passes when the game unwinds to its restore.
 ifdef QUITTEST
 EXTRA_DEFINES += -DREVS_QUIT_TEST=$(QUITTEST)
 endif
@@ -1715,6 +1715,53 @@ PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVF
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
 PROBE_SYMS += $(PROBE_SYMS_WALKCHECK) $(PROBE_SYMS_SETUPCHECK)
 
+# ⭐⭐ THE RELEASE BUILD (`make DIST=1`, what `make dist` ships — docs/phases.md §Phase 7): no
+# diagnostic counters (src/platform/diag.h: every REVS_DIAG() statement compiles away and
+# --gc-sections drops the variables), so nothing is kept alive for gdb either.  It must not be
+# combined with an instrument or a scripted run: a release that drives itself or carries probes
+# is not the release.
+ifdef DIST
+ifneq ($(PROBES)$(FPSCOUNT)$(STRAIGHT_TO_RACE)$(HOLD_THROTTLE)$(FIXED_RNG)$(TRACK)$(SIMLEGACY),)
+$(error DIST=1 is the release build: no PROBES/FPSCOUNT/STRAIGHT_TO_RACE/HOLD_THROTTLE/FIXED_RNG/TRACK/SIMLEGACY)
+endif
+EXTRA_DEFINES += -DREVS_DIST
+PROBE_SYMS :=
+endif
+# The counters REVS_DIAG() strips.  dist-audit fails the DIST link if any survives: a survivor is
+# a READ the macro did not remove, and a read of a counter whose writes are gone is a behaviour
+# change, not an oversight (g_viaT2Reads looked like one and is the fallback CLOCK — it is real
+# state and is not listed).  Add a new always-compiled counter here when you write one.
+DIAG_SYMS := g_audioAllocFailed g_audioRestarts g_audioTicks g_audioUpdates g_audioWaitLines \
+             g_badRegionCount g_badRegionEntry g_bandHorizonMoves g_bandOverflow g_bandRejects \
+             g_bandRuns g_bandSkips g_beamEntries g_beamEntriesLate g_beamEntryLine \
+             g_beamPresentLine g_beamPresentMax g_beamPresentMin g_beamPresents \
+             g_beamPresentsLate g_bodyDrains g_bodyTicks g_bodyTicksDropped g_brkCount g_brkPC \
+             g_cockpitBadSlot g_cockpitCells g_cockpitCellsTotal g_cockpitDeltaBytes \
+             g_cockpitFulls g_cockpitMaskBad g_cockpitPen3 g_cockpitRuns g_crashBodyFieldsMax \
+             g_crashHoldDrops g_crashHoldTicks g_crashHoldVbi g_crashHoldVbiMax g_crashHolds \
+             g_decodeCells g_decodeCellsMax g_decodeCellsTotal g_decodeDirtyChecks \
+             g_decodeDirtyMismatch g_decodeDirtyMismatchOff g_decodeFlatBands g_decodeFlatLines \
+             g_decodeFrames g_decodeFullFrames g_decodeGapFrames g_decodeGapLastAt \
+             g_decodeModeDirty g_decodeModeLines g_fieldBeamMax g_fieldBeamTicks g_fieldCycles \
+             g_fpsFrames g_gapWalkSlow g_hwUnknownAddr g_hwUnknownReads g_irqClobberCount \
+             g_irqClobberWhich g_irqStackImbalance g_irqUnwindPending g_irqUnwindTouched \
+             g_keyEvents g_keyLatchHits g_keyMapOverflow g_keyUnmapped g_keyUnmappedCode \
+             g_mosCharDefCount g_mosCharDefLastBad g_mosCharDefOutOfRange g_mosUnknownA \
+             g_mosUnknownCount g_mosUnknownEntry g_mouseBtnMask g_mouseBtnSeen g_renderGapMax \
+             g_renderGapMaxAt g_renderStalls g_resetCount g_resetFieldsLast g_resetFieldsMax \
+             g_resetSplit g_screenBackAddr g_screenBytes g_screenCockpitAddr g_screenCopperAddr \
+             g_screenCopperWords g_screenFrontAddr g_screenHeight g_screenPlanes g_simSlowTicks \
+             g_simSteps g_smcSite g_smcUnhandled g_smcValue g_sndBadEnvelope g_sndChipWrites \
+             g_sndCommands g_sndEnvelopes g_sndFlushes g_sndHoldRequests g_sndQueueDrops \
+             g_sndQueued g_sndSyncRequests g_sndTicks g_spaceAnswered g_spaceEdges g_spacePolls \
+             g_stackHigh g_stackLow g_stackTrespass g_terrainAsmFallback g_terrainClipBad \
+             g_tmFields g_tmMisrouted g_tmRefusals g_trackHookCalls g_trackHookMissing \
+             g_trackHookMissingAddr g_trackHooksUnbuiltAddr g_trackOverinstalls \
+             g_trackUnhonouredAddr g_ttAllocFailed g_ttCellsDrawn g_ttFlashToggles \
+             g_ttLastUnknown g_ttModeDisagree g_ttModeSwitches g_ttRowsDrawn g_ttUnknownVdu \
+             g_ttVduBytes g_tyreBuilds g_tyrePeriodBad g_tyreZeroAnim g_viaT2Last g_viewEvents \
+             g_viewFullLines g_viewFullStopBad g_viewTableCollisions
+
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping
 # at the LINK is what reaches the calls GCC emits by itself out of a constant-store loop, which
@@ -1727,13 +1774,16 @@ COMMA := ,
 # ---------------------------------------------------------------------------
 # Rules
 # ---------------------------------------------------------------------------
-.PHONY: all clean muldiv-audit probe-audit
+.PHONY: all clean muldiv-audit probe-audit dist-audit
 
 all: $(OUT).exe
 
 $(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $@)
 	@elf2hunk $(OUT).elf $(OUT).exe
+ifdef DIST
+	@$(MAKE) --no-print-directory dist-audit
+endif
 
 $(OUT).elf: $(OBJECTS)
 	$(info Linking $@)
@@ -1752,6 +1802,15 @@ muldiv-audit:
 	  $(OBJDUMP) -d $(OUT).elf | grep -E '__(u?div|u?mod|mul)si3' | head; \
 	  exit 1; \
 	else echo "muldiv-audit: clean"; fi
+
+# ⚠ RELEASE AUDIT (DIST=1 only): no diagnostic counter survives, and the $VER string does.
+dist-audit:
+	@bad=""; syms=$$($(OBJDUMP) -t $(OUT).elf); for s in $(DIAG_SYMS); do \
+	  echo "$$syms" | grep -qE "[[:space:]]$$s$$" && bad="$$bad $$s"; \
+	done; \
+	if [ -n "$$bad" ]; then echo "*** diagnostic counter(s) survive the release link:$$bad"; exit 1; fi; \
+	strings $(OUT).exe | grep -q '^\$$VER: Revs ' || { echo "*** no \$$VER string in $(OUT).exe"; exit 1; }; \
+	echo "dist-audit: clean (no diagnostic counters, $$(strings $(OUT).exe | grep '^\$$VER:'))"
 
 # ⚠ MANDATORY AUDIT: every PROBE_SYMS symbol must be a real data symbol in the linked ELF.
 # A gc-dropped probe counter makes gdb print instruction bytes as a measurement — see PROBE_SYMS.

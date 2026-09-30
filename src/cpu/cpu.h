@@ -7,6 +7,7 @@
    every host build, so the condition is C++-and-Amiga, not Amiga. */
 #if !(defined(__cplusplus) && defined(REVS_PLATFORM_AMIGA))
 #include <stdint.h>
+#include "../platform/diag.h"
 #endif
 #include "mem_decl.h"
 
@@ -140,14 +141,14 @@ void cpu_stack_ceiling(unsigned char s);
    engine's stack only ever lives in $01F3-$01F8, so the two tenants do not overlap. */
 #define STACK_PAGE 0x0100u
 #define PUSH(v)  do { mem[STACK_PAGE|cpu.S]=(uint8_t)(v); \
-                      if (cpu.S < g_stackLow) { g_stackLow = cpu.S; \
+                      if (cpu.S < g_stackLow) { REVS_DIAG(g_stackLow = cpu.S); \
                                                 STACK_WATERMARK_HOOK(cpu.S); } \
-                      if (cpu.S < STACK_FLOOR) g_stackTrespass++; \
+                      if (cpu.S < STACK_FLOOR) REVS_DIAG(g_stackTrespass++); \
                       cpu.S--; } while(0)
 /* ⚠ The ceiling matters as much as the floor: S starts at $F8, so a PULL that takes it higher is
    unbalanced, and a few more walk it to $FF and WRAP it to $00 — where pushes hit car_order. */
 #define PULL(v)  do { cpu.S++; (v)=mem[STACK_PAGE|cpu.S]; \
-                      if (cpu.S > g_stackHigh) { g_stackHigh = cpu.S; \
+                      if (cpu.S > g_stackHigh) { REVS_DIAG(g_stackHigh = cpu.S); \
                                                  STACK_CEILING_HOOK(cpu.S); } } while(0)
 #define PHA()    PUSH(cpu.A)
 #define PLA()    do { PULL(cpu.A); UPD_NZ(cpu.A); } while(0)
@@ -188,7 +189,7 @@ static inline void P_unpack_regs(HookRegs *r, uint8_t p) {
    `TSX/INX/INX/TXS`) — so it is watched by the same ceiling as PULL.  A TXS that raises S
    without the two C-level returns that are supposed to accompany it leaks 2 bytes a time. */
 #define TXS()   do { cpu.S=cpu.X; \
-                     if (cpu.S > g_stackHigh) { g_stackHigh = cpu.S; \
+                     if (cpu.S > g_stackHigh) { REVS_DIAG(g_stackHigh = cpu.S); \
                                                 STACK_CEILING_HOOK(cpu.S); } } while(0)
 
 /* ---------- arithmetic -------------------------------------------- */

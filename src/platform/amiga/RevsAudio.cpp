@@ -1,6 +1,7 @@
 /* RevsAudio — see RevsAudio.h for the model and for the three Amiga-only decisions. */
 #define ECS_SPECIFIC
 #include <hardware/custom.h>
+#include "../diag.h"
 #include <proto/exec.h>
 #include <exec/memory.h>
 
@@ -153,8 +154,8 @@ static void apply(uint8_t pch, uint32_t ptr, uint16_t len, uint16_t per, uint16_
             if ((uint16_t)(now - start) >= 7u || now < start) break;   /* ~7 rasterlines */
         }
         *dmaconPointer = (uint16_t)(0x8000u | mask); /* AUDxEN on */
-        g_audioWaitLines += 7;
-        g_audioRestarts++;
+        REVS_DIAG(g_audioWaitLines += 7);
+        REVS_DIAG(g_audioRestarts++);
         s_curPtr[pch] = ptr; s_curLen[pch] = len; s_curPer[pch] = per; s_curVol[pch] = vol;
     }
 }
@@ -217,7 +218,7 @@ void revs_audio_init(void)
     s_square   = (int8_t*)AllocMem(2, MEMF_CHIP | MEMF_CLEAR);
     s_white    = (int8_t*)AllocMem(kWhiteBytes, MEMF_CHIP | MEMF_CLEAR);
     s_periodic = (int8_t*)AllocMem(kPeriodicBytes, MEMF_CHIP | MEMF_CLEAR);
-    if (!s_square || !s_white || !s_periodic) { g_audioAllocFailed++; return; }
+    if (!s_square || !s_white || !s_periodic) { REVS_DIAG(g_audioAllocFailed++); return; }
 
     s_square[0] = (int8_t)127;
     s_square[1] = (int8_t)-127;
@@ -277,7 +278,7 @@ void revs_audio_vbi(void)
     if (snd_generation() != gen) {
         PROBE_ISR_SPLIT(PROBE_ISR_PAULA);
         program_paula();
-        g_audioUpdates++;
+        REVS_DIAG(g_audioUpdates++);
     }
     PROBE_ISR_SPLIT(PROBE_ISR_AUDIO);
 }

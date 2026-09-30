@@ -4,6 +4,7 @@
    RevsScreen::convertRace(), not `make validate` (§5). */
 
 #include "../revs_plot.h"
+#include "../diag.h"
 
 #ifdef REVS_DIRECT_PLOT
 
@@ -584,7 +585,7 @@ extern "C" void revs_plot_terrain(unsigned first, unsigned last)
 #endif
             return;
         }
-        g_terrainAsmFallback++;
+        REVS_DIAG(g_terrainAsmFallback++);
         TSIG_STALE();                     /* the C painter below keeps no signatures */
     }
 #endif
@@ -767,7 +768,7 @@ extern "C" void revs_plot_cockpit_byte(unsigned short addr, unsigned char value)
     /* the tread must come back out of PF2 (RevsScreen.cpp §g_cockOutlineStale) */
     if (y >= REVS_TYRE_Y0 && y < REVS_TYRE_Y0 + REVS_TYRE_LINES) g_cockOutlineStale = 1u;
 #endif
-    g_cockpitDeltaBytes++;
+    REVS_DIAG(g_cockpitDeltaBytes++);
 }
 #endif /* REVS_DUAL_PLAYFIELD */
 

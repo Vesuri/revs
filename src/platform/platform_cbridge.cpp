@@ -4,6 +4,7 @@
    translation units link against them unmangled. */
 
 #include "platform.h"
+#include "diag.h"
 #include "platform_c.h"
 #include "probe.h"
 #include "../cpu/cpu.h"   /* the global cpu struct — this file marshals it across the MOS seam */
@@ -120,8 +121,8 @@ unsigned long g_badRegionCount = 0;
 uint16_t      g_badRegionEntry = 0;
 
 void platform_bad_region_entry(uint16_t region, uint16_t entry) {
-    g_badRegionCount++;
-    g_badRegionEntry = entry;
+    REVS_DIAG(g_badRegionCount++);
+    REVS_DIAG(g_badRegionEntry = entry);
 }
 
 /* ⭐ THE INTERRUPT REGISTER CONTRACT, asserted at the seam.

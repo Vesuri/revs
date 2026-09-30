@@ -1352,6 +1352,20 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
    mouse to **CTRL-Q** (the game is mouse-driven).
 6. **Credits: Geoff Crammond / Acornsoft. No licence.**
 
+### The release build — `make DIST=1` (amiga/)
+
+- **No diagnostic counters.** Every always-compiled counter/latch the instruments read is written
+  `REVS_DIAG(...)` (`src/platform/diag.h`) and compiles away under `REVS_DIST`; `--gc-sections`
+  then drops the variables. `dist-audit` fails the link if any of `DIAG_SYMS` survives — a survivor
+  is a READ the macro missed, and a read of a counter whose writes are gone changes behaviour.
+  It caught one on the first build: `g_viaT2Reads` looks like a counter and is the fallback T2
+  CLOCK (`Platform::hwMicros`), so it is real state. Outside DIST every section of the ELF is
+  byte-identical to the build before the macro existed (measured).
+- **No hidden options**: DIST refuses PROBES/FPSCOUNT/STRAIGHT_TO_RACE/HOLD_THROTTLE/FIXED_RNG/
+  TRACK/SIMLEGACY, and the exe takes no arguments.
+- **CTRL-Q quits** (`make QUITTEST=n` + `amiga/quit_test.gdb`).
+- **`$VER: Revs 0.1 (30.09.2026)`** (`src/platform/amiga/version.s`), checked by `dist-audit`.
+
 ### What the port takes from the disc today — the asset audit's starting point (measured 2026-09-30)
 
 | Embedded now | What it is | At release |

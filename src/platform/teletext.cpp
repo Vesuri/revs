@@ -4,6 +4,7 @@
  */
 #define TELETEXT_FONT_DATA   /* this translation unit owns the generated glyph table */
 #include "teletext.h"
+#include "diag.h"
 #include "../cpu/cpu.h"
 
 extern "C" {
@@ -89,7 +90,7 @@ static void tt_command(unsigned char cmd, const unsigned char* p)
        page; every other mode means $7C00-$7FFF is no longer a screen at all (in Revs it becomes
        the dashboard code overlay), so the renderer must stop reading it. */
     case 22:
-        g_ttModeSwitches++;
+        REVS_DIAG(g_ttModeSwitches++);
         g_ttActive = (p[0] == 7);
         tt_cls();
         break;
@@ -125,15 +126,15 @@ static void tt_command(unsigned char cmd, const unsigned char* p)
     case  7:  break;   /* BELL — sound, not screen (Phase 5 item 4) */
 
     default:
-        g_ttUnknownVdu++;
-        g_ttLastUnknown = cmd;
+        REVS_DIAG(g_ttUnknownVdu++);
+        REVS_DIAG(g_ttLastUnknown = cmd);
         break;
     }
 }
 
 void tt_vdu(unsigned char c)
 {
-    g_ttVduBytes++;
+    REVS_DIAG(g_ttVduBytes++);
 
     if (s_pendLeft) {                 /* collecting a command's parameters */
         s_param[s_pendGot++] = c;
@@ -219,7 +220,7 @@ void tt_tick_flash(void)
     if (++s_flashCount >= TT_FLASH_FIELDS) {
         s_flashCount = 0;
         g_ttFlashPhase = (unsigned char)!g_ttFlashPhase;
-        g_ttFlashToggles++;
+        REVS_DIAG(g_ttFlashToggles++);
     }
 }
 

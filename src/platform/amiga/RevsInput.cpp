@@ -1,5 +1,6 @@
 /* RevsInput — see RevsInput.h for what the game expects and where it was read out. */
 #include <proto/exec.h>
+#include "../diag.h"
 #include <exec/interrupts.h>
 #include <exec/nodes.h>
 #include <resources/cia.h>
@@ -162,7 +163,7 @@ static void buildReverseMap()
         uint8_t* r = g_keyRawMap[kKeys[i].bbc];
         if      (r[0] == RK_NONE) r[0] = kKeys[i].rawkey;
         else if (r[1] == RK_NONE) r[1] = kKeys[i].rawkey;
-        else g_keyMapOverflow++;
+        else REVS_DIAG(g_keyMapOverflow++);
     }
     s_rkBuilt = true;
 }
@@ -361,13 +362,13 @@ static uint32_t keyboardHandler()
     bool    down = (code & 0x80u) == 0u;
 
     if (down && !g_keyDown[raw]) {                  /* a real press — latch the EDGE */
-        if (raw == RK_SPACE) g_spaceEdges++;
+        if (raw == RK_SPACE) REVS_DIAG(g_spaceEdges++);
         g_keyLatch[raw]   = 1u;
         g_keyLatchAt[raw] = g_vbiCount;
         typeQueuePush(raw);                         /* ...and as a TYPED character */
     }
     g_keyDown[raw] = down ? 1u : 0u;
-    g_keyEvents++;
+    REVS_DIAG(g_keyEvents++);
     return 0;
 }
 
@@ -418,7 +419,7 @@ void RevsInput::shutdown()
 bool RevsInput::pressBbcKey(uint8_t bbcCode, bool down)
 {
     const uint8_t* r = rawkeysFor(bbcCode);
-    if (r[0] == RK_NONE) { g_keyUnmappedCode = bbcCode; g_keyUnmapped++; return false; }
+    if (r[0] == RK_NONE) { REVS_DIAG(g_keyUnmappedCode = bbcCode); REVS_DIAG(g_keyUnmapped++); return false; }
     g_keyDown[r[0]] = down ? 1u : 0u;
     if (r[1] != RK_NONE) g_keyDown[r[1]] = down ? 1u : 0u;
     return true;
@@ -438,8 +439,8 @@ bool RevsInput::keyDown(uint8_t x) const
        (a row's second slot is RK_NONE for all but the doubly-mapped keys). */
     const uint8_t* const r = g_keyRawMap[x];
     const uint8_t k0 = r[0], k1 = r[1];
-    if (x == 0x9Du) g_spacePolls++;                     /* SPACE — the instrument above */
-    if (k0 == RK_NONE) { g_keyUnmappedCode = x; g_keyUnmapped++; return false; }
+    if (x == 0x9Du) REVS_DIAG(g_spacePolls++);                     /* SPACE — the instrument above */
+    if (k0 == RK_NONE) { REVS_DIAG(g_keyUnmappedCode = x); REVS_DIAG(g_keyUnmapped++); return false; }
 
     /* The live level first: a key that is down now needs no latch, and the answer must not
        consume one (see the tap-latch note above — a held key would otherwise eat its own edge). */
@@ -447,7 +448,7 @@ bool RevsInput::keyDown(uint8_t x) const
     if (down0 || (k1 != RK_NONE && g_keyDown[k1])) {
         const uint8_t held = down0 ? k0 : k1;
         g_keyLatch[held] = 0u;                          /* seen while held — the edge is spent */
-        if (x == 0x9Du) g_spaceAnswered++;
+        if (x == 0x9Du) REVS_DIAG(g_spaceAnswered++);
         return true;
     }
 
@@ -462,8 +463,8 @@ bool RevsInput::keyDown(uint8_t x) const
             g_keyLatch[rk] = 0u;                        /* one tap, one answer */
             if ((uint16_t)(g_vbiCount - g_keyLatchAt[rk]) > KEY_LATCH_FIELDS)
                 continue;                               /* stale — not this page's press */
-            g_keyLatchHits++;
-            if (x == 0x9Du) g_spaceAnswered++;
+            REVS_DIAG(g_keyLatchHits++);
+            if (x == 0x9Du) REVS_DIAG(g_spaceAnswered++);
             return true;
         }
     }
@@ -523,8 +524,8 @@ void RevsInput::sampleMouse()
     const unsigned pot = *potinpPointer;
     const unsigned cia = *ciaapraPointer;
     unsigned char b = (unsigned char)(~(((cia >> 6) & 1u) | ((pot >> 9) & 2u) | ((pot >> 6) & 4u)) & 7u);
-    g_mouseBtnMask  = b;
-    g_mouseBtnSeen |= b;
+    REVS_DIAG(g_mouseBtnMask  = b);
+    REVS_DIAG(g_mouseBtnSeen |= b);
 }
 
 uint16_t RevsInput::axis(uint8_t channel) const
