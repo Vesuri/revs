@@ -209,3 +209,16 @@ SIGINT gdb (never `kill -9`) on their cue.
 Stray `fs-uae` copies of your own are handled by the scripts (`fsuae_stop_previous` /
 `fsuae_claim_port` in `~/.local/share/amiga/fsuae_common.sh`).  Kill anything else **by pid** —
 never `pkill fs-uae`, which also takes down the other projects' emulators.
+
+## Three traps found building the release (2026-09-30)
+
+- ⚠⚠ **A verdict script must judge by WHERE gdb stopped, never by the fact that it stopped.**
+  `diag_run.sh`'s timeout interrupts `continue`, and gdb then runs the script's next line as if the
+  breakpoint had hit — a chord-less control "passed" `quit_test.gdb` that way. Compare `$pc` with the
+  breakpoint's address (`amiga/quit_test.gdb`). And break on an OUT-OF-LINE function by address:
+  a symbolic `break ~PlatformAmiga` resolved to three locations, one inside an inlined `renderFrame`.
+- ⚠ **FS-UAE keeps the FIRST value of a repeated option**, so `EXTRA_ARGS` cannot override the
+  script's own `--chip_memory`/`--fast_memory` — that run silently measured the 1 MB + 8 MB dev
+  machine. Size a run with `CHIP_KB`/`FAST_KB` (slow RAM via `EXTRA_ARGS="--slow_memory=512"`).
+- ⚠ **FS-UAE does not boot Kickstart 1.3 from a directory drive** (gdb just never connects). Run
+  the 1.3 case under WHDLoad's kick13 kickemu instead (`tools/test_whdload.py`, `docs/whdload.md`).

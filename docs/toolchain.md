@@ -179,9 +179,13 @@ Why no host renderer: `src/platform/host/PlatformHost.h`.
 cd amiga && . ./env.sh
 make                     # out/Revs.exe  (+ Revs.elf for debug, and a muldiv audit on every link)
 make clean               # ⚠ mandatory before a PROBES build / after a header edit
-./run.sh                 # boot in FS-UAE (CTRL + left mouse quits)
+./run.sh                 # boot in FS-UAE (CTRL-Q quits); stages ../revs.ssd beside the exe
 ./debug.sh               # source-level debug via the FS-UAE gdb stub
 ./diag_run.sh [secs]     # headless probe run (needs PROBES=1)
 ```
+
+⚠ **Every Amiga build reads the engine off `revs.ssd` at startup** (nothing is `.incbin`'d any
+more), so the FS-UAE scripts copy `../revs.ssd` next to the exe; `$REVS_DISC` picks another image.
+`make DIST=1` is the release build and `make dist` (repo root) the archive — `docs/whdload.md`.
 
 Details and traps: `docs/headless-fsuae.md`.

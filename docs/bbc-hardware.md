@@ -311,7 +311,7 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 | ⚠ SN76489 **via the MOS sound scheduler** (`OSWORD 7`/`8`; the chip is never addressed) | `src/platform/sound.c` reproduces the SCHEDULER (validated: `make sound`), `RevsAudio.cpp` maps the chip state onto Paula — §Sound below |
 | ⚠ ADC steering **via `OSBYTE 128`**, never the `$FEC0` registers | **mouse + keyboard** (decided), serviced in `Platform::mosCall` — there is nothing for `bus.h` to intercept |
 | Keyboard via OSBYTE | CIA-A serial-port keyboard handler |
-| Disc-loaded track data (the engine itself never calls the filing system) | embedded in the binary (see `incbin.s`) |
+| Disc-loaded engine + track data (the engine itself never calls the filing system) | the circuit data is in the exe (`src/gen/revs_tracks.c`); the ENGINE image is read off the player's `.ssd` at startup and its unpack replayed in C (`src/platform/engine_image.h`, `docs/whdload.md`) |
 | MOS `$C000-$FFFF` | `Platform::mosCall` for the calls Revs actually makes |
 
 ## Sound — ⭐ MEASURED, and the model is validated tick-for-tick (2026-08-15)
