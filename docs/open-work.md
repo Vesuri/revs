@@ -628,9 +628,14 @@ measurement, not a rewrite** — the code shapes themselves are in CLOSED below.
 
 ## The rest of the port
 
-### ⬜ Phase 7 — packaging (`docs/phases.md`)
-WHDLoad slave; a player-facing README (keys → `docs/controls.md`, requirements); an asset audit so
-the release ships only what the port needs, not the disc image.
+### ⬜ Phase 7 — packaging (`docs/phases.md` §Phase 7 — the user's decisions, 2026-09-30)
+Nothing original ships: the engine image, track files and title page are loaded at startup from the
+player's disc image (ids 2203/4179, the 1985 discs where possible). An `.lha` with a runnable exe +
+a Kickstart 1.3 WHDLoad slave + an install script, Rescue on Fractalus's model; KS 1.3 / 68000 /
+~0.5+0.5 MB; CTRL-Q quits; no hidden options or diagnostic counters in the release build.
+Steps, in order: the startup loader (DFS + unpack + patch replay, byte-compared against today's
+embedded image) → the release build profile → memory on a 1 MB KS 1.3 A500 → slave + installer +
+ReadMe → `make dist`.
 
 ### 🔧 The naming pass's residue (`docs/static-map.md` §Open items 5)
 Still unnamed: **the interior of the 3D pipeline below `project_point`, the front end's prompt

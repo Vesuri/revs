@@ -1321,5 +1321,45 @@ in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cro
 
 ## Phase 7 — Packaging ⬜
 
-WHDLoad slave, a player-facing README (keys, requirements), and an asset audit: ship only what
-the port needs, not the original disc image.
+### The decisions (user, 2026-09-30)
+
+1. **Nothing from the original ships.** The reverse-engineered code — the transliteration, the
+   twins, the circuit hook bodies — is ours and ships; every original byte (the engine image, the
+   track files, the title page) is read at STARTUP from a disc image the player supplies, as the
+   latest Rescue on Fractalus and Vette releases do. Supported sources are the bbcmicro.co.uk
+   entries: the matching version is id 4179, and the others should work where possible.
+2. **Packaging as Rescue on Fractalus and Vette:** an `.lha` holding an executable that runs as it
+   is, plus a WHDLoad slave and an install script. The WHDLoad ReadMe follows the Install
+   Template's format. (WHDLoad and Installer docs: `~/Documents/Stunt Car Racer/data`.)
+3. **Target: Kickstart 1.3, a 68000, ~0.5 MB chip + ~0.5 MB other RAM.** ⇒ a `kick13.s` slave,
+   Rescue on Fractalus's model (`~/Documents/Rescue on Fractalus/docs/whdload-slave.md`), not Vette's
+   `kick31.s` + 68020 one.
+4. **The circuits offered follow the disc image chosen**, since a track file cannot be used as
+   data alone (below).
+5. **The release build has no hidden options, and no diagnostic counters.** Quit moves off the
+   mouse to **CTRL-Q** (the game is mouse-driven).
+6. **Credits: Geoff Crammond / Acornsoft. No licence.**
+
+### What the port takes from the disc today — the asset audit's starting point (measured 2026-09-30)
+
+| Embedded now | What it is | At release |
+|---|---|---|
+| `disasm/revs_runtime.bin` (`incbin.s`) | the whole 64 KB image after REVS2's self-unpack: engine code + tables + Silverstone's track file | built at startup: DFS read → the unpack replay (`tools/relocate.py`'s job, in C) |
+| `src/gen/revs_tracks.c` | per circuit: the $5300 block, the $7800 tail, `ModifyGameCode`'s patch list | read from the disc's track file; the patch replay (`tools/track_patch.py`) done at startup |
+| `src/gen/revs_track_hooks.c` | the circuits' hook BODIES, transliterated 6502 | ships (ours) — ⚠ so a circuit is playable only if its file's hook code was compiled in: identify each file by hash |
+| `src/platform/titlescreen.h` | the `5TRSCRN` MODE 7 page | read from the disc (`PLUSCRN` on 4179; none on the 1985 discs) |
+| `teletext_font.h` | the SAA5050 character generator — BBC hardware, not the game | ⚠ to classify |
+| `mos_font.h` | drawn by us | ships |
+
+### The four bbcmicro.co.uk discs (downloaded, hashed, catalogued 2026-09-30)
+
+| id | Title | REVS2 | Circuits |
+|---|---|---|---|
+| 267 | Revs (Acornsoft 1985) | **1985 engine** | Silverstone |
+| 1128 | Revs 4 Tracks (Acornsoft 1985) | **1985 engine** | Brands, Donington, Oulton, Snetterton — an add-on: no Silverstone |
+| 2203 | Revs Plus Revs 4 Tracks (Superior/Acornsoft 1986) | 1986 engine | the five — **byte-identical to `revs.ssd`** |
+| 4179 | Revs+ [hack] (2022) | 1986 engine | the five **rewritten** (all `$7D0`, Silverstone executable) + Nürburgring — **byte-identical to `revs-hack-nurburgring.ssd`** |
+
+⇒ **two engines** (1985 and 1986, 974 bytes apart; the port transliterates the 1986 one) and
+**two sets of circuit files**: 1128's four are byte-identical to 2203's, Silverstone is identical
+on 267/2203, and 4179's are its own. Today the port uses 2203's five plus 4179's Nürburgring.
