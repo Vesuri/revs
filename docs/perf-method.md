@@ -2215,7 +2215,7 @@ is load-bearing (the toolchain's own file carries the same guard as a per-functi
 tell was `jsr <__wrap_memset>` *inside* `__wrap_memset`; the shipped call sites never pass a length
 under 8, so it would have sat there until one did.
 
-⚠ And `-funroll-loops` (which `$(NATIVE_OPT)` carries) **peels an already-unrolled loop four times
+⚠ And `-funroll-loops` (which `$(NATIVE_OPT)` carried until 2026-09-30) **peels an already-unrolled loop four times
 more**, adding ~20 instructions of trip-count-modulo dispatch ahead of the first store — pure loss
 on the 79..208-byte fills this port actually does. That object builds at plain `-O2`.
 

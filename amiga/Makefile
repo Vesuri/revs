@@ -1588,10 +1588,11 @@ CORE_CINCLUDES = -I"$(AMIGA_SRC)/framework/compat-include" \
 #   -O3 -funroll-loops 75.01 / 75.02 (two controls)   revs_native.o 216 KB
 #   -O3                75.03                          173 KB
 #   -O2                79.50  (+4.5 ms, +6%)          121 KB
-# ⇒ -O3 is worth 4.5 ms; -funroll-loops buys nothing measurable on that frame for +43 KB.  Not
-# yet priced on the race proper (QUICKQUAL=1), where the object plotter's loops run.
+# ⇒ -O3 is worth 4.5 ms; -funroll-loops bought nothing measurable for +43 KB, so it is dropped
+# (user decision, not priced on the race proper).  The hot loops that need unrolling carry their
+# own `#pragma GCC unroll` or are asm.
 OPT        ?= -O2 -fomit-frame-pointer
-NATIVE_OPT ?= -O3 -funroll-loops
+NATIVE_OPT ?= -O3
 
 # -m68000: the target is an A500 68000.  -msoft-float: no FPU.
 CORE_CFLAGS = -g -MP -MMD -m68000 -msoft-float $(OPT) -nostdlib \
