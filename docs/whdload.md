@@ -14,7 +14,7 @@ sizes. The user's decisions behind all of it are `docs/phases.md` §Phase 7.
 
 ## What ships and what does not
 
-The archive (0.90: 173 494 bytes; the DIST exe 315 412 — no symbol hunk, `NATIVE_OPT` without
+The archive (0.90: 173 427 bytes; the DIST exe 315 412 — no symbol hunk, `NATIVE_OPT` without
 `-funroll-loops`, both in `amiga/Makefile`) holds the exe, the slave, the Install script, the
 ReadMe and four icons. **No original engine byte**: the exe reads REVS2 off the player's `.ssd` at startup (`src/platform/engine_image.h`,
 proved against `disasm/revs_runtime.bin` by `make engine-image`), and `package_whdload.py` scans every
