@@ -1315,6 +1315,9 @@ PROBE_SYMS_TERRAIN += g_scanChecks g_scanMismatch g_scanMismatchAt
 endif
 endif
 SCANASM_SABOTAGE ?= 0
+# `make SCANGROUPS=n` — a CARVE ARM: the scan covers lines 0..4n-1 only (20 = all, the default).
+# The picture above is wrong; the phase-24 delta prices the scan's work on the lines left out.
+SCANGROUPS ?= 20
 # ⭐⭐ `GEOASM=1` (the DEFAULT) — road_edge_walk's width emitter in 68000 assembly
 # (src/platform/amiga/emit_width_m68k.s).  `make GEOASM=0` is the C control.  ⭐⭐ `make GEOCHECK=1`
 # is its gate: every call runs the C core and the asm on the same 64 KB and compares all of it and
@@ -1917,7 +1920,7 @@ obj/terrain_m68k.o : $(AMIGA_SRC)/terrain_m68k.s
 
 obj/scan_m68k.o : $(AMIGA_SRC)/scan_m68k.s
 	$(info ASM  $<)
-	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SCANASM_SABOTAGE) -o $@ "$<"
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SCANASM_SABOTAGE) --defsym GROUPS=$(SCANGROUPS) -o $@ "$<"
 
 obj/emit_width_m68k.o : $(AMIGA_SRC)/emit_width_m68k.s
 	$(info ASM  $<)

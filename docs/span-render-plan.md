@@ -2875,6 +2875,18 @@ blitter cannot be assumed to reach it. On the CPU this is ~3200 bytes, each cell
 contiguous from its floor up: `movem.l` stores at ~2.2 cycles a byte, ~1.1 ms (inferred, not
 measured). ⇒ **D nets about −4 ms, not −5.**
 
+⭐ **Stage 1's upper bound, measured (2026-10-01): `make SCANGROUPS=11`** assembles the scan for
+lines 0..43 only, so lines 44..79 get no events and keep their sources (picture wrong by
+construction). Practice, `PROBEFIELDS=3000 SIMLEGACY=1`, phase 63 91 fields in both arms, phase 0
+222 / 220: **ph24 14.81 → 8.63 ms (−6.18), frame 74.09 → 67.83.** ⚠ That delta belongs to
+everything the carve changed: the scan's walk and recording on 36 lines, AND the painter painting
+those lines with empty lists, AND the producers composing onto the stale bytes (ph11 +~0.17).
+D still feeds the painter its events and clears the bytes, so **−6.2 ms is the ceiling for stage
+1, not its saving**. A census-based estimate of the scan's own share was ~2.6 ms; the split of the
+6.18 between scan and painter is not measured. Next: an arm that keeps the painter's work (the
+scan finds and records lines 44..79 but a second pass is skipped) is not possible with one scan,
+so price D's stage 1 by building it.
+
 ⇒ **D is feasible on the data.** What it would build: per line, the ≤5 interval colours from the
 classifier's rules once, one gather per on-line edge, the object layer's events merged in, and the
 seam's seeds read off the same intervals (the whole fill goes on the plane arm; its tables stay for

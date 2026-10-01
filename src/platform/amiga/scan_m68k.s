@@ -58,6 +58,11 @@
 	.ifndef SABOTAGE
 	.equ	SABOTAGE, 0
 	.endif
+| `--defsym GROUPS=n` (`make SCANGROUPS=n`): scan lines 0..4n-1 only.  20 (all 80 lines) in every
+| real build; fewer is a carve arm that prices the rest (the picture above line 4n-1 is wrong).
+	.ifndef GROUPS
+	.equ	GROUPS, 20
+	.endif
 
 | One lane of a hit block: byte J of the longword a0 has just passed, line L.  d3's high byte is 0.
 .macro LANE l, j
@@ -105,7 +110,7 @@ sc_cell:
 	moveq	#0,d3                       | a hit block's byte index (the seeds dirty it)
 	moveq	#0,d5
 	move.b	(a5)+,d5                    | the cell's floor: its first consumable line
-	moveq	#LINES,d0
+	moveq	#GROUPS*4,d0
 	cmp.w	d0,d5
 	bcc.w	sc_seeds                    | $FF: no table yet, nothing is ours
 	moveq	#-4,d1
@@ -140,6 +145,7 @@ sc_floormask:
 |   block's return (sc_groups + 8*(g+1)) both count on it.
 sc_groups:
 	.irp	g,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+	.if \g < GROUPS
 	move.l	(a0)+,d0
 	.if SABOTAGE == 6 && \g == 15
 	bra.s	2f                          | SABOTAGE 6: lines 60..63 are never looked at
@@ -148,6 +154,7 @@ sc_groups:
 	.endif
 	bra.w	sc_h\g\()_0
 2:
+	.endif
 	.endr
 	| (the entry for a floor in the last group lands here, past the table)
 
@@ -219,18 +226,22 @@ sc_nextcell:
 | The hit blocks: group g's four lanes, then back to group g+1's entry (g = 19: sc_seeds).  a0 is
 | just past the group's longword.  Clobbers d3 (low byte), a4.
 	.irp	g,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+	.if \g < GROUPS
 	.irp	j,0,1,2,3
 sc_h\g\()_\j:
 	LANE	(\g*4+\j),\j
 	.endr
 	bra.w	sc_groups+8*(\g+1)
+	.endif
 	.endr
 
 | sc_entry[line]: the offset of that line's lane in its group's hit block — the floor group's way in.
 sc_entry:
 	.irp	g,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+	.if \g < GROUPS
 	.irp	j,0,1,2,3
 	.word	sc_h\g\()_\j - sc_entry
 	.endr
+	.endif
 	.endr
 	.size	view_scan_m68k, .-view_scan_m68k
