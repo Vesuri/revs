@@ -2829,15 +2829,29 @@ cell 0 as absent (~40k a circuit). Cost to D: a second probe per on-line edge. P
    one-off ~1820 bytes at start-up (2.95 a sweep over 616 sweeps, 0.61 over 2996), which the
    warm-up fallback covers.
 
-   ⇒ **The design:** each writer records a conservative footprint (a line range and a cell range;
-   for `plot_object_core`, from the object's position and its scaled vertices, once per object;
-   the lights and the copy have fixed ones). On a footprint line D paints its intervals up to the
-   footprint, runs today's run-length over the source bytes from the footprint's left cell to the
-   first non-zero byte past its right cell, and resumes the intervals there. That is exact by the
-   table: inside, it is the current pipeline; left of an object the road model holds; past the
-   terminating byte the carry is the model's. The cells under an object carry are ~30-95 a sweep
-   (Silverstone practice 30, race 36; Oulton practice 50, race 95), so the run-length reads are
-   small beside the full scan's 3200 bytes; a conservative footprint adds to that (not measured).
+   ⇒ **The design, CHECKED (2026-10-01):** each writer records a footprint, a line range and a
+   cell range. `plot_object_core` takes one rectangle per object; the starting lights and
+   `copy_dash_data` take theirs from the cells they write. On a footprint line, D starts today's
+   run-length at the first visible cell at or past the footprint's left edge, ends it at the first
+   non-zero byte past its right edge, and uses the analytic intervals everywhere else. Census
+   (`tmp/census/model_census_v4.patch`; rectangles from the bytes each object call made non-zero):
+
+   | trajectory | objects a sweep | footprint cells + run past the right edge, a sweep | cells | mismatches |
+   |---|---:|---:|---:|---:|
+   | practice: Silverstone / Brands / Donington | 0.87 / 0.53 / 0.96 | 14.8+14.7 / 2.9+9.5 / 14.5+39.6 | 6.17M / 6.12M / 6.16M | **0 / 0 / 0** |
+   | practice: Oulton / Snetterton / Nürburgring | 0.68 / 0.10 / 0.67 | 10.9+42.2 / 0.6+2.8 / 20.3+12.0 | 6.15M / 6.11M / 6.14M | **0 / 0 / 0** |
+   | race: Silverstone / Brands / Oulton | 1.99 / 0.4-2.6 / 3.29 | 18.8+16.1 / — / 36.4+55.2 | 18.1M / 17.9M / 17.9M | **0 / 0 / 0** |
+
+   ⚠ **One unexplained failure:** one Brands race run of eleven gave 733 mismatches (728 off any
+   footprint), with 2.64 objects a sweep. Ten reruns of the same build, at 0.4-2.4 objects a
+   sweep, gave 0. The host race trajectory differs from run to run (the object count does; the
+   cell count does not), so the failing state was not reproduced. D's in-process target check
+   must cover the Brands race with cars in view before this is called exact.
+
+   Two traps the check itself hit: a footprint's left cell can lie under the dashboard, so the
+   run has to start at the first visible cell; and the painter's phase zeroes what it consumes,
+   so a diff that counts any change makes a whole-screen footprint (count only bytes that become
+   non-zero). The run-length work is ~4-90 cells a sweep, against the full scan's 3200 bytes.
 
 ⇒ **D is feasible on the data.** What it would build: per line, the ≤5 interval colours from the
 classifier's rules once, one gather per on-line edge, the object layer's events merged in, and the
