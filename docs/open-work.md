@@ -22,7 +22,8 @@ The simulation is decoupled from painting by default.
 
 The remaining architectural candidate is design D in
 [the rendering design](span-render-plan.md), section 13. Its estimated ceiling is
-about 5 ms; this is an estimate, not an implemented saving. The previous 34 ms
+about 5 ms, less ~1.1 ms to clear the source bytes the scan zeroes today (≈ −4 ms
+net); these are estimates, not an implemented saving. The previous 34 ms
 source-buffer estimate and old 48 ms staged roadmap are superseded.
 
 Before implementation (the colour model itself is exact on all six circuits:

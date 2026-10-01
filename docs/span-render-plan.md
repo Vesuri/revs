@@ -2853,6 +2853,15 @@ cell 0 as absent (~40k a circuit). Cost to D: a second probe per on-line edge. P
    so a diff that counts any change makes a whole-screen footprint (count only bytes that become
    non-zero). The run-length work is ~4-90 cells a sweep, against the full scan's 3200 bytes.
 
+⚠ **D's ceiling omits the clear (found 2026-10-01).** The scan is the sweep's destructive reader:
+it zeroes every source byte it finds, because `span_plot_core` composes into source cells with a
+read-modify-write and a stale byte corrupts the next frame. D reads only edge cells and
+footprints, so it must still zero every visible source byte, the restating road bytes it never
+reads included. `mem[]` is a static array (`src/cpu/cpu.c`) with no chip-RAM placement, so the
+blitter cannot be assumed to reach it. On the CPU this is ~3200 bytes, each cell column
+contiguous from its floor up: `movem.l` stores at ~2.2 cycles a byte, ~1.1 ms (inferred, not
+measured). ⇒ **D nets about −4 ms, not −5.**
+
 ⇒ **D is feasible on the data.** What it would build: per line, the ≤5 interval colours from the
 classifier's rules once, one gather per on-line edge, the object layer's events merged in, and the
 seam's seeds read off the same intervals (the whole fill goes on the plane arm; its tables stay for
