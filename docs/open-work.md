@@ -24,11 +24,9 @@ The remaining architectural candidate is design D in
 about 5 ms; this is an estimate, not an implemented saving. The previous 34 ms
 source-buffer estimate and old 48 ms staged roadmap are superseded.
 
-Before implementation:
+Before implementation (the colour model itself is exact on all six circuits:
+[§13e](span-render-plan.md), including the after-edge probe and the edge-2 rule):
 
-- Resolve Brands Hatch's kerb-stripe join: eight mismatches at line 53, cell 12 in
-  the recorded census. Derive the exact endpoint rule; accepting a visual departure
-  needs a separate user decision.
 - Identify the mixed-byte producer attributed to phase 23. The model cannot yet
   classify it as road or object output.
 - Specify how signs, cars, markers and starting lights enter the object layer

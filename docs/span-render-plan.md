@@ -2752,7 +2752,7 @@ lights, …) are skipped — they are the object layer, which the renderer keeps
 | Silverstone, **race proper** (`RACEPROPER=1`, sweeps with `session_is_race & $80`) | 21 232 417 | **0** |
 | Donington / Snetterton (`REVS_TRACK=2/4`) | 1 145 024 / 1 150 233 | **0 / 0** |
 | Oulton (`REVS_TRACK=3`) | 1 140 233 | 52 — **all 52 in the warm-up sweeps before `view_low_build` succeeds**, where the census could not exclude the composite cells; 0 after |
-| Brands Hatch (`REVS_TRACK=1`) | 1 162 505 | **8 — one cell, see below** |
+| Brands Hatch (`REVS_TRACK=1`) | 1 162 505 | **8 — one cell, settled below** |
 
 ⭐ **Sabotaged three ways, three distinct counts:** dropping the edge cell's byte 15 150, probing
 one cell right of the edge 12 226, a wrong colour after edge 0 17 254. The check can fail.
@@ -2768,15 +2768,33 @@ already carries, not colour changes. And **every one of the 16 205 mixed road by
 race) sits EXACTLY on its edge's cell** (offset 0, all four edges): the gather is one probe per
 on-line edge.
 
-⚠ **The one residual — Brands Hatch, a kerb-stripe JOIN.** Line 53, cell 12, on 8 of 596 sweeps:
-edges `25 11 $80 13`, the cell after edge 1 holds the DDA's solid `$FF` while the classifier gives
-`$0F`. The classifier takes a kerb's colour from `line_attr_0[line]` (the line → edge-point map
-`fill_line_attr` builds); the DDA takes it from the span it is drawing; at a join between two kerb
-segments they disagree about which segment owns one line. Letting the byte after each edge set its
-interval's colour fixes Brands and breaks Silverstone (16) and Oulton (2 586), so it is not the
-rule. ⇒ either find the exact join rule (read `fill_line_attr` against the span DDA's endpoints),
-or accept a one-line, one-cell kerb-colour difference at a stripe join as a departure — **the
-user's call**, like the true-ratio divide — and gate it with `viewdiff` on Brands.
+✅ **The Brands Hatch residual is SETTLED (2026-10-01), and the model is exact on all six
+circuits.** It was never a kerb-colour disagreement. Line 53, cell 12 (edges `25 11 $80 13`) holds
+`$FF` written by `span_walk_fast_loop`'s `FAST_MARKER`, the span-end terminator a non-steep arm
+stores when a column plotted nothing. The current pipeline paints it as colour 3, like any other
+source byte. It lands on the cell AFTER an edge, so it is visible only
+where the next interval is one cell wide. The earlier census put Oulton's residual down to warm-up
+sweeps; at least part of it is a second rule (not checked against those 52 cells). On a line with edge 2 on cell 0 and edge 3 on
+cell 1 (edges `$80 $80 0 1`), the classifier tests edge 2 first and gives its colour to the whole
+line, while the painted row carries colour 0 from edge 3 onwards. The exact model is:
+
+> **the classifier's colour at the cell, with edge 2 treated as absent when an on-line edge 3
+> lies past it; except that on a cell holding an on-line `surface_edge`, OR the cell after one,
+> the block's own byte (translated) is taken when it is non-zero.**
+
+| trajectory (host, `FIXED_RNG=1 HOLD_THROTTLE=1`) | cells compared | old model | + after-edge probe | + edge-2 rule |
+|---|---:|---:|---:|---:|
+| `STRAIGHT_TO_RACE=1`, 2996 sweeps: Silverstone / Brands / Donington | 5.99M / 5.99M / 5.92M | 0 / 51 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| the same: Oulton / Snetterton / Nürburgring | 5.89M / 5.95M / 6.04M | 22 / 0 / 11 | 20 / 0 / 0 | 0 / 0 / 0 |
+| `RACEPROPER=1`, race sweeps only (~8.6k): Silverstone / Brands / Oulton | 17.6M / 17.5M / 17.0M | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+The edge-2 rule changed 18 classifications on Donington and 78 on Oulton and stayed exact; each
+column is the next column's sabotage. Two wider rules fail: letting the byte after each edge set its
+whole interval (MODEL2 above: 81 on Silverstone, 10 963 on Oulton), and treating every edge on
+cell 0 as absent (~40k a circuit). Cost to D: a second probe per on-line edge. Patch:
+`tmp/census/model_census_v2.patch` (host only, not committed; `make SRCCENSUS=1`, run with
+`REVS_SCREEN_FRAME=n REVS_QUIT_AFTER_DUMP=1`, because the report is printed `atexit` and a
+`timeout` kill prints nothing).
 
 ⚠ **Two things the census names that the renderer must still carry:**
 1. **An unidentified producer attributed to phase 23** (`check_crash_native`'s bracket, or a
