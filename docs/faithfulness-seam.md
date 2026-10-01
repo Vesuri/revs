@@ -814,6 +814,7 @@ Host physics against legacy, in game time (`tools/sim_equiv.py`, T2 pinned):
 paints every four or five fields, so a 40 ms step ran ~2.5 times a painted frame, and each step
 pays the controls, the driving model and — in a race — the other cars' drive and overtaking check
 (`move_and_draw_cars` loops them once per step). Still finer than the BBC's own h = 1.
+The user play-tested it on 2026-10-01 and accepted the feel.
 - Host physics (`sim_equiv.py`): throttle worst speed deviation **0.2% (h800)** against 0.5%
   (h400); `h800x5` reads 4.0% only at odd seconds, where its 100 ms frames interpolate across
   unequal step counts, and equals h800 exactly at every even second. Steering: both diverge only
