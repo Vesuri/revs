@@ -2671,6 +2671,15 @@ exactly on `first+1`: ≈ −0.8k instructions, **≈ −1.3 ms**. Emitting the 
 seeds instead of block bytes (Amiga-only) buys nothing further: each seed insertion costs what the
 scan hit it replaces does.
 
+✅ **BUILT (2026-10-01), in the asm: ph18 5.58 → 4.82 ms, frame 75.04 → 74.28** (`PROBEFIELDS=3000`,
+`SIMLEGACY=1`, phase 0 221 fields and phase 63 91 fields on both runs). `edge_m68k.s` runs pass B on
+column c and pass A on column c+1 in one loop over their shared lines, and pass A reuses pass B's
+colour unless an edge that the classifier compared `<` equals the next position. A column whose
+lines wrap past 0 or leave the block runs the original two loops. The estimate was −1.3; the
+shortfall has not been split by classifier arm. Gate: `make EDGECHECK=1` PASS, 614 game
+frames and 300 fuzz cases; sabotage 7 (a one-pass colour-0 cell left 0) is caught by both, and
+sabotage 8 (edge 2 on pass A's cell not checked) only by the fuzzer.
+
 **A — FOLD THE ENGINE-SHAPED DRIVERS: price it with an arm before building, and expect little.**
 On the plane arm the painters take whole blocks and prove row contiguity at the two ends, so the
 per-line `step_scanline`, the terminator test on `view_chain_end_slot`, the per-line claim and the

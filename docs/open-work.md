@@ -7,7 +7,7 @@ sources for explicit unfinished-work markers. Naming questions live in
 
 ## Performance context
 
-The latest recorded practice window is 75.10 ms of bracketed work. The race
+The latest recorded practice window is 74.28 ms of bracketed work. The race
 window after the object assembly changes is 95.72 ms (`QUICKQUAL=1`); practice
 omits the other cars and must not stand in for a race. These are different
 workloads, not a paired comparison. See [measurement method](perf-method.md).
@@ -41,9 +41,6 @@ exercise `LOWFULLCHECK`, and compare all affected circuits with `viewdiff`.
 
 ## Smaller performance candidates
 
-- **Per-line seam fill:** section 13 design C estimates about 1.3 ms by replacing
-  disjoint column walks and sharing classifications. Existing edge-fill variants
-  have already failed; only the changed per-line premise warrants a new experiment.
 - **Renderer driver fold:** design A needs a deletion experiment demonstrating more
   than roughly 1 ms before implementation. Prior C driver tidying was a null.
   Preserve hook-written stop slots and row backgrounds.
