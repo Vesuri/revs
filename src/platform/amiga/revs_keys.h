@@ -1,6 +1,6 @@
 /* revs_keys.h — THE RACE'S KEY TEST, INLINE.  Amiga only; C and C++.
  *
- * kbd_test_key ($0E50) is asked ~8 times per 25 Hz sim step, and the full answer path —
+ * kbd_test_key ($0E50) is asked ~8 times per sim step, and the full answer path —
  * platform_key_down -> the virtual Platform::keyDown -> PlatformAmiga::keyDown -> RevsInput::keyDown
  * with its stack frame, its SPACE instrument test and its MODE 7 tap-latch arm — cost ~50
  * instructions a poll to read one byte: 74% of read_driving_controls' 660 instructions a call,

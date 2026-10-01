@@ -640,8 +640,8 @@ for the mechanical steps of making a function native.
 
 The engine steps its whole simulation once per painted frame, and its race clock adds 9.36 cs a
 frame, so on the BBC **game speed is the framerate**. The port decouples them: game time is owed
-against real display fields and paid in steps of `h` engine frames. The user chose 25 Hz steps on a
-68000 and 50 Hz on a 68020 or better, with lap times comparable to the original's
+against real display fields and paid in steps of `h` engine frames. The user chose 12.5 Hz steps on
+a 68000 (25 Hz until 2026-10-01) and 50 Hz on a 68020 or better, with lap times comparable to the original's
 (§The build record below has the stages and the measurements). This
 is a departure, so here is the argument, piece by piece. Each piece says what a player sees.
 
@@ -734,9 +734,10 @@ The engine steps its whole simulation once per painted frame, and its clock is c
 argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
 
 **The user's decisions.**
-- **Step rates:** fixed steps tied to vertical blanks — **25 Hz on a 68000, 50 Hz on a 68020 or better**
+- **Step rates:** fixed steps tied to vertical blanks — **12.5 Hz on a 68000 (25 Hz until 2026-10-01),
+  50 Hz on a 68020 or better**
   (chosen at run time, the same way as the blitter's CPU choice).
-- **Timestep:** h is **exact**, h = step / 93.6 ms (0.4274 at 25 Hz, 0.2137 at 50 Hz), applied as a
+- **Timestep:** h is **exact**, h = step / 93.6 ms (0.8547 at 12.5 Hz, 0.2137 at 50 Hz), applied as a
   Q16 `mulu.w` at the scaled sites. Game time is therefore real time.
 - **Clock:** lap times stay **comparable with the original's**. `add_frame_time` runs bit-exact on a
   slow tick that fires every 93.6 ms of game time.
@@ -793,8 +794,9 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
   physical-equivalence suite against h = 1 in game time.
 
 **Status: DONE** — stages 1–6 on 2026-09-25; stage 7, the user's play-test on 2026-09-28: lap timer at real speed, the feel the original's, the A500 price (~16% of the displayed rate) accepted.
-The default Amiga build steps at **25 Hz on a 68000 and 50 Hz on a 68020+**, measured at 24.93 and
-50.03 steps/s, with the race clock 1.000× / 1.003× real time. The written argument is the section above.
+The default Amiga build steps at **12.5 Hz on a 68000 and 50 Hz on a 68020+**, measured at 12.52 and
+50.03 steps/s, with the race clock 1.001× / 1.003× real time (the A500 figure re-measured
+2026-10-01; the 25 Hz step read 24.93 and 1.000×). The written argument is the section above.
 
 Host physics against legacy, in game time (`tools/sim_equiv.py`, T2 pinned):
 - **throttle:** 0.5% (h = 0.43) and 0.7% (h = 0.21);
@@ -808,7 +810,28 @@ Host physics against legacy, in game time (`tools/sim_equiv.py`, T2 pinned):
 - **jump:** peak 64 against 61, same airtime (with the launch-bias compensation);
 - **lap timer:** 0.9965–1.005× real time.
 
-⚠⚠ **THE PRICE ON THE A500 — displayed framerate ~12.5 → ~10.5 fps** (`fps_series.gdb`,
+⭐⭐ **2026-10-01: THE 68000 STEP IS 80 ms (12.5 Hz, h = 0.855), the user's decision.** An A500
+paints every four or five fields, so a 40 ms step ran ~2.5 times a painted frame, and each step
+pays the controls, the driving model and — in a race — the other cars' drive and overtaking check
+(`move_and_draw_cars` loops them once per step). Still finer than the BBC's own h = 1.
+- Host physics (`sim_equiv.py`): throttle worst speed deviation **0.2% (h800)** against 0.5%
+  (h400); `h800x5` reads 4.0% only at odd seconds, where its 100 ms frames interpolate across
+  unequal step counts, and equals h800 exactly at every even second. Steering: both diverge only
+  in the spin at t ≈ 4 s, where h800's heading is the closer to legacy (275.5° / 283.4° / 277.5°).
+- Target, `PROBEFIELDS=3000`, shipping build, `SIM_STEP_TENTHS=400` the control, per painted frame
+  (⚠ divide by phase 11's call count: `loopFrames` does not count painted frames when decoupled):
+
+| | practice 40 ms | practice 80 ms | race 40 ms | race 80 ms |
+|---|---:|---:|---:|---:|
+| painted frames in the window | 594 | **624** | 430 | **543** |
+| ph3 + ph4 (controls, driving model) | 12.70 | 6.04 | 22.48 | 8.82 |
+| ph40 + ph41 (other cars, overtaking) | — | — | 25.36 | 10.71 |
+| bracketed frame | 81.76 | **74.44** | 131.97 | **98.29** |
+
+  `SIMLEGACY=1` practice reads 74.09 with 627 frames, so the 80 ms step costs the A500 about what
+  the engine's own loop does. Race arms are `RACEPROPER=1 PROBERACE=1 QUICKQUAL=1 CARSPLIT=1`.
+
+⚠⚠ **THE PRICE ON THE A500 — displayed framerate ~12.5 → ~10.5 fps** (25 Hz steps, superseded above) (`fps_series.gdb`,
 reset-free rows, `SIMLEGACY=1` against the default build). ph3 + ph4 go 5.73 → 14.30 ms a painted
 frame: ~2.8 steps of ~3.1 ms (controls ~1.7 ms a step, driving model ~3.5). It is a tax on WALL
 time (25 steps/s ≈ 13% of the CPU), so it costs about the same fraction at any render speed.
@@ -816,7 +839,7 @@ time (25 steps/s ≈ 13% of the CPU), so it costs about the same fraction at any
 finer than the display frame is not seen. Levers, cheapest first:
 - ✅ the controls' key polling per step — in line now (`revs_keys.h`, 660 → 247 instructions a
   step); the ~1.7 ms once quoted here was an AUTORUN build's figure;
-- a slower 68000 step until the render is near 40 ms (a user decision);
+- ✅ a slower 68000 step — taken: 12.5 Hz on 2026-10-01 (above);
 - the driving model itself.
 
 ⚠ **Price render work with `SIMLEGACY=1`**: a decoupled window covers a different stretch of game

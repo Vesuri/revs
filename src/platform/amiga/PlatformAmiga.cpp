@@ -360,9 +360,10 @@ uint32_t PlatformAmiga::hwMicros()
 }
 
 // ⭐⭐ THE SIMULATION CLOCK's inputs (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).
-// The step is chosen by the CPU (user decision): a 68000 steps at 25 Hz — the best a stock
-// A500 can display is 25 fps, and a step there costs ~3.6 ms of driving model — and a 68020 or
-// better at 50 Hz, one step per field.  `make SIM_STEP_TENTHS=n` overrides it (936 = the engine's
+// The step is chosen by the CPU (user decision): a 68000 steps at 12.5 Hz, every fourth field —
+// an A500 paints every four or five fields, and each step costs ~3.6 ms of driving model plus, in
+// a race, ~7 ms of the other cars' drive and overtaking check (h = 0.855, still finer than the
+// BBC's own h = 1) — and a 68020 or better at 50 Hz, one step per field.  `make SIM_STEP_TENTHS=n` overrides it (936 = the engine's
 // own 93.6 ms frame, h = 1) and `make SIMLEGACY=1` restores the engine's loop outright.
 // The field count is the VERTB ISR's own, so under warp it is EMULATED time and a FIXED_RNG run
 // stays deterministic.
@@ -373,7 +374,7 @@ unsigned PlatformAmiga::simStepTenths()
 #elif defined(SIM_STEP_TENTHS)
     return SIM_STEP_TENTHS;
 #else
-    return (SysBase->AttnFlags & AFF_68020) ? 200u : 400u;
+    return (SysBase->AttnFlags & AFF_68020) ? 200u : 800u;
 #endif
 }
 
