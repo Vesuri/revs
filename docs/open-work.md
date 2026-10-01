@@ -27,8 +27,8 @@ source-buffer estimate and old 48 ms staged roadmap are superseded.
 Before implementation (the colour model itself is exact on all six circuits:
 [§13e](span-render-plan.md), including the after-edge probe and the edge-2 rule):
 
-- Identify the mixed-byte producer attributed to phase 23. The model cannot yet
-  classify it as road or object output.
+- Give the crash fence fill (`paint_fence_backdrop_core`, the phase-23 producer) a
+  fallback flag so its sweep takes today's scan arm.
 - Specify how signs, cars, markers and starting lights enter the object layer
   without paying for another full source scan.
 - Preserve same-cell composition, composite cockpit boundaries, warm-up fallback,

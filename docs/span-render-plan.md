@@ -2797,10 +2797,15 @@ cell 0 as absent (~40k a circuit). Cost to D: a second probe per on-line edge. P
 `timeout` kill prints nothing).
 
 ⚠ **Two things the census names that the renderer must still carry:**
-1. **An unidentified producer attributed to phase 23** (`check_crash_native`'s bracket, or a
-   write it reaches): 6 mixed bytes a sweep on Silverstone, 21 on Brands, 12 on Oulton. Name it
-   (`make rangeaudit` over the live span, or the ink watch) before building — it belongs to the
-   object layer or to the road, and the census cannot tell which.
+1. ✅ **The phase-23 producer is `paint_fence_backdrop_core`** (2026-10-01; the census's store
+   site, `VIEW_NOTE_SRC(block + y, b)` in its row loop, was printed modulo 1024 lines). It is the
+   crash "show the fence" fill: `check_crash`'s crash arm (`revs_native.c`, its only production
+   caller) paints a four-row dither over every column's source block from row `$46` down. It is
+   neither road nor object output. Its 7.2 / 22.1 / 13.1 bytes a sweep (Silverstone / Brands /
+   Oulton, `HOLD_THROTTLE=1`, 2996 sweeps) are an average over crash frames; one fill is ~1600
+   bytes, so it covers 0.5-1.4% of sweeps (inferred). ⇒ D takes today's scan arm on a sweep
+   whose source the fence fill wrote (a flag the fill sets and the sweep clears); there is nothing
+   to model.
 2. **The object layer** — ~12-20 bytes a sweep (sign, cars, markers, lights) that no edge record
    describes. Without the full scan they need finding another way: a note in each object
    plotter's own store loop (the 67-cycle placement `SRCEVENTS` measured) or a scan bounded by the
