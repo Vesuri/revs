@@ -7,10 +7,11 @@ sources for explicit unfinished-work markers. Naming questions live in
 
 ## Performance context
 
-The latest recorded practice window is 74.28 ms of bracketed work. The race
-window after the object assembly changes is 95.72 ms (`QUICKQUAL=1`); practice
-omits the other cars and must not stand in for a race. These are different
-workloads, not a paired comparison. See [measurement method](perf-method.md).
+The latest recorded windows, both `SIMLEGACY=1` (one step a frame), are practice
+74.09 ms and race 94.99 ms (`QUICKQUAL=1`), after the shape-scaling assembly. The
+shipping build's 12.5 Hz step gives 74.44 ms a painted frame in practice and 98.29 ms
+in a race. Practice omits the other cars and must not stand in for a race. These are
+different workloads, not a paired comparison. See [measurement method](perf-method.md).
 
 The default renderer uses dual playfields, tyre sprites, needle sprites and low
 row ownership. The old per-frame BBC framebuffer conversion is now a cold-start
