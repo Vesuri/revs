@@ -30,8 +30,9 @@ Before implementation (the colour model itself is exact on all six circuits:
 
 - Give the crash fence fill (`paint_fence_backdrop_core`, the phase-23 producer) a
   fallback flag so its sweep takes today's scan arm.
-- Specify how signs, cars, markers and starting lights enter the object layer
-  without paying for another full source scan.
+- Measure the object footprints: `plot_object_core` records a conservative line and cell
+  range per object, and D runs today's run-length from its left cell to the first non-zero
+  byte past its right cell ([§13e](span-render-plan.md), exact on six circuits).
 - Preserve same-cell composition, composite cockpit boundaries, warm-up fallback,
   the surface probe and expansion-circuit behaviour.
 

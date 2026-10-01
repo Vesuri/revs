@@ -2806,10 +2806,38 @@ cell 0 as absent (~40k a circuit). Cost to D: a second probe per on-line edge. P
    bytes, so it covers 0.5-1.4% of sweeps (inferred). ⇒ D takes today's scan arm on a sweep
    whose source the fence fill wrote (a flag the fill sets and the sweep clears); there is nothing
    to model.
-2. **The object layer** — ~12-20 bytes a sweep (sign, cars, markers, lights) that no edge record
-   describes. Without the full scan they need finding another way: a note in each object
-   plotter's own store loop (the 67-cycle placement `SRCEVENTS` measured) or a scan bounded by the
-   object's own footprint.
+2. ✅ **The object layer's rule is SETTLED (2026-10-01): an object byte's colour carries to the
+   next non-zero source byte from ANY writer**, i.e. the painter's own run-length rule and nothing
+   new. Host census (`tmp/census/model_census_v3.patch`, which also skips the fence sweeps): every
+   visible cell, objects' and their right-hand neighbours' included, compared with the road model
+   above plus a per-line object carry that a non-road byte sets and the next non-zero road byte
+   clears.
+
+   | trajectory (`FIXED_RNG=1 HOLD_THROTTLE=1`) | cells | under an object carry | carry cleared at every edge | at any non-zero road byte |
+   |---|---:|---:|---:|---:|
+   | `STRAIGHT_TO_RACE=1`, 2996 sweeps: Silverstone / Brands / Donington | 6.17M / 6.12M / 6.16M | 89.7k / 36.5k / 157.7k | 8085 / 360 / 5188 | **0 / 0 / 0** |
+   | the same: Oulton / Snetterton / Nürburgring | 6.15M / 6.11M / 6.14M | 150.9k / 10.0k / 87.1k | 5500 / 722 / 1253 | **0 / 0 / 0** |
+   | `RACEPROPER=1`, race sweeps: Silverstone / Brands / Oulton | 18.1M / 17.9M / 17.9M | 316.9k / 211.7k / 815.1k | 34 212 / 14 583 / 70 336 | **0 / 0 / 0** |
+
+   An intermediate arm (cleared only by a road byte on an edge or after-edge cell) failed 7570 on
+   Silverstone: the line renderer's "restating" road bytes away from any edge are invisible on a
+   clear line but end an object's carry. The writers are the sign (phase 15,
+   `draw_track_object_core`), the corner markers (16, `draw_corner_markers`), the other cars (17,
+   `move_and_draw_cars`) — all three through `plot_object_core` — the starting lights (phase 2,
+   `starting_lights_paint`) and the race bracket's `copy_dash_data` (phase 32). The census's
+   "phase 0" bytes are not a writer: road stores that rewrote an unchanged byte keep phase 0, plus a
+   one-off ~1820 bytes at start-up (2.95 a sweep over 616 sweeps, 0.61 over 2996), which the
+   warm-up fallback covers.
+
+   ⇒ **The design:** each writer records a conservative footprint (a line range and a cell range;
+   for `plot_object_core`, from the object's position and its scaled vertices, once per object;
+   the lights and the copy have fixed ones). On a footprint line D paints its intervals up to the
+   footprint, runs today's run-length over the source bytes from the footprint's left cell to the
+   first non-zero byte past its right cell, and resumes the intervals there. That is exact by the
+   table: inside, it is the current pipeline; left of an object the road model holds; past the
+   terminating byte the carry is the model's. The cells under an object carry are ~30-95 a sweep
+   (Silverstone practice 30, race 36; Oulton practice 50, race 95), so the run-length reads are
+   small beside the full scan's 3200 bytes; a conservative footprint adds to that (not measured).
 
 ⇒ **D is feasible on the data.** What it would build: per line, the ≤5 interval colours from the
 classifier's rules once, one gather per on-line edge, the object layer's events merged in, and the
