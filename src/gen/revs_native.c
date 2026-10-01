@@ -14760,6 +14760,96 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
     }
 }
 
+#if defined(REVS_PLATFORM_AMIGA) && defined(REVS_SHAPE_ASM)
+/* ⭐⭐ THE AMIGA SCALES IN 68000 ASSEMBLY — src/platform/amiga/shape_m68k.s, whose banner has the
+   shape.  scale_shape_vectors_core stays the reference: the host runs it, `make SHAPEASM=0` is the
+   control, and `make SHAPECHECK=1` runs both on the same 64 KB every call. */
+int scale_shape_m68k(void);
+#ifndef REVS_SHAPE_CHECK
+#define scale_shape_vectors_run() scale_shape_m68k()
+#else
+volatile unsigned long g_shapeChecks       = 0;
+volatile unsigned long g_shapeMismatch     = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_shapeMismatchAt   = 0;   /* first differing address; $10000 the return value */
+volatile unsigned long g_shapeFuzzCases    = 0;
+volatile unsigned long g_shapeFuzzMismatch = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned long g_shapeFuzzAbandon  = 0;   /* fuzz cases that abandoned — must be non-zero */
+static uint8_t s_shapeBefore[65536] __attribute__((aligned(4))), s_shapeAfterC[65536] __attribute__((aligned(4)));
+static uint8_t s_shapeFuzzSave[65536] __attribute__((aligned(4)));
+
+/* C then asm, from the same 64 KB. */
+static int shape_compare(volatile unsigned long* bad)
+{
+    int rC, rA;
+    unsigned i;
+    memcpy(s_shapeBefore, (const void*)mem, sizeof s_shapeBefore);
+    rC = scale_shape_vectors_core();
+    memcpy(s_shapeAfterC, (const void*)mem, sizeof s_shapeAfterC);
+    memcpy((void*)mem, s_shapeBefore, sizeof s_shapeBefore);
+    rA = scale_shape_m68k();
+    if (rA != rC) {
+        if (!*bad) g_shapeMismatchAt = 0x10000u;
+        (*bad)++;
+    } else {
+        /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        const uint32_t* a = (const uint32_t*)(const void*)mem;
+        const uint32_t* c = (const uint32_t*)(const void*)s_shapeAfterC;
+        for (i = 0; i < 65536u / 4u; i++)
+            if (a[i] != c[i]) {
+                unsigned j = i * 4u;
+                while (mem[j] == s_shapeAfterC[j]) j++;
+                if (!*bad) g_shapeMismatchAt = j;
+                (*bad)++;
+                break;
+            }
+    }
+    return rA;
+}
+
+/* ⭐ THE FUZZER, once, before the first real call.  The game holds the shift at 0 or 2 and its
+   vector bytes at $03..$07 or two-term encodings, so each case randomises every input the routine
+   reads — the width, a shift up to 15, both cursors, the vector bytes (one-term indices past the
+   table's eight entries included) and the scale table's two static entries.  mem[] is restored. */
+static void shape_fuzz(void)
+{
+    uint32_t x = 0x9E3779B9u;
+    unsigned n, i;
+#define SHAPE_RND() (x ^= x << 13, x ^= x >> 17, x ^= x << 5, (unsigned)x)
+    memcpy(s_shapeFuzzSave, (const void*)mem, sizeof s_shapeFuzzSave);
+    for (n = 0; n < 400u; n++) {    /* ~0.5 s of target time a case: three 64 KB copies */
+        const unsigned k = SHAPE_RND();
+        for (i = 0; i < 0x100u; i++) {
+            const unsigned v = SHAPE_RND();
+            mem[MEM_shape_vector_tbl + i] = (uint8_t)(((v & 3u) == 0u) ? (v >> 8)
+                                            : ((v & 3u) == 1u) ? (0x80u | ((v >> 8) & 0x7Fu))
+                                            : (3u + ((v >> 8) & 7u)));
+        }
+        mem[MEM_shape_scale_tbl + 0] = (uint8_t)(k >> 24);
+        mem[MEM_shape_scale_tbl + 1] = (uint8_t)(k >> 16);
+        proj_width       = (uint8_t)k;
+        proj_width_shift = (uint8_t)(((k >> 8) & 1u) ? ((k >> 9) & 15u) : (((k >> 9) & 1u) ? 2u : 0u));
+        mem[OBJ_VECTOR_CURSOR] = (uint8_t)(k >> 12);
+        mem[OBJ_VECTOR_END]    = (uint8_t)((k & 0x8000u) ? SHAPE_RND()
+                                           : (uint8_t)(mem[OBJ_VECTOR_CURSOR] + 1u + ((k >> 20) & 15u)));
+        if (shape_compare(&g_shapeFuzzMismatch)) g_shapeFuzzAbandon++;
+        g_shapeFuzzCases++;
+        memcpy((void*)mem, s_shapeFuzzSave, sizeof s_shapeFuzzSave);
+    }
+#undef SHAPE_RND
+}
+
+static int scale_shape_vectors_run(void)
+{
+    static int fuzzed;
+    if (!fuzzed) { fuzzed = 1; shape_fuzz(); }
+    g_shapeChecks++;
+    return shape_compare(&g_shapeMismatch);
+}
+#endif
+#else
+#define scale_shape_vectors_run() scale_shape_vectors_core()
+#endif
+
 /* $1FB4  plot_object — THE OBJECT PLOTTER  (twin #93)
    Entered with the object's SLOT in X and its four-cell argument block already set by
    draw_track_object: plot_x, plot_line, proj_width and plot_shape. */
@@ -14831,9 +14921,9 @@ void plot_object_core(uint8_t slot)
            ⚠ The extra result is discarded deliberately: on the abandon path both calls abandon
            identically, so taking the FIRST one's exit would be correct too but would make the arm
            look like it changed control flow. */
-        (void)scale_shape_vectors_core();
+        (void)scale_shape_vectors_run();
 #endif
-        if (scale_shape_vectors_core()) return;     /* a vertex did not fit: abandon */
+        if (scale_shape_vectors_run()) return;      /* a vertex did not fit: abandon */
         plot_shape_edges_core();
 
         /* $201E-$2028 — shape 9 loops to draw the unclamped index too, unless track_direction

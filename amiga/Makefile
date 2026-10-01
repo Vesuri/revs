@@ -931,6 +931,22 @@ endif
 endif
 OBJASM_SABOTAGE ?= 0
 
+# ⭐⭐ `SHAPEASM=1` (the DEFAULT) — scale_shape_vectors in 68000 assembly (src/platform/amiga/shape_m68k.s),
+# for every object.  `make SHAPEASM=0` is the C control.  ⭐⭐ `make SHAPECHECK=1` runs the C and the
+# asm on the same 64 KB every call, after a fuzzer (amiga/shape_check.gdb) — ⚠ a correctness arm, its
+# phase rows are void.  `SHAPEASM_SABOTAGE=N` assembles defect N for it to catch.
+SHAPEASM ?= 1
+ifeq ($(SHAPEASM),1)
+EXTRA_DEFINES += -DREVS_SHAPE_ASM
+ASM_SRCS += $(AMIGA_SRC)/shape_m68k.s
+ifeq ($(SHAPECHECK),1)
+EXTRA_DEFINES += -DREVS_SHAPE_CHECK
+PROBE_SYMS_SHAPEASM = g_shapeChecks g_shapeMismatch g_shapeMismatchAt g_shapeFuzzCases \
+                      g_shapeFuzzMismatch g_shapeFuzzAbandon
+endif
+endif
+SHAPEASM_SABOTAGE ?= 0
+
 # ⭐⭐ `make EDGEFILL=1` — `fill_dash_edge_columns`' pass A specialised on its own
 # precondition (src/gen/revs_native.c §pass A, specialised).  Its 136 cells a frame cost
 # ~490 cycles each; the fill is load-bearing so it cannot be deleted, only made cheap.
@@ -1715,7 +1731,7 @@ PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TTCHECK) $(PROBE_SYMS_TTTIME)
-PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM) $(PROBE_SYMS_NDLASM) $(PROBE_SYMS_OBJASM)
+PROBE_SYMS += $(PROBE_SYMS_DECODESKIP) $(PROBE_SYMS_DECODEGAP) $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_LOWOWN) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV) $(PROBE_SYMS_EDGEASM) $(PROBE_SYMS_NDLASM) $(PROBE_SYMS_OBJASM) $(PROBE_SYMS_SHAPEASM)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_TYRE) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 PROBE_SYMS += $(PROBE_SYMS_NEEDLE) $(PROBE_SYMS_NEEDLECHK) $(PROBE_SYMS_NEEDLEVFY)
 PROBE_SYMS += $(PROBE_SYMS_DUALPF) $(PROBE_SYMS_DUALPFCHK)
@@ -1918,6 +1934,10 @@ obj/edge_m68k.o : $(AMIGA_SRC)/edge_m68k.s
 obj/object_m68k.o : $(AMIGA_SRC)/object_m68k.s
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(OBJASM_SABOTAGE) -o $@ "$<"
+
+obj/shape_m68k.o : $(AMIGA_SRC)/shape_m68k.s
+	$(info ASM  $<)
+	@$(AS) $(ASFLAGS) --defsym SABOTAGE=$(SHAPEASM_SABOTAGE) -o $@ "$<"
 
 obj/needle_m68k.o : $(AMIGA_SRC)/needle_m68k.s
 	$(info ASM  $<)

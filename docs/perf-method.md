@@ -2058,6 +2058,15 @@ Profiling the never-examined small rows reached phases 14 + 15, the road sign: `
 1.918 ms and `draw_track_object(slot $17)` 3.231 ms. Two results, and the second is worth more than
 the first.
 
+✅ **2026-10-01: `scale_shape_vectors` IN 68000 ASM** (`src/platform/amiga/shape_m68k.s`, `make SHAPEASM=0`
+the control). Race (`RACEPROPER=1 PROBERACE=1 QUICKQUAL=1 CARSPLIT=1`, 3000 fields): ph43 9.98 →
+9.28, frame 95.42 → 94.99 (the arms painted 576 and 571 frames, so the rows outside 43 are
+trajectory). Practice: ph15 2.06 → 1.92, frame 74.28 → 74.09. Gate: `make SHAPECHECK=1` +
+`amiga/shape_check.gdb`, all 64 KB a call: 706 game calls and 400 fuzz cases (98 abandoning) at 0
+mismatches; sabotages 1 (the rounding bit) and 2 (the negation one entry off) caught by both.
+`plot_shape_edges` stays C: its ~215 instructions an object are mostly stores of cells
+`pvs_line_m68k` reads.
+
 #### The sign itself is at its local optimum — ~1.3 ms available for a large rewrite
 
 Host census (295 phase-15 calls, counters only, no emulator run): `plot_object_core` **0.89** calls

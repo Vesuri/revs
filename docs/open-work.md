@@ -47,7 +47,8 @@ exercise `LOWFULLCHECK`, and compare all affected circuits with `viewdiff`.
 - **Model-state output marshal:** the recorded remaining output publish costs about
   0.16 ms. Audit the `advance_player_section_core` reader at `$62E2` before moving it
   to the native array. The needle-related input marshal remains load-bearing.
-- **Other cars:** the line plotter and gap walk already use assembly. Further work
+- **Other cars:** the line plotter, gap walk and `scale_shape_vectors` already use
+  assembly (the last: race ph43 9.98 → 9.28, practice ph15 2.06 → 1.92). Further work
   ranks below the renderer candidates unless it reduces calls per object. Ordinary
   per-car AI, staging and collision work are not unused machinery.
 - **Old FPS-only measurements:** re-price the run-entry specialisation, wide-value
