@@ -44,9 +44,12 @@ exercise `LOWFULLCHECK`, and compare all affected circuits with `viewdiff`.
 - **Renderer driver fold:** design A needs a deletion experiment demonstrating more
   than roughly 1 ms before implementation. Prior C driver tidying was a null.
   Preserve hook-written stop slots and row backgrounds.
-- **Model-state output marshal:** the recorded remaining output publish costs about
-  0.16 ms. Audit the `advance_player_section_core` reader at `$62E2` before moving it
-  to the native array. The needle-related input marshal remains load-bearing.
+- **Model-state output marshal:** recorded at about 0.16 ms. The publish runs once per
+  simulation step, so at the 68000's 12.5 Hz step (about 1.1 steps a painted frame) it is
+  likely smaller; re-measure before pricing it. Its last native reader is
+  `advance_player_section_core` at `$62E2`. Moving it is a representation change that
+  re-records the determinism baselines, so batch it with another such change. The
+  needle-related input marshal remains load-bearing.
 - **Other cars:** the line plotter, gap walk and `scale_shape_vectors` already use
   assembly (the last: race ph43 9.98 → 9.28, practice ph15 2.06 → 1.92). Further work
   ranks below the renderer candidates unless it reduces calls per object. Ordinary
