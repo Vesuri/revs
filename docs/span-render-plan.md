@@ -2848,6 +2848,19 @@ cell 0 as absent (~40k a circuit). Cost to D: a second probe per on-line edge. P
    cell count does not), so the failing state was not reproduced. D's in-process target check
    must cover the Brands race with cars in view before this is called exact.
 
+   ✅ **The production rectangle, checked the same way (`model_census_v5.patch`, `QPROD=1`).** A
+   wrapper around each `plot_view_src_line_core` call widens the object's rectangle to the columns
+   from `PVS_PREV_COL` to `EDGE_COLUMN` **plus one** (the gap walk bumps `EDGE_COLUMN` and writes
+   that column), a column of `$80` or more clamped to 0 (an object off the left edge; the gap
+   walk then writes cell 0), past 39 to 39, and the lines from `span_top_line` to
+   `span_line_cursor`. Result: **0 mismatches and no object byte outside its rectangle** on the
+   Silverstone / Brands / Oulton races (8.6-8.7k sweeps, ~18M cells each) and on Silverstone /
+   Donington / Nürburgring practice; Brands, Oulton and Snetterton practice also passed before the
+   left-edge clamp, which only widens a rectangle. Both fixes came from the check: without the +1
+   it missed 15 bytes a call at the next column, and without the clamp it missed cell 0. The
+   rectangles are ~5× the ideal ones: ~90-250 cells a sweep inside them plus 10-65 past their
+   right edges.
+
    Two traps the check itself hit: a footprint's left cell can lie under the dashboard, so the
    run has to start at the first visible cell; and the painter's phase zeroes what it consumes,
    so a diff that counts any change makes a whole-screen footprint (count only bytes that become

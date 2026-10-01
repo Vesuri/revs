@@ -31,10 +31,14 @@ Before implementation (the colour model itself is exact on all six circuits:
 
 - Give the crash fence fill (`paint_fence_backdrop_core`, the phase-23 producer) a
   fallback flag so its sweep takes today's scan arm.
-- Objects enter as footprints: one rectangle per `plot_object_core` call, plus the
-  starting lights and `copy_dash_data`, with today's run-length on footprint lines
-  ([§13e](span-render-plan.md): 0 mismatches over nine trajectories). One Brands race run
-  in eleven failed (733) and did not reproduce; the target check must cover it.
+- Objects enter as footprints: one rectangle per `plot_object_core` call, widened by a
+  wrapper around each `plot_view_src_line_core` call (columns `PVS_PREV_COL`..`EDGE_COLUMN`
+  + 1, negative columns to 0), plus a fixed one for the starting lights; a `copy_dash_data`
+  stow falls back to the scan. Exact on the host ([§13e](span-render-plan.md)). One Brands
+  race run in eleven failed with ideal rectangles and did not reproduce; the target check
+  must cover a Brands race with cars in view.
+- Stage 1 (lines 44..79, no dashboard): the scan assembles with 11 groups (lines 0..43),
+  D writes lines 44..79's event lists and clears their sources.
 - Preserve same-cell composition, composite cockpit boundaries, warm-up fallback,
   the surface probe and expansion-circuit behaviour.
 
