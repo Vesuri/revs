@@ -17,7 +17,7 @@ Nürburgring.
   (`kick34005.A500`) with its matching RTB file in `Devs:Kickstarts`.
 - A supported BBC Micro disc image: *Revs Plus Revs 4 Tracks* or *Revs+ [hack]*.
 
-The release is `Revs-0.90.lha`. Open its **Revs Install** drawer, run **Install**
+The release is `Revs-0.91.lha`. Open its **Revs Install** drawer, run **Install**
 and select your extracted `.ssd` disc image. Either supported image provides
 all six circuits. To run without WHDLoad, place the image beside the executable
 as `revs.ssd` and start the game from Workbench or a Shell.

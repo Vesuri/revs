@@ -15,7 +15,7 @@ sizes. The user's decisions behind all of it are `docs/phases.md` §Phase 7.
 
 ## What ships and what does not
 
-The archive (0.90: 174 043 bytes; the DIST exe 315 412 — no symbol hunk, `NATIVE_OPT` without
+The archive (0.91: 173 945 bytes; the DIST exe 314 916 — no symbol hunk, `NATIVE_OPT` without
 `-funroll-loops`, both in `amiga/Makefile`) holds the exe, the slave, the Install script, the
 ReadMe and four icons. **No original engine byte**: the exe reads REVS2 off the player's `.ssd` at startup (`src/platform/engine_image.h`,
 proved against `disasm/revs_runtime.bin` by `make engine-image`), and `package_whdload.py` scans every
@@ -66,7 +66,7 @@ RoF's the WHDLoad install needs a **2 MB** machine; the plain exe does not.
 | Mode | CPU | Result |
 |---|---|---|
 | `run` — the DIST exe, WHDLoad `TIMEOUT` then core dump | 68010 | PASS: 65 of 65 engine code blocks verbatim in the dump — REVS2 read off `data/revs.ssd` and rebuilt on the 1.3 kickemu |
-| `run` and `nodisc` — the exe and slave EXTRACTED FROM `Revs-0.90.lha` | 68010 / 68000 | PASS, same |
+| `run` and `nodisc` — the exe and slave EXTRACTED FROM `Revs-0.91.lha` (2026-10-02) | 68010 / 68000 | PASS, same |
 | `quit` — a `QUITTEST=1500` exe (CTRL-Q held from field 1500) | 68000 | PASS: "Return OK." |
 | `nodisc` — no `revs.ssd` | 68000 | PASS: WHDLoad shows the slave's "Revs could not start…" |
 

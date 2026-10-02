@@ -1,6 +1,6 @@
 # Project status and subsystem gates
 
-The initial porting phases are complete and version 0.90 is packaged. This is a
+The initial porting phases are complete and version 0.91 is packaged. This is a
 status map, not a development log or a second task queue. Current candidates are
 in [open work](open-work.md); detailed milestones remain in Git history.
 
@@ -53,7 +53,7 @@ See [native maintenance](native-maintenance.md) and [rendering design](span-rend
 
 ## Phase 7 Packaging
 
-Version 0.90 has a WHDLoad slave, installer and release archive. The executable
+Version 0.91 has a WHDLoad slave, installer and release archive. The executable
 loads REVS2 from the user's disc rather than embedding the original engine.
 The plain executable targets 1 MB; the WHDLoad installation needs 2 MB.
 The slave requests 400 KB chip and 512 KB expansion memory in addition to its

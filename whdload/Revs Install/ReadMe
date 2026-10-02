@@ -76,6 +76,9 @@
 
  History:
  --------
+ version 0.91 (02.10.2026):
+ - faster on 68000 Amigas, most noticeably when racing
+
  version 0.90 (30.09.2026):
  - initial release
 
