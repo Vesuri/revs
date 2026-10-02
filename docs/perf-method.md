@@ -2068,6 +2068,22 @@ mismatches; sabotages 1 (the rounding bit) and 2 (the negation one entry off) ca
 `plot_shape_edges` stays C: its ~215 instructions an object are mostly stores of cells
 `pvs_line_m68k` reads.
 
+⭐⭐ **WHERE A RACE OBJECT'S TIME GOES NOW — PER-CALL SETUP, NOT CELLS** (2026-10-02,
+`amiga/race_steptrace.gdb` on `RACEPROPER=1 QUICKQUAL=1 FIXED_RNG=1 HOLD_THROTTLE=1 SIMLEGACY=1`,
+three phase-17 calls 150 race frames off the grid, 26.9k instructions each). Each of those frames
+enters `draw_track_object_core` 22 times and plots 9 objects (`plot_object_core`,
+`scale_shape_m68k` and `plot_shape_edges_core` 9 each; `fill_object_gap_core` 8.3). The drawing
+side is ~16k instructions a frame, and `pvs_line_m68k` is 10.4k of it over **68 calls a frame
+(~7.6 an object, ~3 an edge)**, ~150 instructions a call. Grouped by label, **~69% of its
+instructions are per-call setup**: the entry (4587 over three frames), `pl_endpts` 3876, `pl_pix`
+2637, the gap-walk set-up at `pl_rdone` 2590, `pl_onview` 2040, and the mode arms. The per-cell
+loops (`pl_rloop`/`pl_merge`/`pl_classify`, `pl_gloop`/`pl_gempty`) are ~9.6k. ⇒ The lever
+"fewer calls per object" names is concrete: **a fused per-edge entry** that derives an edge's
+endpoints, pixel masks and block pointer once for its open (mode 1) and close (mode 2 / the
+closing arm's two mode-0 calls), instead of once per call. Ceiling: the setup itself, ~7k
+instructions a frame (≈1 ms at ~10 cycles an instruction); expect about half. Gate it like
+`pvs_line_m68k` (`make OBJCHECK=1`), on a race and a patched circuit. Not built.
+
 #### The sign itself is at its local optimum — ~1.3 ms available for a large rewrite
 
 Host census (295 phase-15 calls, counters only, no emulator run): `plot_object_core` **0.89** calls

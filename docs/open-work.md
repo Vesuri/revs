@@ -27,8 +27,10 @@ The simulation is decoupled from painting by default.
   re-records the determinism baselines, so batch it with another such change. The
   needle-related input marshal remains load-bearing.
 - **Other cars:** the line plotter, gap walk and `scale_shape_vectors` already use
-  assembly (the last: race ph43 9.98 → 9.28, practice ph15 2.06 → 1.92). Further work
-  needs to reduce calls per object. Ordinary
+  assembly (the last: race ph43 9.98 → 9.28, practice ph15 2.06 → 1.92). A race trace puts
+  ~69% of `pvs_line_m68k`'s instructions in per-call setup over ~3 calls an edge; a fused
+  per-edge entry is the candidate, ceiling ~1 ms ([perf-method](perf-method.md), the object
+  plotter). Ordinary
   per-car AI, staging and collision work are not unused machinery.
 - **Old FPS-only measurements:** re-price the run-entry specialisation, wide-value
   campaign, span call/search flattening and direct plotter only if a matched
