@@ -50,9 +50,9 @@ Every routine in the generated corpus has a name (no `FUN_xxxx` is left). Remain
 work is cell-level: fact-shaped scratch names and [PROVISIONAL] rows in `disasm/symbols.csv`.
 Verify a candidate against today's `symbols.csv` before adding it to `rename.md`.
 
-A wholesale condensation of `src/gen/revs_native.c` comments remains deferred.
-Keep local comments accurate when touching a routine, and preserve reader audits
-and hardware contracts.
+Keep comments next to the code they describe and accurate when touching a routine;
+preserve reader audits and hardware contracts, and put measurement history in the
+subsystem document rather than the source.
 
 ## Measured dead ends
 
