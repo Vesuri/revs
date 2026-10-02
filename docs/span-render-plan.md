@@ -2887,9 +2887,60 @@ D still feeds the painter its events and clears the bytes, so **−6.2 ms is the
 scan finds and records lines 44..79 but a second pass is skipped) is not possible with one scan,
 so price D's stage 1 by building it.
 
-⇒ **D is feasible on the data.** What it would build: per line, the ≤5 interval colours from the
+⇒ ~~**D is feasible on the data.**~~ ⛔ **Superseded by §13f: built, exact, and a loss.** What it would build: per line, the ≤5 interval colours from the
 classifier's rules once, one gather per on-line edge, the object layer's events merged in, and the
 seam's seeds read off the same intervals (the whole fill goes on the plane arm; its tables stay for
 the surface probe and the `mem[]` arm). It changes no `mem[]` byte the host checks, since it is
 the Amiga plane arm only; its gates are an in-process oracle of the painted row against today's
 pipeline (this census's model, on the target), `LOWFULLCHECK`, and `viewdiff` per circuit.
+
+### 13f. ⛔ D STAGE 1 BUILT ON THE TARGET — EXACT, AND +18 ms: CLOSED (2026-10-02)
+
+`make ANALYTIC=1` (lines 44..79 from the edge record, the scan at `SCANGROUPS=11`) with its gate
+`make ANALYTICCHECK=1` (D, then today's scan on the same sources, every cell's colour and the
+cleared blocks compared). The implementation is kept out of the tree as an untracked patch
+(`tmp/analytic/analytic_stage1.patch`, with `analytic_check.gdb`).
+
+⚠⚠ **The host census was exact only on the trajectories it sampled.** It ran the legacy
+simulation; the shipping build's decoupled steps reach line geometries no legacy trajectory
+does, and the target gate found four the model got wrong. Each was reproduced or bounded on the
+host with `REVS_SIM_STEP=800 REVS_SIM_FIELDS=4,5,4` and closed:
+
+| failure (target, decoupled) | why | rule |
+|---|---|---|
+| lines just under `line_attr_1_limit` (Silverstone 47/48, Oulton 46) | edge 2's pass draws points nearer than the split with the fixed near style (`shared_temp_8c = $1C`) while the classifier reads `line_attr_1`; host Oulton 366-600 cells, Snetterton 32 | every line below `line_attr_1_limit` takes today's run-length whole (~9 of 36 a sweep) |
+| edge 2 before edge 3 (Silverstone 55) | the edge-2 rule of §13e is wrong past both limits | that line takes run-length whole |
+| a sky line keeps its own background (Nürburgring 75: `$FF`, sky `$0F`) | the painter enters with `view_line_surface`, not the classifier's sky | above the horizon, colour = the line's background |
+| a sky line with an edge on it (Nürburgring 70) | the edge's byte carries to the end of the line | that line takes run-length whole |
+
+⚠ Dropping the horizon test outright was tried and gave 338 536 mismatches: a sky line's edges can
+all be 0.
+
+**Gate, final rules:** 0 mismatches on all six circuits (6000 fields each, 9 900-15 300 lines) and
+on the Brands race with cars (29 916 lines, `session_is_race = $80`, 6 647 footprint lines). Each
+rule's sabotage is caught except the after-edge probe's (1 mismatch, Brands) and the sky rule's
+(the trajectory never reached its case twice).
+
+**Price** (`PROBEFIELDS=3000 SIMLEGACY=1`, phase 0 222 / phase 63 91 fields on every arm):
+
+| arm | ph24 | frame |
+|---|---:|---:|
+| control (full scan) | 14.81 | 74.09 |
+| D | 31.61 | 93.04 |
+| D, producer carved (lists empty, clear kept; picture wrong) | 11.32 | 70.90 |
+| D, clear carved (trajectory wrong) | 35.00 | 96.60 |
+| `ANALYTIC_SPLIT`: the producer / the clear in own phases | 18.36 / 1.51 | |
+
+A single-step trace says why (`steptrace.gdb`, one call): **~15 400 instructions a sweep**, half
+of them the byte-wise run-length loops (~11 instructions a cell at a `$80` stride), the rest ~200
+a line of interval model — against the ~60 a line §13d assumed. The scan tests four lines with
+one longword load; nothing that reads a cell's lines one byte at a time comes near it.
+
+⇒ ⛔ **CLOSED, and assembly does not reopen it.** The producer-carved arm bounds any D: with a
+FREE producer phase 24 is 11.32 against 14.81, i.e. ≤ 3.5 ms before the painter's own work on
+those 36 lines — and the decoupled rules alone put ~9 lines a sweep on byte-wise run-length at
+≥ ~30 cycles a cell even in tight 68000 code (~1.5 ms), before the per-line model. Stage 2 is
+worse: the low block lies almost wholly below `line_attr_1_limit`, so nearly every low line would
+fall back to run-length. Do not reopen without a producer that knows its interval colour without
+reading the bytes AND a clear cheaper than 1.5 ms.
+

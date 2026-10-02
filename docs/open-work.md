@@ -18,33 +18,6 @@ row ownership. The old per-frame BBC framebuffer conversion is now a cold-start
 path. Plans to remove that conversion or add the existing sprites are complete.
 The simulation is decoupled from painting by default.
 
-## Analytic line renderer
-
-The remaining architectural candidate is design D in
-[the rendering design](span-render-plan.md), section 13. Its estimated ceiling is
-about 5 ms, less ~1.1 ms to clear the source bytes the scan zeroes today (≈ −4 ms
-net); these are estimates, not an implemented saving. The previous 34 ms
-source-buffer estimate and old 48 ms staged roadmap are superseded.
-
-Before implementation (the colour model itself is exact on all six circuits:
-[§13e](span-render-plan.md), including the after-edge probe and the edge-2 rule):
-
-- Give the crash fence fill (`paint_fence_backdrop_core`, the phase-23 producer) a
-  fallback flag so its sweep takes today's scan arm.
-- Objects enter as footprints: one rectangle per `plot_object_core` call, widened by a
-  wrapper around each `plot_view_src_line_core` call (columns `PVS_PREV_COL`..`EDGE_COLUMN`
-  + 1, negative columns to 0), plus a fixed one for the starting lights; a `copy_dash_data`
-  stow falls back to the scan. Exact on the host ([§13e](span-render-plan.md)). One Brands
-  race run in eleven failed with ideal rectangles and did not reproduce; the target check
-  must cover a Brands race with cars in view.
-- Stage 1 (lines 44..79, no dashboard): the scan assembles with 11 groups (lines 0..43),
-  D writes lines 44..79's event lists and clears their sources.
-- Preserve same-cell composition, composite cockpit boundaries, warm-up fallback,
-  the surface probe and expansion-circuit behaviour.
-
-Gate the painted rows against the current pipeline in-process on the Amiga,
-exercise `LOWFULLCHECK`, and compare all affected circuits with `viewdiff`.
-
 ## Smaller performance candidates
 
 - **Renderer driver fold:** design A needs a deletion experiment demonstrating more
@@ -58,7 +31,7 @@ exercise `LOWFULLCHECK`, and compare all affected circuits with `viewdiff`.
   needle-related input marshal remains load-bearing.
 - **Other cars:** the line plotter, gap walk and `scale_shape_vectors` already use
   assembly (the last: race ph43 9.98 → 9.28, practice ph15 2.06 → 1.92). Further work
-  ranks below the renderer candidates unless it reduces calls per object. Ordinary
+  needs to reduce calls per object. Ordinary
   per-car AI, staging and collision work are not unused machinery.
 - **Old FPS-only measurements:** re-price the run-entry specialisation, wide-value
   campaign, span call/search flattening and direct plotter only if a matched
@@ -99,6 +72,7 @@ Do not repeat these without a changed premise. Detailed measurements remain in
 | Dashboard rectangles | +8.12 ms; wholesale decode rates do not price scattered rectangles |
 | Per-byte dashboard delta painter | Delivery overhead cancelled the saved decode |
 | Dropping the edge source-gap fill | Incorrect road pixels on all five original circuits |
+| Analytic line renderer (design D), stage 1 | Built exact (six circuits and a Brands race), phase 24 14.81 → 31.61 ms; a free producer bounds it at ≤ 3.5 ms and the decoupled steps force byte-wise run-length on ~9 lines a sweep ([§13f](span-render-plan.md)) |
 | Skipping empty pass-B walks | No empty walks observed; added overhead |
 | Packed `SlotExit` or packed register ABI | Extra packing cost; struct returns were already optimised |
 | Cold hardware fallback moved to `noinline` | +0.73 ms; call barrier increased hot-loop memory traffic |
