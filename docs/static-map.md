@@ -856,8 +856,10 @@ value written during band n is band n+1's duration.
    222 call targets (19%) but **45% of all call sites** — the difference is the point: the pass
    worked down `--functions` by caller count, so the routines everything funnels through are named
    first.  13 symbols carry **[PROVISIONAL]** and say so.
-   Still unnamed: the interior of the 3D pipeline below `project_point`, the front end's prompt
-   chain, and the other cars' AI.  ⭐ **The physics is no longer on that list** — `apply_driving_model`
+   ✅ **No `FUN_xxxx` placeholder is left in the generated corpus** (2026-10-02: the last 28,
+   mostly second entries, shared tails and bare `RTS`es, are in `symbols.csv`'s block of that
+   date).  What remains is cells with fact-shaped names and [PROVISIONAL] rows, not routines
+   without names.  ⭐ **The physics is no longer on that list** — `apply_driving_model`
    and all fifteen of its sub-models have names as of 2026-08-17 (see §Three of those slots' DATA
    STRUCTURES), though what the fifteen state ELEMENTS mean physically is still open in
    `docs/rename.md`.  ⚠ This does **not**
@@ -1084,7 +1086,7 @@ value written during band n is band n+1's duration.
    Every cyclic set of segments is now emitted as ONE C function taking the 6502 entry
    address, with a `switch` prologue that `goto`s the right label.  Every transfer inside the
    region becomes a goto, so a loop is a loop.  Each absorbed name survives as a thin wrapper
-   (`void FUN_1de5(void) { region_1de5(0x1DE5); }`), so callers, `symbols.csv` names and the
+   (`void column_plain_fill(void) { region_1de5(0x1DE5); }`), so callers, `symbols.csv` names and the
    main-loop phase brackets are all unchanged, and segments in no cycle are untouched.
 
    `check_split_cycles()` now re-runs the analysis with each region collapsed to one node and

@@ -182,7 +182,7 @@ void region_1de5(uint16_t _entry) {
     }
 L_1de5: ...            /* every transfer inside the region is now a goto */
 }
-void FUN_1de5(void) { region_1de5(0x1DE5); }   /* each name survives as a thin wrapper */
+void column_plain_fill(void) { region_1de5(0x1DE5); }   /* each name survives as a thin wrapper */
 ```
 
 Three things to know:

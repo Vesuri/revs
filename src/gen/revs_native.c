@@ -12185,7 +12185,7 @@ Mul8AccumExit mul8_accum_core(void)
 
    NOTE: this is the faithful $0DD7 twin, kept as the validation oracle's counterpart and for
    any 6502-ABI caller.  apply_angle_term (its only real caller) no longer routes through it —
-   see apply_angle_term_body, which folds the same arithmetic into plain 16-bit C.  The three
+   see apply_angle_term_body_core, which folds the same arithmetic into plain 16-bit C.  The three
    cross products are plain 16-bit multiplies (revs_mulu16); D = 0 on every path that reaches the
    real caller (docs/static-map.md §Decimal mode), and the fixture pins it. */
 
@@ -12277,7 +12277,7 @@ void model_integrate_element_core(uint8_t slot)
    Its exit registers/flags are DEAD in the real program (its only callers are the driving-model
    rotations, whose own exit registers are overwritten the instant apply_driving_model returns to
    them), so the twin does not reconstruct them and every fixture below verifies the RESULT. */
-static void apply_angle_term_body(uint8_t angle, uint8_t source)
+static void apply_angle_term_body_core(uint8_t angle, uint8_t source)
 {
     /* $4876-$4888 — the two operands.  MUL_SIGN was seeded by the caller with the mode byte:
        bit 7 the starting sign, bit 6 the store/accumulate select. */
@@ -12315,7 +12315,7 @@ static void apply_angle_term_body(uint8_t angle, uint8_t source)
 static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)
 {
     mem[MODEL_TERM] = dest;                     /* $4874 */
-    apply_angle_term_body(angle, source);
+    apply_angle_term_body_core(angle, source);
 }
 
 /* ...and the same for apply_angle_term_core — see div16by8_core_oracle above. */
@@ -12328,7 +12328,7 @@ void apply_angle_term_core_oracle(uint8_t dest, uint8_t angle, uint8_t source)
 {
     uint8_t source = mem[MODEL_SRC_SLOT];       /* $486D LDY — a local; exit Y is dead here */
     mem[MUL_SIGN] = mode;                     /* $486F */
-    apply_angle_term_body(angle, source);       /* $4871 JMP $4876 */
+    apply_angle_term_body_core(angle, source);       /* $4871 JMP $4876 */
 }
 
 /* $0E50  kbd_test_key — IS THIS KEY DOWN?  (twin #57)
@@ -15587,7 +15587,7 @@ static void steer_apply_with_assist_core(void);
 /* Typed results for the text/screen-address cluster's cpu-free cores. */
 uint8_t vdu_char_emit_core(void);                  /* returns the block char left in A */
 void adc_read(void);   /* the 6502-ABI shim; the two driver callers below still enter it that way */
-void draw_gear_indicator(void);   /* likewise: read_pedals_and_gears enters it via the shim */
+void draw_gear_indicator(void);   /* likewise: read_pedals_and_gears_core enters it via the shim */
 
 /* $50FC  mode5_addr — THE SCREEN ADDRESS OF A CHARACTER CELL  (twins #113, #114)
    plot_ptr = char_row_addr[Y >> 3] + A x 2, and Y comes back as the scan line within that
@@ -16341,7 +16341,7 @@ static void steer_apply_with_assist_core(void)
    ⚠ $162D falls straight into the THROTTLE and GEAR halves of read_driving_controls, so both of
    these end by running that code — the listing's split at $1612 is an artefact of $1F95 and
    $1EEE jumping into the middle of one routine. */
-static void read_pedals_and_gears(void);
+static void read_pedals_and_gears_core(void);
 
 /* promoted for revs_native_abi.c */ void apply_steer_demand_core(uint8_t signByte)
 {
@@ -16365,7 +16365,7 @@ static void read_pedals_and_gears(void);
 /* promoted for revs_native_abi.c */ void clamp_and_store_steer_angle_core(uint8_t a)
 {
     /* $162D CMP #$91 — the lock stop.  Its carry used to be published into cpu: nothing on the
-       keyboard-and-no-input path through read_pedals_and_gears writes C again, so on the 6502 it
+       keyboard-and-no-input path through read_pedals_and_gears_core writes C again, so on the 6502 it
        leaks out through that routine's no_key exit and is the whole chain's exit C.
        ⚠ NO GAME CALLER READS IT.  The cluster has exactly one native entry — race_main_loop_core's
        read_driving_controls_frame() — and the very next thing the frame driver runs,
@@ -16375,7 +16375,7 @@ static void read_pedals_and_gears(void);
        for the reason stated there.  So the lock stop is a clamp, not a flag producer. */
     if (a >= 0x91u) a = 0x91u;
     car_angle_16[CAR_ANGLE_STEER] = (uint16_t)(((uint16_t)a << 8) | mem[STEER_SIGN]);
-    read_pedals_and_gears();                           /* $162D falls into the pedals/gears tail */
+    read_pedals_and_gears_core();                           /* $162D falls into the pedals/gears tail */
 }
 
 /* $163B-$16DB — the rest of read_driving_controls, reached only by falling out of the steering.
@@ -16423,7 +16423,7 @@ static int read_pedal_demand(uint8_t *mode, uint8_t *amount)
     return 0;
 }
 
-static void read_pedals_and_gears(void)
+static void read_pedals_and_gears_core(void)
 {
     uint8_t mode, amount, delta;
 
@@ -16577,7 +16577,7 @@ static void read_driving_controls_core(void)
     {
         uint8_t keys = mem[STEER_KEYS];                /* $15DF */
         if (keys == 0x00u) { steer_demand_from_slip_core(); return; }
-        if (keys == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
+        if (keys == 0x03u) { read_pedals_and_gears_core(); return; }   /* both keys: no steering */
         if (((keys ^ (uint8_t)car_angle_16[CAR_ANGLE_STEER]) & 0x01u) == 0x00u) {  /* $15E8 */
             steer_apply_with_assist_core(); return;
         }

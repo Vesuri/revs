@@ -97,8 +97,8 @@ MANUAL = os.path.join(ROOT, 'src/gen/revs_manual.c')
 # Reachability.  ⚠⚠ THE THIRD INSTRUMENT BUG: "not an oracle" is NOT the same as
 # "shipping".  `region_31d0` (paint_fence_backdrop's fence-fill body) reads plot_ptr
 # three times and was reported as a blocker for two passes — but its ONLY callers are
-# `FUN_3d68`, called from `paint_fence_backdrop__t6502`, and the uncalled entry wrapper
-# `FUN_31d0`.  The twin absorbs the loop, so no shipping path reaches it and nativizing
+# `fence_next_column`, called from `paint_fence_backdrop__t6502`, and the uncalled entry wrapper
+# `fence_fill_column`.  The twin absorbs the loop, so no shipping path reaches it and nativizing
 # it buys nothing (the reader-side twin of the "oracle-only" finding already recorded in
 # docs/wide-value-cleanup.md).
 #

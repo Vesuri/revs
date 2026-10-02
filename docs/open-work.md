@@ -46,9 +46,9 @@ Do not claim faster AUTORUN keyboard scaffolding as a shipping improvement.
 
 ## Naming and source presentation
 
-The static map still identifies naming work in the 3D pipeline, prompt chain and
-other-car AI. Verify each candidate against today's `disasm/symbols.csv` before
-adding it to `rename.md`; old inventories are not authoritative.
+Every routine in the generated corpus has a name (no `FUN_xxxx` is left). Remaining naming
+work is cell-level: fact-shaped scratch names and [PROVISIONAL] rows in `disasm/symbols.csv`.
+Verify a candidate against today's `symbols.csv` before adding it to `rename.md`.
 
 A wholesale condensation of `src/gen/revs_native.c` comments remains deferred.
 Keep local comments accurate when touching a routine, and preserve reader audits

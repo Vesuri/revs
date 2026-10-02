@@ -1139,7 +1139,7 @@ per span carried three values**, one of them a boolean.
 The audit, the seven addresses taken together:
 
 1. **The twins themselves** — yes, and that is the point: they are the only consumers.
-2. **`revs_gen.c`** — only inside `__t6502` oracles, plus `FUN_2f12`/`FUN_2f19`, whose only callers
+2. **`revs_gen.c`** — only inside `__t6502` oracles, plus `span_tail_y_step`/`span_stamp_line_surface`, whose only callers
    are two of those oracles.  Oracle-only *by transitive closure*, which is the form trap 1 above
    demands.
 3. **A track hook re-entering the transliteration** — none.  **No hook targets the `$2F` page at

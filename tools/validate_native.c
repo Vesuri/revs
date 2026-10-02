@@ -5626,7 +5626,7 @@ void platform_test_key_schedule(const unsigned char* codes, int n);  /* mode-4 c
 
    The reader-nat target is math_hi ($75): `count` arrives in X, is stored there, and is read
    back twice (the scan's start index, the highlight loop's ceiling) ACROSS the child calls
-   FUN_3261 and text_script_interp — so the twin reads the cell directly, never caching, the
+   abort_if_quit_keys and text_script_interp — so the twin reads the cell directly, never caching, the
    #159-CRUX-safe form.  This is the LAST shipping reader in the wide-value cleanup.
 
    THE MULTI-FRAME POLL, and how a static keyboard cannot drive it.  menu_wait_key renders and
@@ -5639,9 +5639,9 @@ void platform_test_key_schedule(const unsigned char* codes, int n);  /* mode-4 c
    models see the identical phase sequence.
 
    Two hazards pinned by construction:
-     * FUN_3261 (called every iteration) does TXS + re-enter front_end_menus when mem[$1C] bit 7 is
+     * abort_if_quit_keys (called every iteration) does TXS + re-enter front_end_menus when mem[$1C] bit 7 is
        CLEAR (the SHIFT+f0 restart) — an unbounded re-entry the fixture must not trigger, so $1C
-       bit 7 is pinned SET (FUN_327d, the no-op arm).  SHIFT ($FF) and f0 ($86) must also never be
+       bit 7 is pinned SET (abort_tail_rts, the no-op arm).  SHIFT ($FF) and f0 ($86) must also never be
        reported held; the schedule only ever holds a menu_key_tbl code or the 0x01 "nothing" slot.
      * text_script_interp($1E) runs once on the first pick; script $1E is pointed at a lone $FF
        byte so it returns immediately (no glyph plotting, no char_row setup) — a safe no-op.
@@ -5660,7 +5660,7 @@ static int test_menu_wait_key(void)
     unsigned mask = LIVE_X;                       /* exit X = confirmed selection - 1 */
 
     const uint16_t CLOCK = 0x0080u;              /* the phase clock: scratch zero page, untouched by the loop */
-    /* menu_key_tbl codes: distinct, and none is $FF (SHIFT) or $86 (f0), which FUN_3261 tests. */
+    /* menu_key_tbl codes: distinct, and none is $FF (SHIFT) or $86 (f0), which abort_if_quit_keys tests. */
     static const uint8_t KEYTBL[4] = { 0xA0u, 0xA1u, 0xA2u, 0xA3u };
 
     platform_test_clock_addr(CLOCK);
@@ -5684,7 +5684,7 @@ static int test_menu_wait_key(void)
 
         pre[CLOCK] = 0x00u;                       /* phase clock starts at 0 (scan sees it at 1) */
         pre[0x0075u] = 0xAAu;                     /* math_hi != count, so a dropped entry-store shows */
-        pre[0x001Cu] |= 0x80u;                    /* FUN_3261 -> FUN_327d no-op (avoid the TXS restart) */
+        pre[0x001Cu] |= 0x80u;                    /* abort_if_quit_keys -> abort_tail_rts no-op (avoid the TXS restart) */
 
         /* menu_key_tbl ($39E0) */
         for (int i = 0; i < 4; i++) pre[0x39E0u + i] = KEYTBL[i];
@@ -8057,7 +8057,7 @@ static int test_span_leaves(void)
         int p;
         /* bearing_lo ($8A) is the DDA accumulator's 6502 parking slot, written every call by the
            transliteration and never by the pure-C core; math_lo ($74) is the abandon-cap's flatten
-           spill (FUN_2f19).  Both are implementation detail — ignore them. */
+           spill (span_stamp_line_surface).  Both are implementation detail — ignore them. */
         static const uint16_t ig[] = { 0x008A, 0x0074 };
         for (p = 0; p < 2; p++) {
             int subFail = 0, empty = 0, abandoned = 0, nearTop = 0;
@@ -8219,9 +8219,9 @@ static int test_span_arms(void)
     for (a = 0; a < 4; a++) register_fixture(arms[a].name);
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
-    /* The descending arms' cap is the transliterated FUN_2f12→FUN_2f19 in the oracle, which
+    /* The descending arms' cap is the transliterated span_tail_y_step→span_stamp_line_surface in the oracle, which
        spills through math_lo ($74) on its off-axis flatten; the pure-C span_walk_cap does not.
-       ⭐ FUN_2f12 also COPIES the plotter's entry-step opcode into a slot of its own ($2F18)
+       ⭐ span_tail_y_step also COPIES the plotter's entry-step opcode into a slot of its own ($2F18)
        and executes that, to reach a direction the caller already knew; span_walk_cap steps by
        the value.  Neither byte is a result — see the reader audit cited at the interp_edge
        fixture — so ignore both (harmless on the fwd arms, which never reach the cap). */
@@ -11684,7 +11684,7 @@ static int test_driving_controls(void)
 
     /* ⭐⭐ C IS DROPPED for the three routines whose exit carry is the STEERING LOCK STOP's.
        On the 6502 the $162D CMP #$91 in clamp_and_store_steer_angle is the last thing to write C
-       on the keyboard-and-no-input path, so it leaks back out through read_pedals_and_gears'
+       on the keyboard-and-no-input path, so it leaks back out through read_pedals_and_gears_core'
        no_key exit as the chain's exit carry for steer_apply_with_assist (12), steer_assist_
        dispatch (13) and steer_demand_from_slip (15).  ⚠ NO CALLER READS IT.  The cluster has one
        native entry, race_main_loop_core's read_driving_controls_frame(), and the next call the
@@ -11703,7 +11703,7 @@ static int test_driving_controls(void)
        (clamp_and_store_steer_angle 9, steer_apply_with_assist 12, steer_assist_dispatch 13).
        kbd_test_key leaves the MOS's own answer in X and Y ($FF when the key is held, $00 when
        it is not) and nothing on the keyboard path writes them again, so on the 6502 the pair
-       leaks out through read_pedals_and_gears as these routines' exit X/Y.  ⚠ NO CALLER READS
+       leaks out through read_pedals_and_gears_core as these routines' exit X/Y.  ⚠ NO CALLER READS
        IT, by the same audit as the carry above: the cluster's one native entry is
        read_driving_controls_frame, whose own fixture is already result-only, and no
        transliteration runs in the shipping build (make transtrap, 9/9).  Comparing the residue
@@ -11714,7 +11714,7 @@ static int test_driving_controls(void)
        result). */
     /* ⭐⭐ A, N AND Z ARE DROPPED for the four routines whose exit A is the GEAR TAIL's residue
        (clamp_and_store_steer_angle 9, steer_apply_with_assist 12, steer_assist_dispatch 13,
-       steer_demand_from_slip 15).  read_pedals_and_gears has four returns — no-key, latch-held,
+       steer_demand_from_slip 15).  read_pedals_and_gears_core has four returns — no-key, latch-held,
        and the two the pedal arm takes — and on the 6502 each leaves whatever A the last thing to
        write it left: $00 on the no-key release, the latch byte's delta on the held return.
        Nothing between there and the chain's exit writes A again, so it leaks out as these four
@@ -11725,7 +11725,7 @@ static int test_driving_controls(void)
        routine's first branch.  All four `_core`s are called only from inside this cluster, where
        the value passes as an argument, and the four `void` shims are oracle entries no shipping
        code reaches (make transtrap, 9/9).
-       Comparing the residue was the sole reason read_pedals_and_gears carried TEN `cpu.` writes —
+       Comparing the residue was the sole reason read_pedals_and_gears_core carried TEN `cpu.` writes —
        A/N/Z/V/C/X/Y across four exits, to satisfy four sibling masks.  Narrowed together with
        those writes' removal; either half alone fails (A/N/Z only, at 1479/2392/1748/2283 cases —
        no mem[] byte and no X, Y, C or V ever differs, which identifies it as ABI residue rather
@@ -11763,7 +11763,7 @@ static int test_driving_controls(void)
            the chain above and both drops apply. */
         if (i == 9 || i == 12 || i == 13)
             drop |= LIVE_X | LIVE_Y;
-        /* ⭐⭐ ...and A/N/Z on top, for the four whose exit A is read_pedals_and_gears' OWN
+        /* ⭐⭐ ...and A/N/Z on top, for the four whose exit A is read_pedals_and_gears_core' OWN
            residue (see below).  Same shape, third separate statement. */
         if (i == 9 || i == 12 || i == 13 || i == 15)
             drop |= LIVE_A | LIVE_N | LIVE_Z;
@@ -11874,7 +11874,7 @@ static int test_driving_controls(void)
                both-keys arm ($15E5 → FUN_163b), which the one-key test backend can reach only via
                mode-1 (ALL keys held) — and that mode always shifts UP ($9F is polled before $EF), so
                the shift-down wrap never runs there.  clamp_and_store_steer_angle (i == 9) instead
-               reaches read_pedals_and_gears with the transliterated FUN_163b as its own oracle, no
+               reaches read_pedals_and_gears_core with the transliterated read_pedals_and_gears as its own oracle, no
                steering front and so no key conflict — that is where the wrap is validated.  Steer
                one case in 29 straight onto it, deterministically off t so the shared xs() stream is
                untouched and every other fixture's cases are unchanged. */

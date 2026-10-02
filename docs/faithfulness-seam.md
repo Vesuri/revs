@@ -566,7 +566,7 @@ awk -v t="<abs8>" '/^[0-9a-f]+ </{fn=$2} $0 ~ ("jsr.*"t"$"){print fn}' /tmp/revs
 | Surviving shim | Called from | Why the `cpu` handover is the contract |
 |---|---|---|
 | `abs8`, `scale_by_track_gradient` | **`trk_brands` / `trk_doning` / `trk_nurburg` / `trk_oulton` / `trk_snetter`** | the **per-circuit hook bodies**, still transliterated in `src/gen/revs_track_hooks.c` — 3066 lines, 454 `cpu.` refs. A hook calls these by 6502 address with live registers, so the shim's ABI is the seam's ABI |
-| `read_pedals_and_gears` | `read_driving_controls` | native→native, but a genuine escaping flag: $162D's `CMP #$91` carry leaks out through the no-key exit |
+| `read_pedals_and_gears_core` | `read_driving_controls` | native→native, but a genuine escaping flag: $162D's `CMP #$91` carry leaks out through the no-key exit |
 | `sound_queue_exit_abi` | `check_crash` | native→native exit-ABI replay |
 
 ⭐ **The conclusion that matters: the last transpiled PRODUCTION code in this port is the

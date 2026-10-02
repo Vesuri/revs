@@ -2803,7 +2803,7 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
     # two bytes `TSX/INX/INX/TXS` discards are a RETURN ADDRESS, and in the transliteration
     # return addresses live on the C call stack, not in mem[$0100].  So the +2 has nothing to
     # cancel it — S leaks 2 bytes per road-span exit, climbs to $FF, WRAPS to $00, and pushes
-    # then land on car_order.  Measured 2026-08-15: `S rose to $FA` inside FUN_2f7e in the first
+    # then land on car_order.  Measured 2026-08-15: `S rose to $FA` inside road_span_end_line in the first
     # rendered frame, and a competition race hung in check_car_pair's field walk.
     # UNWIND_SET() alone carries the whole meaning of the idiom here.
     if mnem == 'TXS' and addr in STACK_DROP_TXS:
