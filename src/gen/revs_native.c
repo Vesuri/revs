@@ -6249,7 +6249,7 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
             return horizon_half_width;
         }
         if (target >= 0x5300 && target <= 0x5A25) {
-            /* Circuit-hook seam: the hook reads a and its sign N, so re-establish the 6502
+            /* Circuit-hook seam: the hook reads A and its sign N, so re-establish the 6502
                entry ABI before dispatching, then hand its own exit A back verbatim. */
             HookRegs hr;
             /* The whole file, from this routine's own values — no cpu.  Y is the horizon point
@@ -10012,7 +10012,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
       }
 
 #ifdef REVS_EDGE_FILL
-      /* Pass a gets its own COPY, chosen by the two facts that define it: its branch operand
+      /* Pass A gets its own copy, chosen by the two facts that define it: its branch operand
          is $09 and its patched store pointer is plot_ptr, i.e. the block it is already reading.
          Both are proved here, not assumed — if either were ever false the generic body below is
          still the answer. */
@@ -11145,7 +11145,7 @@ void rotate_state_6_into_3(void)
                                      rev-derived term */
 
 /* $4B61  slip_magnitude — |element Y| << 5, clamped
-   ⚠ the clamp leaves state behind.  When the high byte goes negative the routine bails out
+   ⚠ The clamp leaves state behind.  When the high byte goes negative the routine bails out
    with $7F, and both Y (wherever the loop stopped) and SLIP_MAG_LO (part-shifted) keep the
    values that moment left — so a twin that computes the saturated result in one step and
    tidies up afterwards is wrong, and the differential says so. */
@@ -11315,7 +11315,7 @@ static void slip_history_push(uint8_t axle, int over)
     uint8_t  shiftedLo = (uint8_t)shifted;
     ms_set_hi((uint8_t)(MS_SLIP + axle), shiftedHi);
 
-    /* $4AAC-$4AB2 — a saturated SHIFT is a slip.  The negate should have flipped the sign, so if
+    /* $4AAC-$4AB2 — a saturated shift is a slip.  The negate should have flipped the sign, so if
        the shifted high byte still agrees in sign with the pre-negate value the shift overflowed;
        that goes straight to the history roll with the over-limit bit already set.  A zero
        accumulator skips the test entirely. */
@@ -15514,7 +15514,7 @@ void build_road_section(void)
                ⚠ X, Y and C/V are the caller's — this routine establishes none of them — and they
                are not observable at this seam: `make track-patch` gives the four targets that are
                ever patched in here ($54F1 on Brands, $54EF on the other three), both of them
-               hook_next_section_cursor, which reads A and `cur_segment_flags` and writes a/C/V/N/Z
+               hook_next_section_cursor, which reads A and `cur_segment_flags` and writes A/C/V/N/Z
                (plus Y on the gated arm).  The engine's next instruction, $12FE `CMP #$78`, then
                overwrites N/V/Z/C, and this seam's only exit is A.  So they are handed over as 0
                rather than lifted out of `cpu`, and `make viewdiff` is the gate. */
@@ -16295,7 +16295,7 @@ void clear_race_clock_core(uint8_t x)
     return crossed;
 }
 
-/* $109B  full_track_scan_rebuild  —  native driver (stage 5), the root of the crash-freeze subtree.
+/* $109B  full_track_scan_rebuild — the root of the crash-freeze subtree.
  *
  * reset_driving_variables calls this on a crash / session reset.  With the off-line-scan flag
  * (track_scan_active bit 7) raised — so lap_complete ignores the artificial track motion — it
@@ -16312,7 +16312,7 @@ void clear_race_clock_core(uint8_t x)
  *   5. seed every car's car_section_across with an alternating $AF/$50 pattern in sorted order;
  *   6. rebuild that many track sections from the walk origin (build_road_section).
  *
- * a driver, not a leaf: every loop ends on a game-state boundary (the field's distance wrap; the
+ * A driver, not a leaf: every loop ends on a game-state boundary (the field's distance wrap; the
  * $20 pace gap; a segment-boundary carry), never on a bounded input, so no randomised validate
  * fixture can drive it to a defined exit.  It is a NATIVE_FUNCS member (transpile.py), gated by
  * `make determinism-crash` — a HOLD_THROTTLE run that actually crashes off-track and runs this
@@ -20588,7 +20588,7 @@ void hook_abs_by_track_direction(HookRegs *r)
 }
 
 /* $57BB (Brands Hatch) / $54EB (Donington, Oulton, Snetterton) / $555C (the Nurburgring) —
-   scale the value in a by the track gradient, signed by the caller's own N.  `PHP / JMP $461B`:
+   scale the value in A by the track gradient, signed by the caller's own N.  `PHP / JMP $461B`:
    two instructions, and the first of them is the whole point.
 
    The sign genuinely escapes through the 6502 stack: the PHP stacks the entry P,
