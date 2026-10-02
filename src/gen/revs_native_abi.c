@@ -239,6 +239,8 @@ void place_player_in_section(void)
     cpu.X = ex.x; cpu.Y = ex.y;   /* the 6502-ABI exit; the native driver takes them by value */
 }
 
+/* Oracle only: process_car_contact calls the core with the slot as an argument; this entry
+   exists because process_car_contact__t6502 still calls the plain name. */
 void spin_car_out(void)
 {
     int c = spin_car_out_core(cpu.X);
@@ -259,6 +261,13 @@ void build_section_step_delta(void) { build_section_step_delta_core(cpu.Y); }
 /* 6502-ABI shim: X = dest section byte cursor, Y = segment byte index.  Oracle entry only. */
 void load_section_from_segment(void) { load_section_from_segment_core(cpu.X, cpu.Y); }
 
+/* 6502-ABI shim: slot in X, section byte cursor in Y; X comes back as the exit slot.
+   The marshal-outs belong here: the queue tail calls project_object_slot_core directly, so this
+   shim is the only place the bearing and the two sorted hypot magnitudes reach mem[$78-$7B] /
+   mem[$8A/$8B], where the oracle leaves them.  The marshal-ins are needed too: the per-circuit
+   SMC trap at $298D returns before the queue tail, so on that arm the core never writes the
+   relocated values, and a bare marshal-out would publish the previous call's bearing over cells
+   the 6502 left untouched. */
 void place_car_world_coords(void)
 {
     view_origin_marshal_in();
@@ -273,6 +282,8 @@ void car_index_inc(void) { cpu.X = car_index_inc_core(cpu.X); }
 
 void find_player_neighbours(void) { cpu.X = find_player_neighbours_core(); }
 
+/* $109B: A is the retreat depth.  Nothing on the way out is live (both callers fall straight
+   through to the per-slot rebuild). */
 void full_track_scan_rebuild(void) { full_track_scan_rebuild_core(cpu.A); }
 
 void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothing escapes */
@@ -313,6 +324,11 @@ void track_pos_retreat(void)                     /* exit ABI: C only */
     car_distance_marshal_out_one(cpu.X);
 }
 
+/* $0E42 / $0E44  neg16_math — negate (math_hi : math_lo).  The high byte comes back in A and
+   is not written to math_hi (the caller decides whether to keep it); the second subtract's
+   N/V/Z/C are the exit flags.  $0E42 parks A in math_hi first (so it negates the value the
+   caller is holding); $0E44 negates what is already in the pair.  D is 0 on every path that
+   reaches here (docs/static-map.md §Decimal mode). */
 void neg16_math(void)
 {
     math_hi = cpu.A;                    /* $0E42 */
@@ -406,8 +422,11 @@ void div16by8(void)
     if (r.setV) cpu.V = r.overflow;     /* the last subtract's V; untouched when none ran */
 }
 
-/* $0E40  abs16_math — |math_lo:A| in place.  ⚠⚠ IT BRANCHES ON THE CALLER'S N, not on bit 7
-   of A: every real caller has just computed A, so the two agree there and nowhere else. */
+/* $0E40  abs16_math — |math_lo:A| in place: the low byte lives in math_lo and the high byte
+   arrives (and leaves) in A.  Twenty-one callers.
+   ⚠ It branches on the caller's N, not on bit 7 of A, like abs8: every real caller has just
+   computed A, so the two agree there and nowhere else (decimal mode decorrelates them even for a
+   fresh value).  It then falls into neg16_math. */
 void abs16_math(void)
 {
     if (!cpu.N) return;             /* $0E40 BPL — caller's N is the value's sign; positive: A kept */

@@ -1997,11 +1997,12 @@ void sound_queue_exit_abi(uint8_t slot)
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
 }
 
-/* $3450  abs8's `cpu` ENTRY.  The work is `abs8_regs` in revs_native.c, out of line, and that
-   is affordable here: the 36 callers in revs_gen.c / revs_track_hooks.c are transliterated
-   bodies, and `make transtrap` proves across nine scenarios that NONE of them is ever entered.
-   (The comment this replaces claimed a hot path on the strength of that call count.)  The one
-   live caller is `scale_by_track_gradient_tail` below, four instructions further on. */
+/* $3450  abs8's `cpu` entry.  The value is in A and its sign is the caller's N (the `BPL`
+   tests N, not bit 7 of A; a third of the fixture's cases decorrelate them).  Positive: RTS, A
+   and every flag left alone.  Negative: negate, leaving A and the negate's full N/Z/V/C.
+   The work is `abs8_regs` in revs_native.c, out of line, which is affordable: the 36 callers
+   in revs_gen.c / revs_track_hooks.c are transliterated bodies that `make transtrap` shows are
+   never entered.  The one live caller is `scale_by_track_gradient_tail` below. */
 void abs8(void)
 {
     HookRegs r;
