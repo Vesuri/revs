@@ -15,6 +15,26 @@
  * small named helper (`load_a`, `adc_step`, `sub_from`).  Elsewhere the flags are dead.
  *
  * Linked into both backends; anything Amiga-only belongs in revs_native_amiga.cpp.
+ *
+ * Each routine's banner starts with its address and name (`$4E5C  irq1v_band_schedule`), so
+ * searching for either finds it; group banners list their members.  The file runs in this order:
+ *
+ *   the screen write pointers, irq1v_band_schedule
+ *   view_paint_lines and its painters (the viewport sweep, the span and low-block paths)
+ *   race_main_loop, race_frame_tail and the simulation clock
+ *   the road geometry: build_track_geometry, road_edge_walk, the dash needles
+ *   apply_driving_model's driver, draw_track_object, fill_dash_edge_columns, copy_dash_data
+ *   div16by8, bearing_to_section / project_point
+ *   draw_road: the span rasteriser (interp_edge, the four arms, the plotters), fill_line_attr,
+ *     draw_surface_spans, mark_line_surfaces, the dash-edge seam and surface_colour_at
+ *   the driving model's tree: multiply, 16-bit arithmetic, rotations, slip and sound,
+ *     the eight sub-models
+ *   build_road_sign, the object plotter (plot_object, plot_view_src_line)
+ *   read_driving_controls and the dashboard text path
+ *   the field reset, the road builder (build_road_section), the other cars (move_and_draw_cars),
+ *     the session reset, update_lap_timers, check_car_pair, check_crash
+ *   the printers and readouts, the standings table, the front end (front_end_menus, console_io)
+ *   hw_init, then the expansion circuits' hook bodies (from $56C8)
  */
 #include <string.h>            /* memset: the constant-byte mem[] fills */
 #include "../platform/diag.h"
@@ -60,7 +80,7 @@
                 mem[MEM_##name##_lo] = (uint8_t)name##_v;                                  \
                 mem[MEM_##name##_hi] = (uint8_t)(name##_v >> 8);                           \
         } } while (0)
-/* One scan line is one PAGE.  Only the high lane changes, so only it is written through. */
+/* One scan line is one page.  Only the high lane changes, so only it is written through. */
 #define PLOT_STEP_PAGE(name, delta)  do {                                                  \
         name##_v = (uint16_t)(name##_v + (delta));                                         \
         mem[MEM_##name##_hi] = (uint8_t)(name##_v >> 8); } while (0)
@@ -83,7 +103,7 @@
    ⚠ $8E/$8F is shared: only the plotter tenant moved.  plot_object's shape index and the
    driving model's signed temporary keep mem[]; their windows never overlap a span walk
    (symbols.csv $008E), and the marshal pair keeps that true. */
-uint16_t plot_ptr_v;     /* $70/$71 — THE screen write pointer every plotter stores through */
+uint16_t plot_ptr_v;     /* $70/$71 — the screen write pointer every plotter stores through */
 uint16_t plot_ptr2_v;    /* $72/$73 — the second, one page above: cells 32-39 of a scan line */
 uint16_t plot_ptr3_v;    /* $8E/$8F — the third, road_span_plot_2's buffer */
 
@@ -211,7 +231,7 @@ void set_band2_duration_v(uint16_t v) { band2_duration_v = v; }
      2   horizon     the four-colour palette at $3458;  latch = the remainder computed above
      3   track       four entries from $3478 (colour 1 → red);  next latch $1E00
      4   dashboard   four entries from $347C (colour 3 → cyan), then tick_wheel_spin,
-                     then the User VIA ORB poke and the wrap back to band 0;  latch $0B16
+                     then the User VIA orb poke and the wrap back to band 0;  latch $0B16
      $FF             the arm is skipped; the counter wraps to 0 and takes band 0's latch.
                      Any other negative counter does nothing at all.
 
@@ -253,7 +273,7 @@ void irq1v_band_schedule_core(void)
         for (i = 0; i < 16; i++) { bbc_ula_palette_write(entry); entry = (unsigned char)(entry + 0x10); }
 
         /* The horizon split.  update_horizon_band ($4F44) puts band 1's duration in
-           band1_duration from MAIN-LOOP context; band 2 takes the remainder of a fixed
+           band1_duration from main-loop context; band 2 takes the remainder of a fixed
            $153C and it is kept in band2_duration for band 2's own arm to load.  A borrow
            (the sky longer than the whole split) means band 2 has no height at all, so its
            arm has to run in this same interrupt. */
@@ -283,7 +303,7 @@ void irq1v_band_schedule_core(void)
         latch = 0x1E00;
         break;
 
-    default:    /* band 4 (and anything above 3): the dashboard, and then the GAME RUNS */
+    default:    /* band 4 (and anything above 3): the dashboard, and then the game runs */
         ula_palette_table(MEM_band4_palette, 3);
         irq_band_state = 0xFF;     /* the tail's INC wraps it to 0 */
 
@@ -300,7 +320,7 @@ void irq1v_band_schedule_core(void)
         break;
     }
 
-    /* How long until the next band.  The LATCH LOW write is LAST: bbc_hw.cpp closes the band
+    /* How long until the next band.  The latch low write is last: bbc_hw.cpp closes the band
        record on it, and the record must already hold this band's mode and palette. */
     bus_write(USRVIA_T1LH, (uint8_t)(latch >> 8));
     bus_write(USRVIA_T1LL, (uint8_t)latch);
@@ -343,7 +363,7 @@ void irq1v_band_schedule_core(void)
 #define SLOT_A(n)  VIEW_UNIT_SLOT(VIEW_CELL_CHAIN_A, n)      /* cells 0-15  */
 #define SLOT_B(n)  VIEW_UNIT_SLOT(VIEW_CELL_CHAIN_B_MID, n)  /* cells 26-39 */
 
-/* Each unit's opcode slot as a pointer into mem[], or NULL for the eleven no writer can reach.
+/* Each unit's opcode slot as a pointer into mem[], or null for the eleven no writer can reach.
    A table rather than `VIEW_UNIT_ADDR(i) + $0F`, and pointers rather than addresses: each entry
    is a link-time constant, so the fetch is `move.l (a3)+,a0 / move.b (a0),d0`.  The address is
    recovered once per plant by subtracting `mem`. */
@@ -456,7 +476,7 @@ static int view_low_page(unsigned page)
    store to another page; `make viewdiff` gates that arm. */
 static unsigned view_slot_unit1(unsigned lo, unsigned page)
 {
-    if (!view_low_page(page)) return 0;      /* the row bound; see the sabotage record above */
+    if (!view_low_page(page)) return 0;      /* the row bound; see the fixture gap above */
     return g_viewSlotOf[page - VIEW_LOW_PAGE][lo];
 }
 
@@ -673,8 +693,8 @@ unsigned scanline_advance(uint16_t* ptr, uint16_t* ptr2, int* carry_out)
     unsigned char r2  = (unsigned char)hi2;
     *ptr2 = (uint16_t)(((unsigned)r2 << 8) | (adv & 0xFFu));
 
-    /* `c2` is always 0 (the plot pointer's high byte lives in $67..$7A), so a sabotage dropping
-       it survives validate; it is kept because the 6502 has the second ADC.  The exit A/V/N/Z/C
+    /* `c2` is always 0 (the plot pointer's high byte lives in $67..$7A), so validate cannot
+       see it; it is kept because the 6502 has the second ADC.  The exit A/V/N/Z/C
        are dead: both callers overwrite them (docs/native-maintenance.md, Flag helpers). */
     if (carry_out) *carry_out = (int)(hi2 >> 8);
     return next;
@@ -751,8 +771,8 @@ static unsigned step_scanline(int* carry_out)
 #define VIEWP3_PHASE(id)  ((void)0)
 #endif
 
-/* One unit's SOURCE half: consume the byte and carry it on, with no store.  The chain does
-   this BEFORE it looks at its opcode slot, so a planted `RTS` still consumes the source of the
+/* One unit's source half: consume the byte and carry it on, with no store.  The chain does
+   this before it looks at its opcode slot, so a planted `RTS` still consumes the source of the
    unit it stops on — which is why the stop tail needs the same three lines the loop runs.
      forced   the unit+$05 entry: no dirty test, and the carried byte comes from the caller's
               cell index instead of the source byte */
@@ -780,7 +800,7 @@ static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int fo
 }
 
 #ifdef REVS_VIEW_MARKING
-/* PART (1) OF THE PREDICATE, and the only part the span emitter needs: did any producer
+/* Part (1) of the predicate, and the only part the span emitter needs: did any producer
    write one of this source line's forty cells since the last sweep consumed them? */
 unsigned char g_viewLineDirty[128];
 
@@ -796,11 +816,11 @@ void view_skip_reset(void)
 }
 
 #ifdef REVS_VIEWSKIP
-/* ── parts (2)-(4): THE DESTINATION SHADOW, skip-only ──────────────────────────────────────
+/* ── parts (2)-(4): the destination shadow, skip-only ──────────────────────────────────────
    ⚠ The span emitter deliberately carries none of this.  A skip must prove the cells already
    hold the byte it is declining to write, which means knowing where the line's plot_ptr walked
    to and what was painted there last time; an emitter just writes them.  That asymmetry is why
-   the skip measured -0.4% and needed a 153-stale-byte bug to find its fourth part. */
+   the skip has four parts and the emitter none. */
 unsigned char g_viewDstBg[208];
 unsigned char g_viewDstFlat[208];
 
@@ -818,7 +838,7 @@ static unsigned view_dst_line(unsigned base)
     return row * BBC_SCREEN_LINES + sub;
 }
 
-/* A store into the frame buffer that is NOT one of the chain's flat unit stores: whatever
+/* A store into the frame buffer that is not one of the chain's flat unit stores: whatever
    display line it lands on is no longer flat.  The sweep's own run-end composites go through
    here — they are the tenant the ink watch named on display line 87. */
 static void view_dst_touch(unsigned addr)
@@ -856,15 +876,15 @@ void revs_announce_viewskip(void)
 #endif
 
 #if defined(REVS_SPAN_EMIT) && defined(REVS_SPAN_STATS)
-/* The span emitter's own two counts — lines emitted as ONE span against lines that still ran
+/* The span emitter's own two counts — lines emitted as one span against lines that still ran
    the forty-unit chain.  An A/B switch prints its own state: a build that
    emits nothing reads identically to an emitter that buys nothing, so these are the difference.
    Both in PROBE_SYMS (amiga/Makefile).
-   ⚠ ...and both are a `volatile` RMW on the sweep's per-LINE path, ~44 cycles x 36 lines, so
+   ⚠ ...and both are a `volatile` RMW on the sweep's per-line path, ~44 cycles x 36 lines, so
    `make SPANSTAT=0` compiles them out with the plotter's own counters (revs_plot.h).
-   ⚠ This block lives OUTSIDE `REVS_VIEW_MARKING` deliberately: the STATELESS emitter
+   ⚠ This block lives outside `REVS_VIEW_MARKING` deliberately: the stateless emitter
    (`SPANFILL=3`/`=4`) turns marking off, and while these sat inside it the macro had no
-   definition at all on that path, so `SPAN_EMIT_STAT(...)` compiled as an implicit CALL and
+   definition at all on that path, so `SPAN_EMIT_STAT(...)` compiled as an implicit call and
    the link failed on `SPAN_EMIT_STAT` itself.  A configuration that is never built is not a
    configuration.  Keep it next to the seam header's matching externs. */
 volatile unsigned long g_spanEmitLines  = 0;
@@ -912,7 +932,7 @@ static int view_line_flat(unsigned line)
    map is endian-dependent and is written out per target below; REVS_SPAN_SCANCHECK checks it
    against view_line_flat. */
 #if defined(__BIG_ENDIAN__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
-/* big-endian (the Amiga): byte offset 0 of a longword is the MOST significant */
+/* big-endian (the Amiga): byte offset 0 of a longword is the most significant */
 #define VIEW_SCAN_LANE(acc, i)   (((acc) >> (24u - 8u * (unsigned)(i))) & 0xFFu)
 #else
 /* little-endian (the dev host): byte offset 0 is the least significant */
@@ -921,7 +941,7 @@ static int view_line_flat(unsigned line)
 
 static unsigned view_group_sources(unsigned group)
 {
-    /* ENDIAN-OK: four independent byte LANES, never a wide value — see the note above. */
+    /* ENDIAN-OK: four independent byte lanes, never a wide value — see the note above. */
     MEM_QUAL const unsigned char* p = mem + MEM_view_src_blocks + group;
     unsigned acc = 0, k;
 
@@ -1398,7 +1418,7 @@ static unsigned view_scan_asm(void)
 
 #ifdef REVS_SCAN_CHECK
 volatile unsigned long  g_scanChecks     = 0;
-volatile unsigned long  g_scanMismatch   = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long  g_scanMismatch   = 0;   /* ⚠ Must be 0 */
 volatile unsigned short g_scanMismatchAt = 0;   /* (what << 8) | line-or-cell of the first:
                                                    1 count, 2 source, 3 cursor, 4 list, 5 seed */
 #define SCAN_SRC_BYTES (VIEW_SPAN_CELLS * 0x80u)
@@ -1496,7 +1516,7 @@ static __attribute__((noinline)) void view_scan_all_keep(void) { view_scan_body(
    is the clean one. */
 #define VIEW_UNIT(SOFF, DOFF, FORCED)   PROBE_SHAPE_DASH_UNIT(line)
 #elif defined(REVS_NO_UNIT_STORE)
-/* `make NOUNITS=3` — everything but the STORE, so the sources are still consumed and the
+/* `make NOUNITS=3` — everything but the store, so the sources are still consumed and the
    drivers see their real workload. */
 #define VIEW_UNIT(SOFF, DOFF, FORCED)   do {                                            \
             PROBE_SHAPE_DASH_UNIT(line);                                                \
@@ -1567,7 +1587,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
             byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
             advance_first = 0; unit = 0; forced = 0;
             /* The phase-1 takeover's flat-line count (shape.h), taken where the takeover's own
-               predicate is asked.  Compiled out without SHAPE. */
+               predicate is asked.  Compiled out without shape. */
             PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40, plot_ptr_v);
             SPAN_SCAN_CHECK(line);
 #ifdef REVS_SPAN_EMIT
@@ -2040,7 +2060,7 @@ static void view_own_full(ViewState* v)
             g_viewRowBg[line]   = (unsigned char)byte;
             SPAN_EMIT_STAT(g_spanEmitPaints++);
             if (line == last) break;
-            /* A BYTE DECREMENT, so the 68000 can use `.b` arithmetic (see the chain arm's). */
+            /* A BYTE decrement, so the 68000 can use `.b` arithmetic (see the chain arm's). */
             line = (unsigned char)(line - 1u);
         }
         plot_ptr_v = ptr; plot_ptr2_v = ptr2;
@@ -2074,7 +2094,7 @@ static void view_own_full(ViewState* v)
                    (view_group_sources above is destructive), so only the pixels are missing. */
                 (void)byte;
 #else
-                /* nothing wrote this line's forty sources: ONE span of the background byte */
+                /* nothing wrote this line's forty sources: One span of the background byte */
                 REVS_PLOT_SPAN(plot_ptr_v, byte);
                 SPAN_EMIT_STAT(g_spanEmitLines++);
             } else {
@@ -2112,9 +2132,9 @@ static void view_own_full(ViewState* v)
    four boundary cells.  The silhouette is static (view_run_left_end, view_run_right_start and
    view_left_end_mask do not change between frames: the split is the dashboard, not the road),
    so the runs' cell bounds are a constant table derived once.
-   A run's first cell is entered at unit+$05 and must ignore its own source (the `forced`
-   note above view_low_run); that matters only when a road boundary lands exactly there, which is routine under
-   the autopilot.  `make TERRAINLOW=1 TERRAINLOWCHECK=1` runs the chain and then this code over
+   A run's first cell is entered at unit+$05 and must ignore its own source (the `forced` note
+   above view_low_run); that matters only when a road boundary lands exactly there, which is
+   routine under the autopilot.  `make TERRAINLOW=1 TERRAINLOWCHECK=1` runs the chain and then this code over
    the same data and compares every cell; run it under `make lap`.
    Shipping (`TERRAINLOW ?= 1` in both Makefiles).  It writes mem[] and nothing else: the car,
    tyres and dash sides live in mem[] and reach the screen through the decode.  So the host runs
@@ -2126,26 +2146,22 @@ _Static_assert(LOW_FLOOR_UNBUILT == VIEW_LOW_HI + 1u, "s_lowConsume's unbuilt fl
 
 static unsigned char s_lowA0[VIEW_EV_LINES], s_lowA1[VIEW_EV_LINES];
 static unsigned char s_lowB0[VIEW_EV_LINES], s_lowB1[VIEW_EV_LINES];
-/* Phases 2 and 3 are different shapes.  Phase 3's lines (3..27) are clipped by the dash at both
-   ends, so all four boundary cells are composed.  Phase 2's (28..43) reach the screen edge on
-   the outside: the left run starts at cell 0 with the line's plain background byte and no entry
-   composite, and the right run ends at cell 39 with no exit composite.
-   The line number decides which (`line >= VIEW_P2_LAST`, the driver's own
-   `line_is_last(line, 0x1C)`), not a table: above line $1B `view_run_right_end`'s bytes are
-   column 1's live source (the control tables live inside the source blocks).
-   READER AUDIT (docs/validation-harness.md §THE RESULTS RULE): the build succeeds on sweep 1, so
-   the chain never paints lines 3..43 and twelve bytes keep their disc values instead of the first
-   sweeps' plants: the stop records $7D24/$7F24/$7F7D, the restore operands $7BD4/$7BD7/$7BDA, and
-   the stop/entry operands of view_p2_stop_a_site, view_p2_enter_b_site, view_p3_stop_a_site,
-   view_p3_enter_a_site, view_p3_stop_b_site and view_p3_enter_b_site.  Their only readers are
-   paint_lines_clipped, paint_lines_short and unplant_stops, which run only while !s_lowBuilt
-   (never cleared again); copy_dash_data's stow/restore copies them back to the same readers.
-   Those 12 bytes are the whole 64 KB difference on all five determinism trajectories, and the
-   disc's $0F record names cell 0's own stop site, so a stale un-plant would write STA over STA. */
+/* Phases 2 and 3 differ in shape.  Phase 3's lines (3..27) are clipped by the dash at both
+   ends, so all four boundary cells are composed; phase 2's (28..43) reach the screen edge on the
+   outside, with no entry composite on the left and no exit composite on the right.  The line
+   number decides which (`line >= VIEW_P2_LAST`, the driver's own `line_is_last(line, 0x1C)`),
+   not a table: above line $1B view_run_right_end's bytes are column 1's live source.
+   Reader audit (docs/validation-harness.md §THE RESULTS RULE): once the build succeeds on
+   sweep 1 the chain never paints lines 3..43, so twelve SMC bytes keep their disc values instead
+   of the plants: the stop records $7D24/$7F24/$7F7D, the restore operands $7BD4/$7BD7/$7BDA and
+   the stop/entry operands at the six view_p2/view_p3 sites.  Their only readers are
+   paint_lines_clipped, paint_lines_short and unplant_stops, which run only while !s_lowBuilt;
+   copy_dash_data's stow/restore copies them back to the same readers.  The disc's $0F record
+   names cell 0's own stop site, so a stale un-plant writes STA over STA. */
 #define VIEW_P2_LAST       0x1Cu  /* phase 2's last line (its driver's line_is_last), phase 3 below */
 static unsigned char s_lowClipped[VIEW_EV_LINES];   /* 1 = phase 3's doubly-clipped shape */
 static int           s_lowBuilt = 0;
-volatile unsigned long g_terrainClipBad = 0;   /* ⚠ MUST BE 0 — see view_low_build */
+volatile unsigned long g_terrainClipBad = 0;   /* ⚠ Must be 0 — see view_low_build */
 
 /* A chain address's low byte -> the cell its unit paints.  The units are 17 bytes apart, so the
    lattice `anchor + 17k (mod 256)` has no collisions within forty cells (17 and 256 are coprime)
@@ -2398,7 +2414,7 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
            it at ~16 ms of phase 33).
            ⚠ LOW_PREP goes above the pragma: `#pragma GCC unroll` binds to the next loop
            statement, and the macro's `do { } while (0)` is one. */
-        LOW_PREP(value);                        /* once per SEGMENT, never per cell */
+        LOW_PREP(value);                        /* once per segment, never per cell */
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC unroll 1
 #endif
@@ -2469,7 +2485,7 @@ static unsigned char view_low_run_colour_at(const ViewSpan* ev, unsigned first, 
    colours themselves (events = the chain's non-zero cells) are TERRAINLOWCHECK's job, on the
    host.  Diagnostic only: forty colour walks a line cost far more than the painting. */
 volatile unsigned long  g_lowOwnChecks     = 0;
-volatile unsigned long  g_lowOwnMismatch   = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long  g_lowOwnMismatch   = 0;   /* ⚠ Must be 0 */
 volatile unsigned short g_lowOwnMismatchAt = 0;   /* (display line << 8) | cell of the first */
 
 static void low_own_check(const unsigned char* plane, const ViewSpan* ev, unsigned line,
@@ -2493,11 +2509,11 @@ static void low_own_check(const unsigned char* plane, const ViewSpan* ev, unsign
                                        entryB, 1, maskB, fillB, cell, &found);
         if (!found) {
 #ifdef REVS_DUAL_PLAYFIELD
-            /* AND WITH THE CAR ON ITS OWN PLAYFIELD THE FURNITURE IS NOT PF1's ANY MORE —
+            /* And with the car on its own playfield the furniture is not PF1's any more —
                the cells below are PF2's, painted opaquely by the cockpit layer, so what PF1 holds
-               there is DON'T CARE and comparing it against `mem[]` reports ~5200 cells a frame
+               there is don't care and comparing it against `mem[]` reports ~5200 cells a frame
                that are working as designed.  ⚠ Scope the oracle to what the arm actually
-               promises: this arm promises the TERRAIN runs (including their boundary cells, whose
+               promises: this arm promises the terrain runs (including their boundary cells, whose
                dash pixels moved to PF2 — §12f-ii), and the layer's own oracle (`DUALPFCHECK=1`)
                is what covers the cockpit.  Without the dual playfield the check below stands, and
                it is what found the furniture hole in the first place. */
@@ -2715,7 +2731,7 @@ static void view_own_low(ViewState* v)
    So the ViewState sync is only around the cold run and at the exits; view_paint_lines_core
    reads nothing out of `v` after paint_lines_clipped returns. */
 
-/* One chain run, from unit FIRST to its planted stop, over the enclosing driver's `byte`,
+/* One chain run, from unit first to its planted stop, over the enclosing driver's `byte`,
    `line` and `cell`.  The body below the `stopUnit` test is view_own_run's, read through the
    same names. */
 #define VIEW_SHORT_RUN(FIRST, FORCED, UNROLL)   do {                                    \
@@ -2754,7 +2770,7 @@ static void view_own_low(ViewState* v)
             }                                                                           \
             /* The unroll is per phase: its set-up is ~20 instructions a run and it saves ~3 a \
                cell.  Phase 2's runs are 13.3 cells and it pays; phase 3's are 5.6 and it does \
-               not.  UNROLL is a literal at every call site. */                          \
+               not.  Unroll is a literal at every call site. */                          \
             if (UNROLL) {                                                               \
                 MEM_QUAL unsigned char* const quad = srcp + ((unsigned)(srcEnd - srcp) & ~511u); \
                 while (srcp != quad) {                                                    \
@@ -2788,7 +2804,7 @@ static void view_own_low(ViewState* v)
    literal at all three call sites, so the target decode reduces to comparing the operand's high
    byte with it.  LO is the low byte the driver just poked (read back from mem[] only where the
    poke is conditional across lines: phase 2's chain B).
-   The trap arm is kept: an operand that does not decode to a unit of PAGE is reported through
+   The trap arm is kept: an operand that does not decode to a unit of page is reported through
    platform_smc_unhandled with the site and target, and stops the driver. */
 #define VIEW_SHORT_ENTER(SITE, OPND, PAGE, LO, UNROLL)  do {                            \
         unsigned      lo_ = (LO);                                                       \
@@ -2863,14 +2879,14 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
 
         /* The scan-line step, with phase 3's tail: a carry off the high byte makes it store the
            un-crossed low byte after all.
-           ⚠ THIS TAIL IS UNTESTED AND UNREACHABLE — deleting it (and, separately, dropping
+           ⚠ This tail is untested and unreachable — deleting it (and, separately, dropping
            plot_ptr2's low-byte write) passes all 700 fixture cases, because the high byte only
            carries out of $FF and the pointer lives at $67..$7A.  Kept because the 6502 has it;
            the green is not coverage. */
         VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
         next = step_scanline(&carry_out);
         if (!(next & 7) && carry_out) {
-            /* The odd carry tail: the LOW byte only, and it really can differ from an
+            /* The odd carry tail: the low byte only, and it really can differ from an
                increment, so this one keeps the mask. */
             PLOT_PTR_SET_LO(plot_ptr_v,  next);
             PLOT_PTR_SET_LO(plot_ptr2_v, next);
@@ -3048,67 +3064,53 @@ abandon:                                /* a trap ended the sweep; publish what 
 #undef VIEW_SHORT_OUT
 #undef VIEW_SHORT_IN
 
-/* $7BE2  view_paint_lines — the 3D viewport rasteriser, one scan line per chain
+/* $7BE2  view_paint_lines — the 3D viewport rasteriser
 
-   The viewport is not drawn where it is computed: the producers ($24F6 -> $1A20) write a source
-   byte into one of forty $80-spaced blocks at $3000..$4380 (one block per cell column, indexed by
-   scan line), and this is the single consumer turning those into screen bytes, one scan line per
-   chain, top down, forty cells across.
+   The producers ($24F6 -> $1A20) write source bytes into forty $80-spaced blocks at
+   $3000..$4380, one block per cell column, indexed by scan line.  This is the single consumer:
+   one scan line per chain, top down, forty cells across.
 
-       plot_ptr  = $6700 = BBC_SCREEN_BASE + 10*320: char row 10 / cell 0 / line 0 =
-                   display line 80; +1 within a char row, +$139 across one (view_next_scanline)
-       plot_ptr2 = $6800 = plot_ptr + 256 = cell 32 of the same line (a line is 40x8 = 320
-                   bytes, so one base cannot reach it)
+       plot_ptr  = $6700: char row 10, cell 0, line 0 = display line 80; +1 within a char row,
+                   +$139 across one (view_next_scanline)
+       plot_ptr2 = $6800 = plot_ptr + 256: cell 32 of the same line (a line is 320 bytes)
 
-   One unit = one cell: read the source; if non-zero clear it and translate through
+   One unit is one cell: read the source; if non-zero, clear it and translate it through
    view_cell_bytes ($6000); either way store the byte now carried.  The carried byte flows left
-   to right, so a zero-source cell repeats its left neighbour (one corrupt byte gives a run to the
-   line's right edge) and the chain must run in order.  On a real BBC the stores cover display
-   lines 80..157 (`make fbwrites`).
+   to right, so a zero cell repeats its left neighbour and the chain must run in order.
 
-   Three phases, differing in how much of the line is painted:
-     1  $7BE2, lines $4F..$2C: all forty cells, looping until the counter reaches $2C
-     2  $7D13, lines $2B..$1C: the driver plants an RTS over the store of unit
-        view_run_left_end[line], composes the boundary cell from view_left_end_mask/fill, then
-        enters chain B at view_run_right_start[line]
+   Three phases, by how much of the line is painted:
+     1  $7BE2, lines $4F..$2C: all forty cells
+     2  $7D13, lines $2B..$1C: an RTS planted over the store of unit view_run_left_end[line],
+        the boundary cell composed from view_left_end_mask/fill, then chain B entered at
+        view_run_right_start[line]
      3  $7F18, lines $1B..$03: as 2, but both chains get a planted stop and a computed start,
         and the driver steps the scan-line pointers itself
 
-   The per-line control tables (symbols.csv has the derivation; plain addresses because they are
-   indexed tables).  Every line is two runs, the left in chain A's cells 0-15 and the right in
-   chain B's 16-39, split by the dashboard, not the road, so the tables are static data.  At the
-   bottom line (X=3) the runs are cells 5-6 and 33-34: the gaps between the tyres and the dash.
-   The runs mirror about cell 19.5: the left run's start is $F1 - view_run_right_end
-   (5+34 = 6+33 = 39), and the mask/fill pairs come in the mirrored diagonal (left-start with
-   right-end on the pixel-phase tables, left-end with right-start on the per-line ones).
-   view_edge_phase ($3050) is the dash edge's sub-byte pixel phase, 0-6, shared by both runs.
-   ⚠ The control tables live inside the source blocks.  A block's live span is
-   dash_block_starts[col]..$4F; three tables sit in the tails ($50-$7F, moved to $7B00 by
-   copy_dash_data) and view_run_right_end ($3080) in column 1's below-the-start region.  Column 1
-   starts at offset $1B and the driver reads that table over lines 3..$1B, so they collide in one
-   byte, $309B, at phase 3's top line: the chain can zero a byte the driver is about to read, and
-   every table read must happen where the 6502 did it.
+   Every line is two runs, the left in chain A's cells 0-15 and the right in chain B's 16-39,
+   split by the dashboard, so the control tables are static data (derivation in symbols.csv).
+   The runs mirror about cell 19.5: the left start is $F1 - view_run_right_end.
+   view_edge_phase ($3050) is the dash edge's pixel phase, 0-6, shared by both runs.
+   ⚠ The control tables live inside the source blocks: three in the block tails ($50-$7F,
+   moved to $7B00 by copy_dash_data) and view_run_right_end ($3080) below column 1's start.
+   Column 1 starts at offset $1B, so they collide at $309B on phase 3's top line: the chain can
+   zero a byte the driver is about to read, and every table read must happen where the 6502 did
+   it.
 
-   view_paint_restore ($7BBF) puts STA back over the three planted RTSs and CPX at $7EEE.  It
-   does not reset the $7D24/$7F24/$7F7D records of where it planted, and the drivers skip an
-   unchanged re-plant, so a phase's first line can legally run with no stop planted.
+   view_paint_restore ($7BBF) puts STA back over the three planted RTSs and CPX at $7EEE, but
+   does not reset the $7D24/$7F24/$7F7D plant records; the drivers skip an unchanged re-plant,
+   so a phase's first line can legally run with no stop planted.
 
-   2093 units per sweep, ~83 changing a byte (docs/span-render-plan.md).  The forty unrolled
-   units are one indexed loop over a regular structure:
-
-       unit i:  source block $3000 + $80*i,  screen offset 8*i,  opcode slot g_viewSlotP[i],
-                base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32
-
-   Only 29 of the 40 slots are patchable: every writer patches only the low byte of its store, so
-   it can reach one page.  Chain A's unit 15 slot ($7D0E) and chain B's first ten ($7D65..$7DFE)
-   are in page $7D, which no writer addresses; they are plain stores.
+   The forty unrolled units are one indexed loop: unit i reads block $3000 + $80*i, stores at
+   screen offset 8*i through opcode slot g_viewSlotP[i], off plot_ptr for i < 32 and plot_ptr2
+   above.  Only 29 slots are patchable: writers patch only the low byte of a store, so chain A's
+   unit 15 ($7D0E) and chain B's first ten ($7D65..$7DFE), in page $7D, are plain stores.
 
    Exit contract: `live=S`, audited (docs/native-maintenance.md).  $7BBF/$7FAC leave A = $E0 and
-   the line counter 3, and phase 3 leaves C/V set, but all four call sites redefine what they
-   read before branching.  The chain's intermediate flags are dead for the same reason.
+   the line counter 3, and phase 3 leaves C/V set; all four call sites redefine what they read
+   before branching.
 
-   The core paints the viewport from `firstLine` downwards, both pointers seeded one page apart
-   at `screenBase`.  Everything above is reachable only from here. */
+   The core paints from `firstLine` downwards, both pointers seeded one page apart at
+   `screenBase`.  Everything above is reachable only from here. */
 void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entryCell)
 {
     ViewState v;
@@ -3123,7 +3125,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        fill_dash_edge_columns has written the boundary tables by now (phase 18, this frame). */
     if (!s_lowBuilt) view_low_build();
 #endif
-    view_stops_rescan();          /* what is REALLY in the page, before any plant of ours */
+    view_stops_rescan();          /* what is really in the page, before any plant of ours */
 
     /* Both pointers are seeded whole here, so nothing needs marshalling in: nothing reads the
        entry value. */
@@ -3411,7 +3413,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
     /* The session's own countdown.  Non-zero means the limit was already passed and the car
        is coasting; the frame it would reach zero is the frame the session ends. */
     if (load_x(session_end_countdown) != 0) {
-        /* Counted in ENGINE frames: one per slow tick since the previous painted frame. */
+        /* Counted in engine frames: one per slow tick since the previous painted frame. */
         if (sim_render_ticks == 1u) {
         unsigned remaining = dec_x();
         if (remaining == 0)
@@ -3556,7 +3558,7 @@ uint8_t  sim_render_ticks = 1u;
    latch). */
 uint8_t  sim_engine_caught;
 /* Once per painted frame, but measuring engine frames (docs/faithfulness-seam.md §THE
-   FRAME-RATE-INDEPENDENT SIMULATION, stage 4).  engine_sound_update moves the note one unit a
+   frame-rate-independent simulation, stage 4).  engine_sound_update moves the note one unit a
    call, four calls a painted frame; decoupled, it draws on the budget sim_note_accrue builds,
    and a call with none owed does nothing.  place_player_in_section's section-jump test is a
    lateral speed (|change in across| >= $16 between frames 93.6 ms apart), so its threshold
@@ -3584,7 +3586,7 @@ static inline int32_t sim_scale(int16_t rate, unsigned shift, uint16_t* rem)
     return sim_scale_by(rate, shift, rem, sim_h_q16);
 }
 
-/* THE CAMERA'S LOW PASS per step.  The engine's view_pitch_offset is (target + previous) / 2
+/* The camera's low pass per step.  The engine's view_pitch_offset is (target + previous) / 2
    a frame — it keeps half of itself per 93.6 ms — so a step of h frames keeps 2^-h, and moves
    k = 1 - 2^-h of the way to the target.  e^-x with x = h ln 2, four terms of the series in
    Q16 (x <= 0.693, error < 0.2%), once a session; mulu.w and divu.w only. */
@@ -3668,7 +3670,7 @@ uint8_t race_main_loop_core(RestartDepth depth)
 #else
 #define RESET_SPLIT(i) ((void)0)
 #endif
-        /* ---- the session reset, nested: FULL falls into MID falls into LATE ---- */
+        /* ---- the session reset, nested: Full falls into mid falls into late ---- */
         if (depth >= RESTART_FULL)
             clear_race_clock_core(0x00u);            /* driver 0 = the player */
         RESET_SPLIT(0);
@@ -3865,22 +3867,22 @@ uint8_t race_main_loop_core(RestartDepth depth)
    the driver ($24F6) they all serve. */
 
 /* The road-geometry pass's shared arrays (symbols.csv holds the evidence for each name).
-   edge_x is an ANGLE, not a column: bearing_to_section is an arctan and emit_edge_bearing
+   edge_x is an angle, not a column: bearing_to_section is an arctan and emit_edge_bearing
    stores `bearing - car_heading`, so an edge point is an azimuth relative to where the car is
    pointing and interp_edge is what turns one into a screen column. */
 #define SECTION_FLAGS_W  (MEM_section_flags - 0x78u)   /*   ...the same table wrapped, for a
                                       byte index past 120 */
-#define SECTION_SIDE1    0x0078u   /* ⚠ an OFFSET, not an address: the OPPOSITE road edge's
+#define SECTION_SIDE1    0x0078u   /* ⚠ an offset, not an address: the opposite road edge's
                                       parallel section list starts $78 up the section cursor
                                       (section byte cursor 0..$77 for side 0, +$78 for side 1) */
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
 
 /* max(value, floor).  Both callers (draw_road's two split clamps) snapshot the flag chain
-   into locals from the adc_step BEFORE this call and read those locals afterwards, so the
+   into locals from the adc_step before this call and read those locals afterwards, so the
    6502's CMP here leaves nothing live — it is a plain comparison.
-   ⚠ `>=` vs `>` is UNDETECTABLE here, and that is a no-op rather than a fixture gap: the only
+   ⚠ `>=` vs `>` is undetectable here, and that is a no-op rather than a fixture gap: the only
    case the two differ on is value == floor, where both arms return the same number.  The
-   fixture does exercise this helper — moving either FLOOR instead ($31->$32, $09->$0A) fails
+   fixture does exercise this helper — moving either floor instead ($31->$32, $09->$0A) fails
    draw_road with 39 and 7 mismatches. */
 static unsigned clamp_up_to(unsigned value, uint8_t floor)
 {
@@ -3889,8 +3891,8 @@ static unsigned clamp_up_to(unsigned value, uint8_t floor)
 
 /* ++mem[cell].  Pure RAM by construction here, so unlike the transliteration's INC_M it does
    not pay a bus_write range test.
-   The 6502's INC leaves N and Z; they are dead at all three call sites: append_corner_marker's caller overwrites
-   N/Z/C with its own CMP before every exit (and re-establishes them explicitly on the hook
+   The 6502's INC leaves N and Z; they are dead at all three call sites: append_corner_marker's
+   caller overwrites N/Z/C with its own CMP before every exit (and re-establishes them explicitly on the hook
    arm); update_engine_revs' shim assigns N/Z from the returned struct; and road_edge_walk's
    fixture declares live=S only, with build_track_geometry's tail rewriting A and the flags. */
 static void inc_mem(unsigned cell)
@@ -3898,17 +3900,17 @@ static void inc_mem(unsigned cell)
     mem[cell] = (uint8_t)(mem[cell] + 1);
 }
 
-/* One 16-bit section coordinate, read and written as ONE value.  Each section owns three of
+/* One 16-bit section coordinate, read and written as one value.  Each section owns three of
    them at +0/+1/+2, and the index is a BYTE index into the pair of planes — the two scratch
    slots live at $FA and $FD, past the 120 real bytes.
 
    ⚠ The planes are $100 apart, so there is no word load even in principle: what these remove
-   is the LANE ARITHMETIC (the shift/or on the way in, the two truncating stores on the way
+   is the lane arithmetic (the shift/or on the way in, the two truncating stores on the way
    out), not the two accesses.  Every site that holds a section coordinate now holds a
    uint16_t.
    ⚠ No wrap here.  The 6502 addresses these absolute,X / absolute,Y with the component baked
    into the address ($0902,X), so $FD + component 2 is $09FF — still inside the table.  A
-   caller whose index came out of an 8-bit register ADD masks it itself, which is what
+   caller whose index came out of an 8-bit register add masks it itself, which is what
    road_edge_walk_subdivide and place_car_world_coords do. */
 static uint16_t section_word(unsigned byteIndex)
 {
@@ -3922,7 +3924,7 @@ static void section_word_set(unsigned byteIndex, uint16_t value)
     mem[MEM_section_coord_hi + byteIndex] = (uint8_t)(value >> 8);
 }
 
-/* The same for a TRACK FILE segment field: an 8-byte record's field is a 16-bit value split
+/* The same for a track file segment field: an 8-byte record's field is a 16-bit value split
    across the two segment planes ($5900 low / $5300 high). */
 static uint16_t segment_word(unsigned byteIndex)
 {
@@ -3930,25 +3932,17 @@ static uint16_t segment_word(unsigned byteIndex)
                       | ((unsigned)mem[MEM_track_segment_hi + byteIndex] << 8));
 }
 
-/* THE REST OF THE ROAD-GEOMETRY PASS — the whole call tree under build_track_geometry, in
-   three groups:
-
-     THE NEAR-SLOT BOOKKEEPING — shift_near_edge_points, clamp_near_edge_window,
-     clamp_near_edge_cursor.  Slots 0..5 of each 40-point half are the points beside and behind
-     the car; these slide them along when the car crosses a section and keep the
-     [near_edge_first, near_edge_last] window and near_edge_cursor consistent.  At most once a
-     frame.
-
-     THE PER-POINT PRIMITIVES — rebase_edge_point, load_section_triple, emit_edge_bearing,
-     emit_edge_bearing_at_cursor.
-
-     THE TWO THAT COMPUTE — point_distance_hypot and emit_edge_width_offset: a shift-and-add
-     distance approximation and a variable-count 16-bit shift, both byte chains standing in for
-     16-bit operations the 68000 has.
-
-   $2145 and $2285 are deliberately NOT twinned (see transpile.py) — each is one `LDY #0`
-   falling into a body that already is one, so their fixtures would be vacuous.  Nothing here
-   calls them: every caller in this subtree passes the view origin as an ARGUMENT. */
+/* The rest of the road-geometry pass: build_track_geometry's call tree, in three groups.
+     near-slot bookkeeping  shift_near_edge_points, clamp_near_edge_window,
+                            clamp_near_edge_cursor: slots 0..5 of each 40-point half are the
+                            points beside and behind the car; slid along when the car crosses
+                            a section, at most once a frame
+     per-point primitives   rebase_edge_point, load_section_triple, emit_edge_bearing,
+                            emit_edge_bearing_at_cursor
+     the two that compute   point_distance_hypot (a shift-and-add distance) and
+                            emit_edge_width_offset (a variable-count 16-bit shift)
+   $2145 and $2285 are not twinned (transpile.py): each is one `LDY #0` falling into a twinned
+   body.  Every caller here passes the view origin as an argument. */
 
 /* The two coordinate transforms, defined further down the file.  Everything
    in this pass reaches them through the cores, never through the 6502-ABI shims. */
@@ -3959,7 +3953,7 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
    in A), `clip` is the drop flag (the far clip or the >$80 quotient — C set on the 6502) and
    `behind` is bit 7 of the surviving line (N on the 6502), which the road-edge walk folds into
    a subdivide.  `behind` is meaningful only when !clip; it is 0 on a clipped return.  (The
-   6502's mantissa/exponent float of 1/distance is no longer produced at all: the two width
+   6502's mantissa/exponent float of 1/distance is not produced: the two width
    routines divide by point_dist themselves — see edge_width_offset_for.) */
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
@@ -3994,12 +3988,12 @@ void integrate_state_rates_core(void);
 void integrate_car_position_core(void);
 CameraExit update_camera_and_height_core(void);
 
-/* $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?
+/* $12DC  clamp_near_edge_cursor — which near slot does the next frame rebuild?
    Handed a candidate slot, which it steps up by one first.  Two independent clamps:
 
-     * the window's TOP.  If candidate+1 is below near_edge_last, the window shrinks to it —
+     * the window's top.  If candidate+1 is below near_edge_last, the window shrinks to it —
        there is no point promising to rebuild slots that no longer need it.
-     * the CURSOR itself.  The candidate must land in [near_edge_first, 5], and both ways out
+     * the cursor itself.  The candidate must land in [near_edge_first, 5], and both ways out
        of that range snap to 5, not to the boundary that was crossed.
 
    It answers entirely in mem[] — the three near-slot cells — and nothing is live at the exit
@@ -4011,7 +4005,7 @@ void clamp_near_edge_cursor_core(uint8_t candidate)
     unsigned slot = (candidate + 1u) & 0xFFu;         /* $12DC INX */
 
     if (slot < near_edge_last)                        /* $12DD-$12E1 */
-        near_edge_last = (uint8_t)slot;               /* ⚠ `<` vs `<=` is UNDETECTABLE here and
+        near_edge_last = (uint8_t)slot;               /* ⚠ `<` vs `<=` is undetectable here and
                                                          that is a no-op, not a fixture gap: the
                                                          extra case is slot == near_edge_last,
                                                          which stores the value it already holds */
@@ -4024,11 +4018,11 @@ void clamp_near_edge_cursor_core(uint8_t candidate)
     near_edge_cursor = (uint8_t)slot;                 /* $12F0 STX */
 }
 
-/* $12C8  clamp_near_edge_window — RE-OPEN THE WINDOW BY ONE SLOT
+/* $12C8  clamp_near_edge_window — RE-open the window by one slot
    The other half of a section step: near_edge_last moves up one, held inside
    [near_edge_first, 6], and then the cursor clamp above runs on near_edge_cursor + 1.  (The
    6502 spells that as `LDX near_edge_cursor / INX` falling into clamp_near_edge_cursor's own
-   `INX`, so the cursor really is stepped TWICE before the first compare.) */
+   `INX`, so the cursor really is stepped twice before the first compare.) */
 void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last near slot */
 {
     unsigned last = (near_edge_last + 1u) & 0xFFu;    /* $12C8-$12CA */
@@ -4044,8 +4038,8 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
     clamp_near_edge_cursor_core((uint8_t)(near_edge_cursor + 1u));   /* $12D9-$12DB */
 }
 
-/* $12A0  shift_near_edge_points — THE CAR CROSSED A SECTION
-   Slides the near slots of BOTH 40-point halves up by one — entry i becomes entry i+1 for
+/* $12A0  shift_near_edge_points — the car crossed a section
+   Slides the near slots of both 40-point halves up by one — entry i becomes entry i+1 for
    i = 4..0 and i = $2C..$28 — which frees slot 0 and slot $28 for the point road_edge_start
    is about to build, and keeps the two halves in step.  All three per-point arrays move
    together: the azimuth's two bytes and the scan line.
@@ -4053,7 +4047,7 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
    Then the window is re-opened: near_edge_first becomes 6 - near_edge_shift, i.e. as many
    slots as the car has just stepped over, and the clamps above tidy up the rest.
 
-   Nothing is live at the exit but S.  The ONLY caller is road_edge_start $2304, and $2307
+   Nothing is live at the exit but S.  The only caller is road_edge_start $2304, and $2307
    `LDA #0 / STA $62F5 / LDY near_edge_first / CPY #6` redefines A, Y and N/Z/C before any read;
    X is untouched until road_edge_start's own `LDX $08` at $235E, and the whole road pass has no
    BVS/BVC, so the `SEC / SBC` overflow is dead too.  That subtract runs D=0 (the road pass is
@@ -4080,7 +4074,7 @@ void shift_near_edge_points_core(uint8_t topSlot,       /* $2C — slot 4 of the
     clamp_near_edge_window_core(nearSlots);                            /* $12C4 */
 }
 
-/* $0BA2  rebase_edge_point — ONE SURVIVING POINT ONTO THIS FRAME'S CAMERA
+/* $0BA2  rebase_edge_point — one surviving point onto this frame's camera
    An edge point is stored relative to the camera — its azimuth is measured from where the car
    points, its scan line from where the camera looks — so a point kept from last frame is
    wrong by exactly one frame of camera motion.  This corrects both halves of that in one go:
@@ -4111,7 +4105,7 @@ void rebase_edge_point_core(uint8_t slot)
     }
 }
 
-/* $1208  load_section_triple — TRACK FILE -> A LIVE SECTION SLOT
+/* $1208  load_section_triple — track file -> a live section slot
    A track-file segment is an 8-byte record (which is why the wrap point is segment_count_x8),
    and fields 1..3 of it are the segment's three 16-bit coordinates.  This copies that triple
    into one of the 40+2 live section slots, whose two arrays road_edge_start, road_edge_walk,
@@ -4121,7 +4115,7 @@ void rebase_edge_point_core(uint8_t slot)
    index of $FE really does reach three bytes past the end of the array rather than back to
    the start.  The 6502 copies all three low bytes and then all three high bytes; this copies
    the three values whole, which is the same thing here because source and destination are
-   DIFFERENT arrays — the widest reach is $09FF, short of the high plane at $0A00 — so no store
+   different arrays — the widest reach is $09FF, short of the high plane at $0A00 — so no store
    can be read back by a later load of this copy. */
 void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 {
@@ -4136,11 +4130,11 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
    ground-plane magnitudes bearing_to_section sorts, handed straight to point_distance_hypot.
    One producer, one consumer, both native.
 
-   ⚠ THE CELLS ARE NOT FREED — $7A/$7B have a second tenant: plot_view_src_line's
+   ⚠ The cells are not freed — $7A/$7B have a second tenant: plot_view_src_line's
    PVS_BYTE/PVS_MODE, which project_geometry's $1D94 arm reads back.  That tenancy keeps mem[].
 
    ⚠ The 6502-ABI boundary keeps both representations in step (the IN/OUT rule,
-   docs/wide-value-cleanup.md): a shim whose core produces the value marshals OUT, one whose core
+   docs/wide-value-cleanup.md): a shim whose core produces the value marshals out, one whose core
    consumes it marshals IN.  Four accesses at an ABI crossing, none on the core-to-core road
    pass. */
 uint16_t hypot_max_v;   /* not static: road_edge_walk_m68k (walk_m68k.s) writes it */
@@ -4148,19 +4142,15 @@ uint16_t hypot_max_v;   /* not static: road_edge_walk_m68k (walk_m68k.s) writes 
 /* hypot_min ($78/$79) is the sibling relocation: the same producer sorts both magnitudes and
    the same consumer reads both, so the pairs marshal at identical seams.
 
-   ⚠ THE CELLS ARE NOT FREED, and this pair is the most crowded in the file — ten other tenants:
-   MUL_SIGN / SLIP_SIGN / SLIP_OUT_INDEX / PVS_COLOUR / PVS_COLOUR_P, update_grip_limits' axle
-   load terms (the one INDEXED access, `ADC $78,X` at $4C52, spans both cells), car_gap_tail's
-   sign shift register, full_track_scan_rebuild's retreat-grid outer index, menu_wait_key's
-   remembered row.  All keep mem[$78/$79]; only the hypot's use moves.
+   ⚠ The cells are not freed: ten other tenants keep mem[$78/$79] (MUL_SIGN, SLIP_SIGN,
+   SLIP_OUT_INDEX, PVS_COLOUR, PVS_COLOUR_P, update_grip_limits' axle load terms through
+   `ADC $78,X` at $4C52, car_gap_tail's sign shift register, full_track_scan_rebuild's
+   retreat-grid index, menu_wait_key's remembered row).  The hazard is a tenant still live at a
+   marshalling parent's exit, where the out would stamp over it; validate's full mem[] diff
+   checks that.
 
-   ⚠ A marshalling parent REACHING a tenant is not the test — what would break is a tenant value
-   still LIVE at that parent's exit, where the OUT would stamp over it.  `make validate`'s full
-   mem[] differential is what says it is not.
-
-   ⚠ The consumer produces the pair back CONDITIONALLY and ASYMMETRICALLY: the near arm's >>3
-   stores only the high lane, the far arm rewrites both (see point_distance_hypot_apply).
-   Writing d.min whole on both arms is a differential failure. */
+   ⚠ The consumer writes the pair back conditionally and asymmetrically: the near arm's >>3
+   stores only the high lane, the far arm both (see point_distance_hypot_apply). */
 uint16_t hypot_min_v;   /* not static: road_edge_walk_m68k (walk_m68k.s) writes it */
 
 void hypot_min_marshal_in(void)
@@ -4214,7 +4204,7 @@ void edge_nearest_marshal_out(void)
 uint16_t car_heading_v;   /* not static: apply_driving_model's and mirrors_update's shims pass its high byte */
 /* The heading change rebase_edge_point corrects the near edge points by: the frame driver sets
    it to the sum of element 2 over the steps since the last geometry pass (§THE SIMULATION
-   CLOCK); every 6502-ABI shim that reaches the re-base sets it to element 2 itself, which is
+   clock); every 6502-ABI shim that reaches the re-base sets it to element 2 itself, which is
    the one-step value the oracle reads out of heading_step_lo/hi. */
 uint16_t rebase_heading_delta_v;
 
@@ -4297,11 +4287,11 @@ uint8_t point_distance_hypot_apply(void)
                       hypot_min_v,             /* relocated out of mem[$78/$79] — see above */
                       hypot_max_v);            /* relocated out of mem[$7A/$7B] — see above */
 
-    /* ⚠ the near arm stores only the HIGH lane ($0CB0's LSR with the low byte still in A), so
+    /* ⚠ the near arm stores only the high lane ($0CB0's LSR with the low byte still in A), so
        the low lane keeps what it arrived with; the far arm's >>1 rewrites both ($0CC2-$0CC4). */
     if (d.farArm) {
         hypot_min_v = d.min;
-        math_lo = (uint8_t)(d.maxEighth >> 8);        /* ⚠ the HIGH byte, in math_lo */
+        math_lo = (uint8_t)(d.maxEighth >> 8);        /* ⚠ the high byte, in math_lo */
         math_hi = (uint8_t)d.maxEighth;
     } else {
         hypot_min_v = (uint16_t)((d.min & 0xFF00u) | (hypot_min_v & 0x00FFu));
@@ -4311,9 +4301,9 @@ uint8_t point_distance_hypot_apply(void)
     return (uint8_t)(d.dist >> 8);       /* the distance high byte — the callers' live output */
 }
 
-/* $23C0  emit_edge_bearing — THE POINT'S ANGLE, RELATIVE TO THE CAR
-   bearing_to_section leaves an absolute bearing; an edge point stores the angle FROM WHERE
-   THE CAR IS POINTING, so this is the one subtraction between them, written into both bytes
+/* $23C0  emit_edge_bearing — the point's angle, relative to the car
+   bearing_to_section leaves an absolute bearing; an edge point stores the angle from where
+   the car is pointing, so this is the one subtraction between them, written into both bytes
    of edge_x at the given slot.  It then falls into point_distance_hypot, which is why every
    caller gets the point's distance as well as its angle out of one call.
 
@@ -4322,7 +4312,7 @@ uint8_t point_distance_hypot_apply(void)
 uint8_t emit_edge_bearing_core(uint8_t slot)
 {
 
-    /* $23C0-$23CC — the point's angle FROM WHERE THE CAR POINTS: bearing - car_heading, one
+    /* $23C0-$23CC — the point's angle from where the car points: bearing - car_heading, one
        16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
     uint16_t rel = (uint16_t)(bearing_v      /* relocated out of mem[$8A/$8B] — see above */
                             -  car_heading_v);   /* relocated out of mem[$0A/$0B] */
@@ -4331,7 +4321,7 @@ uint8_t emit_edge_bearing_core(uint8_t slot)
     return point_distance_hypot_apply();     /* $23CF JMP — the point's distance high byte in A */
 }
 
-/* $23BB  emit_edge_bearing_at_cursor — ...FOR THE POINT THE WALK IS ON
+/* $23BB  emit_edge_bearing_at_cursor — ...for the point the walk is on
    Five bytes: take the section's bearing from the camera, then emit it at edge_cursor.  It
    exists because road_edge_walk always wants both together, where road_edge_start picks the
    slot itself and calls the two halves separately. */
@@ -4410,7 +4400,7 @@ static unsigned edge_width_offset_for(uint16_t dist, uint8_t k)
 {
 #ifdef REVS_EXACT_RATIO
     /* `make EXACTRATIO=1` — the 6502's own operands: project_point left the float of 1/D in
-       proj_width / proj_width_shift and shifted point_dist_lo IN PLACE, so `dist` is not D here
+       proj_width / proj_width_shift and shifted point_dist_lo in place, so `dist` is not D here
        (dividing by it drew every road boundary and sign at the wrong width). */
     (void)dist;
     return width_shifted(proj_width, (uint8_t)(proj_width_shift - k - 1u));
@@ -4434,7 +4424,7 @@ static uint8_t object_width_for(uint16_t dist)
 #ifdef REVS_EXACT_RATIO
     /* `make EXACTRATIO=1` — the 6502's float at every distance, read where it left it
        (proj_width / proj_width_shift — point_dist_lo is shifted in place, so `dist` is not D):
-       its two loops shift the mantissa by exponent - 10 places, LEFT or RIGHT, and eight or more
+       its two loops shift the mantissa by exponent - 10 places, left or right, and eight or more
        either way walks it to 0. */
     (void)dist;
     {
@@ -4483,7 +4473,7 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
    The 6502 carries the 16-bit offset and its sum in the math_lo/math_hi byte lanes, threading
    carry with ASL/ROL; here both are ordinary 16-bit expressions.  The offset is doubled onto
    the edge point's azimuth; the summed high byte off the ends of $18..$E8 (the near/far wrap)
-   selects DRAW, anything inside it SKIP.  On the draw path plot_x is that azimuth's top byte
+   selects draw, anything inside it skip.  On the draw path plot_x is that azimuth's top byte
    re-centred on $50, and proj_width is |high byte of the offset << 3|. */
 void draw_corner_marker_core(uint16_t offset, uint16_t edgeX,
                              uint8_t edgeY, CornerMarker *out)
@@ -4529,7 +4519,7 @@ void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth,
     out->half    = half;                                /* $74 exit value (drawable path only) */
     out->bottom  = (uint8_t)(0xB6u + half);             /* $7B13 shared_temp_84 — block bottom line */
     out->top     = (uint8_t)(0xB6u - half);             /* $7B1A span_line_cursor — block top line */
-    /* $7B1E-$7B29: (bearingHi - car_heading_hi - 4) >> 3, all 8-bit — the -4 MUST wrap mod 256
+    /* $7B1E-$7B29: (bearingHi - car_heading_hi - 4) >> 3, all 8-bit — the -4 must wrap mod 256
        before the shift (SBC #4 is a byte op; a bare `- 4u` would promote to int and mis-shift a
        value < 4). */
     uint8_t fold = (uint8_t)((uint8_t)(bearingHi - carHeadingHi) - 4u);
@@ -4582,29 +4572,27 @@ void driver_name_address_core(uint8_t index, NamePtr *out)
     out->addr    = (uint16_t)(((0x40u + (index >> 2)) << 8) | (0x50u + col * 12u));
 }
 
-/* draw_dash_needles ($513A), the STEERING-WHEEL needle's arithmetic (the rev-needle half and the
-   undraw/plot machinery stay in the shim).  The steering angle is SIGN-MAGNITUDE and stored SHIFTED
-   UP ONE PLACE: bit 0 of the low byte is the sign and the value's own lowest bit sits in bit 1, so
-   the routine doubles the 16-bit angle to shift the sign out and works with the doubled high byte.
-   ⚠ The two lanes are STRIDED, not adjacent — $62A2 and $62A5, elements 2-low and 2-high of the
-   car-angle array — so the pair arrives here as one `uint16_t` argument (a per-twin hoist) and the
-   cells themselves stay in mem[]; relocating them is the SoA case, all three elements at once.
+/* draw_dash_needles ($513A), the steering-wheel needle's arithmetic (the rev-needle half and the
+   undraw/plot machinery stay in the shim).  The steering angle is sign-magnitude, shifted up one
+   place: bit 0 of the low byte is the sign, so the routine doubles the 16-bit angle and works
+   with the doubled high byte.  The two lanes are strided ($62A2 and $62A5, element 2 of the
+   car-angle array), so the pair arrives as one `uint16_t` argument and the cells stay in mem[].
 
-     - bit 0 of steer_lo is the SIGN; it picks the octant step (2 or 5) and later negates the origin.
-     - the doubled high byte, folded about $3C and mirrored about $4C, is the angle index into
-       steer_needle_dda_tbl ($3980) — small angles (< $26) index it directly, larger ones fold.
-     - which quantity (angle index vs. looked-up length) feeds the scanline count vs. the screen
-       origin swaps between the two paths (a 6502 register-juggle), reproduced faithfully via AA/XX.
+     - bit 0 of steer_lo is the sign; it picks the octant step (2 or 5) and negates the origin.
+     - the doubled high byte, folded about $3C and mirrored about $4C, indexes
+       steer_needle_dda_tbl ($3980); angles under $26 index it directly.
+     - the two paths swap which quantity (angle index or looked-up length) feeds the scan-line
+       count and which the screen origin (AA/XX below).
 
-   All plain 8-bit maths (D = 0 on the dash path).  math_lo/math_hi keep their 6502 exit scratch
-   values (the angle index / a fixed 6) until the $74/$75 relocation. */
+   Plain 8-bit maths, D = 0.  math_lo/math_hi keep their 6502 exit values (the angle index and
+   a fixed 6). */
 void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
 {
     uint8_t sign     = (uint8_t)(steer & 1u);                   /* $5145 LSR -> C = bit0 */
     uint8_t stepInit = sign ? 2u : 5u;                          /* $5147-$514D */
 
-    /* $5152-$5154 ASL/ROL — ONE 16-bit double, shifting the sign bit out of the bottom.  The angle
-       the tables are indexed by is the doubled HIGH byte, and the bit shifted off the top (the
+    /* $5152-$5154 ASL/ROL — one 16-bit double, shifting the sign bit out of the bottom.  The angle
+       the tables are indexed by is the doubled high byte, and the bit shifted off the top (the
        angle's own bit 15) means "too big to fold", forcing the clamp below. */
     uint8_t doubled = (uint8_t)((uint16_t)(steer << 1) >> 8);
 
@@ -4645,7 +4633,7 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
     out->subPos       = (uint8_t)((originBase << 1) & 0x07u);   /* $5195-$519A -> shared_temp_77 */
 }
 
-/* $511E  undraw_plot_lines — THE ERASE HALF of the dash needles.  Walks the undo list
+/* $511E  undraw_plot_lines — the erase half of the dash needles.  Walks the undo list
    plot_line_octant recorded, top entry down to 0, writing each saved background byte back
    through its saved address, then empties the list.  Every byte the plotter ORs into is saved
    before the OR, so the dial faces are never repainted.
@@ -4848,8 +4836,7 @@ void plot_line_octant_core(uint8_t entryScanline)
             NDL_XSTEP(-1);
             /* `>= 8` vs `> 8` is provably the same program: at oldLo == 8 the new low byte is
                0, and the re-test below asks `a >= 8`, which 0 fails — so the borrow arm falls
-               through without stepping, exactly where the no-borrow arm jumps.  A sabotage of
-               this comparison survives for that reason, not for want of coverage. */
+               through without stepping, exactly where the no-borrow arm jumps. */
             stepRight = (oldLo < 8u);                      /* $5237 no borrow -> keep this cell */
             a = (uint8_t)plot_ptr_v;                       /* $523b BCS not taken (borrow) -> re-test */
         } else {
@@ -4887,7 +4874,7 @@ void plot_line_octant_core(uint8_t entryScanline)
         /* §12d: on the Amiga plane arm the pixel goes on a list and nothing goes into mem[]
            (revs_plot.h); the renderer turns each mark's list into a prerendered hardware sprite,
            so nothing is painted into either playfield or put back.
-           READER AUDIT.  (a) The frame buffer: `make fbwrites FILLREADS=1` over a real BBC race
+           Reader audit.  (a) The frame buffer: `make fbwrites FILLREADS=1` over a real BBC race
            names every reader of display lines 117..157: tick_wheel_spin (cells 0,1,38,39),
            plot_line_octant's own undo save, and update_grip_limits (line 149, cells 7 and 32);
            the only one inside the needle column is this routine.  (b) The undo list:
@@ -4918,7 +4905,7 @@ void plot_line_octant_core(uint8_t entryScanline)
         uint8_t out = (uint8_t)((screenByte & mem[MEM_pixel_keep_others_tbl + maskIdx])
                                 | mem[MEM_plot_line_colour_tbl + maskIdx]);       /* $528e-5291 */
         bus_write(addr, out);                              /* $5294 */
-        plot_store_resync(addr, out);   /* the plotter can write its OWN pointer cells */
+        plot_store_resync(addr, out);   /* the plotter can write its own pointer cells */
 #endif
 
         /* $5296-52a0 — the minor (every-pixel) step, then loop until the counter goes negative. */
@@ -4932,7 +4919,7 @@ void plot_line_octant_core(uint8_t entryScanline)
         default: platform_smc_unhandled(MEM_smc_minor_step, mem[MEM_smc_minor_step]);
                  plot_ptr_marshal_out(); return;
         }
-        math_hi = (uint8_t)(math_hi - 1);                  /* $529c DEC math_hi — IN PLACE */
+        math_hi = (uint8_t)(math_hi - 1);                  /* $529c DEC math_hi — in place */
         if (math_hi & 0x80u) break;                        /* $529e BMI -> done */
     }
     plot_ptr_marshal_out();                                /* publish $70/$71 for the 6502-ABI mirror */
@@ -4945,10 +4932,10 @@ void plot_line_octant_core(uint8_t entryScanline)
 
 #if defined(REVS_NDL_ASM_ON) && defined(REVS_NDL_ASM_CHECK)
 volatile unsigned long g_ndlChecks       = 0;
-volatile unsigned long g_ndlMismatch     = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_ndlMismatch     = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_ndlMismatchAt   = 0;   /* first differing address; $10000 the list, $10001 the pointer */
 volatile unsigned long g_ndlFuzzCases    = 0;
-volatile unsigned long g_ndlFuzzMismatch = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_ndlFuzzMismatch = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_ndlFuzzFull     = 0;   /* cases that filled the list — must be non-zero */
 volatile unsigned long g_ndlFuzzOutside  = 0;   /* cases with a pixel off the display — must be non-zero */
 volatile unsigned long g_ndlBad[8];              /* the first bad case: what (bits), count C/A, outside C/A, octant|x<<8|line<<16, math_hi|ptr<<16 */
@@ -5029,7 +5016,7 @@ static void ndl_compare(uint8_t entryScanline, volatile unsigned long* bad)
         if (!*bad) g_ndlMismatchAt = 0x10001u;
         (*bad)++;
     } else {
-        /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        /* ENDIAN-OK: an equality test a longword at a time (see emit_width_compare). */
         const uint32_t* a = (const uint32_t*)(const void*)mem;
         const uint32_t* c = (const uint32_t*)(const void*)s_ndlAfterC;
         for (i = 0; i < 65536u / 4u; i++)
@@ -5043,7 +5030,7 @@ static void ndl_compare(uint8_t entryScanline, volatile unsigned long* bad)
     }
 }
 
-/* THE FUZZER, once, before the first real line.  Driving draws two lines a frame from a narrow
+/* The fuzzer, once, before the first real line.  Driving draws two lines a frame from a narrow
    band of angles, so each case randomises every input the DDA reads — the octant, the sub-cell
    column (including the ones past 7 and below 0 that step a cell), the entry line (including the
    ones that step a character row), the delta, the increment, the count, the mask base, the plot
@@ -5100,7 +5087,7 @@ void plot_line_octant_core(uint8_t entryScanline)
 }
 #endif
 
-/* $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE
+/* $3A50  menu_draw_gfx_bars — two teletext graphics bars into the menu page
 
    Called once from front_end_menus ($63ED), while MODE 7 is up so $7C00-$7FFF is
    the teletext page (time-multiplexed with the race view's cell chains).  For each
@@ -5129,13 +5116,13 @@ void menu_draw_gfx_bars_core(void)
     }
 }
 
-/* $32D0  parse_two_digit_ascii — TWO ASCII DIGITS -> A NUMBER 0..99
+/* $32D0  parse_two_digit_ascii — two ASCII digits -> a number 0..99
 
    The console numeric-entry validator (sole caller $3EE0 reads two chars into
    math_lo/math_hi via console_io, then loops here until the pair is valid).
    char0 = math_lo ($74), char1 = math_hi ($75); a $20 (space) in char0 counts as
    '0'.  Each char is turned into a digit by SBC #$30 and range-checked (< 10); the
-   value is digit0*10 + digit1, built with SHIFTS (ASL/ASL/ADC/ASL = *10), so it is
+   value is digit0*10 + digit1, built with shifts (ASL/ASL/ADC/ASL = *10), so it is
    binary by construction and D-independent — this is not one of the 8 SED sites.
      • char0 not a digit  -> exit, C set (invalid)          [math_lo NOT written]
      • char1 == space     -> exit, C clear, value = digit0  (single digit)
@@ -5177,7 +5164,7 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
     out->n = (uint8_t)(((value - 0x29u) >> 7) & 1u);
 }
 
-/* $3C50  prompt_wing_settings — THE PIT-LANE WING PROMPT
+/* $3C50  prompt_wing_settings — the pit-lane wing prompt
 
    The page the pit-stop wait loop ($6560) puts up before handing the car back:
    dress the front end for layout variant 5, ask for the rear wing and then the
@@ -5194,7 +5181,7 @@ void prompt_wing_settings_core(void)
     wait_dismiss_space_core();                           /* $3C6B */
 }
 
-/* $3EE0  console_read_two_digits — READ A NUMBER 0..40 FROM THE CONSOLE
+/* $3EE0  console_read_two_digits — read a number 0..40 from the console
 
    The pit-lane wing prompts' input routine, and it will not take no for an answer:
    line-edit two characters into math_lo/math_hi, validate them with
@@ -5229,26 +5216,23 @@ uint8_t console_read_two_digits_core(void)
 }
 
 /* $635D  seed_car_track_position — place one car on the grid at (re)start
-   Called per car by reset_all_cars_for_session and tick_race_timers (the reset paths).  ⚠ NOT by
-   console_io ($6300), whose tail appears to fall through into it: the BNE at $635B
-   is taken unconditionally (the LDA #$20 two bytes earlier can never set Z), so that
-   edge does not exist.
-   Turns a free-running-timer entropy byte into a per-car track position:
+   Called per car by reset_all_cars_for_session and tick_race_timers.  Not by console_io
+   ($6300), whose tail only appears to fall through: its BNE at $635B is always taken.
+   Turns a timer entropy byte into a per-car track position:
 
-     * read USRVIA_T2CL (a clock read used as entropy) and keep its bit 7 as the sign;
-     * reduce the low 7 bits to a small remainder — subtract 4 up to 16 times, then, only
-       if that ran the counter out (the byte was >= 64), subtract 7 up to 9 times.  The
-       6502 keeps the quotient in Y and throws it away; only the remainder in A is used;
-     * negate the remainder iff the raw byte was negative (abs8 tests that saved sign);
-     * double it, subtract the car's grid-base row (car_grid_base[x] = car index >> 1);
-     * scale by race_class — Novice (0) doubles, Amateur (1) leaves it, Pro (>=2) halves
-       it arithmetically (the ROL car scratch / ROR A pair is a sign-preserving >>1);
+     * read USRVIA_T2CL and keep its bit 7 as the sign;
+     * reduce the low 7 bits to a remainder: subtract 4 up to 16 times, then, only if that ran
+       the counter out (the byte was >= 64), subtract 7 up to 9 times;
+     * negate the remainder if the raw byte was negative;
+     * double it and subtract the car's grid-base row (car_grid_base[x] = car index >> 1);
+     * scale by race_class: Novice (0) doubles, Amateur (1) keeps, Pro (>=2) halves it
+       arithmetically (the ROL / ROR pair is a sign-preserving >>1);
      * add the held track scale and store car_track_position[x];
-     * step the car-index cursor back one (mod 20) and hand it back.
+     * step the car-index cursor back one (mod 20) and return it.
 
-   $74 is the routine's own scratch (the post-grid value, rotated on the Pro path) and is a
-   C local here; the twin still writes its per-path 6502 exit value.  Exit ABI: X live (the decremented cursor the caller's loop reads); A and
-   the flags are dead (reset_all_cars_for_session does TXA, the others return). */
+   $74 is the routine's scratch (a C local here); its per-path 6502 exit value is still
+   written.  Exit ABI: X live (the decremented cursor the caller's loop reads); A and the flags
+   are dead (reset_all_cars_for_session does TXA, the others return). */
 static AddFlags negate8(uint8_t a);            /* defined below ($3452 abs8's cpu-free half) */
 /* promoted for revs_native_abi.c */ uint8_t  car_index_dec_core(uint8_t x); /* defined below ($507E) */
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out)
@@ -5287,30 +5271,25 @@ uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo
     return car_index_dec_core(x);                    /* $639C DEX mod 20 */
 }
 
-/* $2565  emit_edge_width_offset — THE OTHER SIDE OF THE ROAD, AND THE MARKERS
-   The last thing road_edge_walk does with a point it has decided to keep, and it produces
-   three separate things out of one lookup:
+/* $2565  emit_edge_width_offset — the other side of the road, and the markers
+   The last step for an edge point road_edge_walk keeps.  One lookup produces three things:
 
-     1. THE OPPOSITE BOUNDARY.  The point's section byte carries feature bits; masked by the
-        bits that belong to this road side, their low three select a width EXPONENT k, and
-        2^(22-k) over the point's distance is how wide the road looks HERE (the 6502 shifted
-        project_point's reciprocal mantissa by the exponent difference — edge_width_offset_for).  Added to — or subtracted from, depending
-        on which side and which way round the circuit — the point's own azimuth, that is
-        edge_opp_x, the angle of the far kerb.
-     2. THE STYLE.  edge_style_by_feature's entry for the same feature bits, or a flat 2 on an odd
-        section byte, becomes the point's edge_style: which surface draw_road paints there.
-     3. A CORNER MARKER, when the masked bits include either of the $18 pair and the frame has
-        fewer than three already.  Bit 0 halves the marker's offset from its edge point.
+     1. The opposite boundary.  The point's section byte carries feature bits; masked by this
+        road side's bits, their low three select a width exponent k, and 2^(22-k) over the
+        point's distance is how wide the road looks there (edge_width_offset_for).  Added to or
+        subtracted from the point's azimuth, by side and circuit direction, it gives edge_opp_x,
+        the angle of the far kerb.
+     2. The style.  edge_style_by_feature's entry for the same bits, or a flat 2 on an odd
+        section byte, becomes the point's edge_style: the surface draw_road paints there.
+     3. A corner marker, when the masked bits include either of the $18 pair and the frame has
+        fewer than three.  Bit 0 halves the marker's offset from its edge point.
 
-   WHAT THE TWIN CHANGES.  The width shift is a VARIABLE 16-bit shift, and the 6502 has to
-   run it as a loop of `ASL A / ROL math_hi` (or `LSR / ROR`) one place per iteration, up to
-   255 times.  The 68000 shifts a word by a register in one instruction, so the loop becomes a
-   shift and a range test — the one place in this pass where the twin does asymptotically less
-   work than the 6502 rather than the same work with less bookkeeping.
+   The 6502 runs the variable 16-bit shift as an `ASL A / ROL math_hi` loop, up to 255 times;
+   here it is one shift and a range test.
 
-   ⚠ The first THREE points of a side get no width offset at all ($2580 CMP #3): they are the
-   ones beside the car, where the perspective divide has nothing useful to say.
-   ⚠ SELF-MODIFYING at $261A: all four expansion circuits replace the horizon store pair with
+   ⚠ The first three points of a side get no width offset ($2580 CMP #3): they are beside the
+   car.
+   ⚠ Self-modifying at $261A: the expansion circuits replace the horizon store pair with
    `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed. */
 
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
@@ -5342,8 +5321,8 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         /* $2589-$25A9 — the apparent half-width here: this feature's width constant over the
            point's distance.  The 6502 shifted project_point's reciprocal mantissa by its exponent
            less this feature's own; that is 2^(22-k)/point_dist, taken here as one divide
-           (edge_width_offset_for — the true ratio, user decision).  point_dist is still this
-           point's: project_point no longer shifts it, and nothing between the two touches it
+           (edge_width_offset_for, the true ratio).  point_dist is still this point's:
+           project_point does not shift it, and nothing between the two touches it
            ($2455→$2460, $23FC→$246A, and the native walk's same order). */
         offset  = edge_width_offset_for(
                       (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo),
@@ -5373,7 +5352,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
             append_corner_marker(flags, offset);
     }
 
-    /* $25FD-$260B — THE STYLE.  An odd section byte is always style 2; an even one takes the
+    /* $25FD-$260B — the style.  An odd section byte is always style 2; an even one takes the
        feature's own.  (The `TXA / AND #1` is the only use of the section index down here.)
        Y exits = edge_cursor from here on (the $2603 LDY), so horizon_index below uses it. */
     mem[MEM_edge_style + edge_cursor] = (sectionByte & 1u) ? 0x02u : style;
@@ -5410,11 +5389,11 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         }
         /* ⚠ SMC/hook seam: the JMP transfers to the circuit's own code, which the 6502 reaches
            with A = line and the CMP horizon_extent flags live (C=1 here), so re-establish that
-           entry ABI before dispatching.  The hook runs to its own RTS and owns the EXIT state —
+           entry ABI before dispatching.  The hook runs to its own RTS and owns the exit state —
            hand cpu back verbatim (documented cpu exception, like cluster 5's per-circuit hooks). */
         HookRegs hr;
         /* Every register the 6502 has live at $261A, from this routine's own values — no cpu:
-           X is the ENTRY X, because nothing between $2565 and $261A writes it ($25FD's `TXA`
+           X is the entry X, because nothing between $2565 and $261A writes it ($25FD's `TXA`
            reads it), and the entry X is the section byte this core was called with. */
         hr.x = sectionByte;
         hr.y = edge_cursor;                           /* $2603 LDY $12, live into the JMP */
@@ -5435,7 +5414,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
 }
 
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_GEO_ASM)
-/* THE AMIGA RUNS THE WALK'S WIDTH EMITTER IN 68000 ASSEMBLY — src/platform/amiga/emit_width_m68k.s,
+/* The Amiga runs the walk's width emitter in 68000 assembly — src/platform/amiga/emit_width_m68k.s,
    whose banner has the shape.  Both of road_edge_walk's calls pass firstScoringPoint 3 and read no
    exit register, so mem[] is the asm's whole contract; the core above stays the reference
    (the host runs it, `make GEOASM=0` is the control) and `make GEOCHECK=1` runs both on the same
@@ -5450,16 +5429,16 @@ void emit_width_c(unsigned sectionByte)
 
 #ifdef REVS_GEO_CHECK
 volatile unsigned long  g_geoChecks     = 0;
-volatile unsigned long  g_geoMismatch   = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long  g_geoMismatch   = 0;   /* ⚠ Must be 0 */
 volatile unsigned long  g_geoMismatchAt = 0;   /* the first differing address */
 static uint8_t s_geoBefore[65536] __attribute__((aligned(4))), s_geoAfterC[65536] __attribute__((aligned(4)));
 volatile unsigned long  g_geoFuzzCases    = 0;
-volatile unsigned long  g_geoFuzzMismatch = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long  g_geoFuzzMismatch = 0;   /* ⚠ Must be 0 */
 static void emit_width_compare(unsigned sectionByte, volatile unsigned long* bad,
                                volatile unsigned long* badAt);
-/* THE FUZZER, once, before the first real call.  Driving data never wraps an edge angle past
-   $8000 (that is a point BEHIND the car), rarely reaches the near-point float arm and rarely
-   extends the horizon from here — three sabotages survived the real calls alone — so each case
+/* The fuzzer, once, before the first real call.  Driving data never wraps an edge angle past
+   $8000 (that is a point behind the car), rarely reaches the near-point float arm and rarely
+   extends the horizon from here, so each case
    randomises exactly the inputs the routine reads, runs both, and requires all 64 KB to agree.
    mem[] is restored afterwards: the game never sees a fuzzed byte. */
 static uint8_t s_geoFuzzSave[65536] __attribute__((aligned(4)));
@@ -5513,7 +5492,7 @@ static void emit_width_compare(unsigned sectionByte, volatile unsigned long* bad
     memcpy(s_geoAfterC, (const void*)mem, sizeof s_geoAfterC);
     memcpy((void*)mem, s_geoBefore, sizeof s_geoBefore);     /* the same input for the asm */
     emit_width_m68k(sectionByte);
-    /* ENDIAN-OK: an EQUALITY test a longword at a time — byte order cannot change whether two
+    /* ENDIAN-OK: an equality test a longword at a time — byte order cannot change whether two
        copies of the same bytes are equal — and the byte loop narrows the first difference. */
     {
         const uint32_t* a = (const uint32_t*)(const void*)mem;
@@ -5581,15 +5560,15 @@ REVS_FLAG_OP void abs8_into(HookRegs *r)
 
 void abs8_regs(HookRegs *r) { abs8_into(r); }
 
-/* $254A  road_edge_side — WHICH ROAD SIDE, AND WHICH WAY ROUND IT
+/* $254A  road_edge_side — which road side, and which way round it
    Called twice a frame, with $00 and $80, and it EORs that against track_direction — so the
-   two calls pick OPPOSITE sides whichever way round the circuit the car is going.  What it
+   two calls pick opposite sides whichever way round the circuit the car is going.  What it
    hands road_edge_walk is three things:
 
      cpu.X                the byte index into section_coord_lo/hi the walk starts from:
                           section_cursor for one side, section_cursor + 120 for the other
      section_wrap_limit   what the walk's step wraps against, 0 or 120 — this is the cell
-                          that makes the two sides traverse the section list in OPPOSITE
+                          that makes the two sides traverse the section list in opposite
                           directions off the same cursor
      road_side_index      0 or 1, which emit_edge_width_offset uses to pick the road's width
                           record and the sign of the offset
@@ -5628,40 +5607,35 @@ RoadSide road_edge_side_apply(uint8_t sideSelect)
     return r;
 }
 
-/* $22FF  road_edge_start — THE NEAR EDGE POINTS
-   build_track_geometry's first call, and the only part of the road pipeline that REUSES last
-   frame's work.  Slots 0..5 of each 40-point half are the edge points beside and behind the
-   car — both walks start at slot 6 — and they are far too close to the camera to re-derive
-   from the section list every frame.  So:
+/* $22FF  road_edge_start — the near edge points
+   build_track_geometry's first call, and the only part of the road pipeline that reuses last
+   frame's work.  Slots 0..5 of each 40-point half are the points beside and behind the car
+   (both walks start at slot 6), too close to the camera to re-derive every frame.  So:
 
      1. if the car has crossed a section since the last pass, slide those slots up by one
         (shift_near_edge_points) and clear the pending flag;
-     2. bail out entirely when near_edge_first or near_edge_last reads 6, the "nothing to
-        rebuild" sentinel;
-     3. re-base the slots that did survive, in PAIRS (slot and slot+40), by the same camera
-        delta integrate_car_position adds to the heading — that is rebase_edge_point, and it
-        also keeps the running horizon maximum;
-     4. and then build the ONE genuinely new point: work out which track-file segment it comes
-        from, stage its coordinate triple in the scratch section slot, take its bearing, store
-        the angle into both halves and — for the near half only — project it to a scan line
-        and offer that to the horizon.
-     5. Finally hand the next frame the slot below this one, and stop a stale
-        horizon_index_prev from letting the road reach past line 7.
+     2. return when near_edge_first or near_edge_last reads 6, "nothing to rebuild";
+     3. re-base the surviving slots in pairs (slot and slot+40) by the camera delta
+        integrate_car_position adds to the heading (rebase_edge_point, which also keeps the
+        running horizon maximum);
+     4. build the one new point: find its track-file segment, stage its coordinate triple in
+        the scratch section slot, take its bearing, store the angle into both halves and, for
+        the near half only, project it to a scan line and offer that to the horizon;
+     5. hand the next frame the slot below this one, and stop a stale horizon_index_prev from
+        letting the road reach past line 7.
 
-   ⚠ SELF-MODIFYING at $231A, and it is a BRANCH OFFSET rather than an opcode: Silverstone's
-   $0F skips the re-base pair for the slot the cursor already sits on, and every expansion
-   circuit rewrites it to $00, which is a branch to the next instruction — i.e. re-base that
-   slot too.  Those are the only two bytes any circuit writes (`make track-patch`), so any
-   other offset traps instead of being guessed at.
+   ⚠ Self-modifying at $231A, in a branch offset: Silverstone's $0F skips the re-base pair for
+   the cursor's own slot, and every expansion circuit writes $00 (re-base it too).  Those are
+   the only two values any circuit writes (`make track-patch`); any other traps.
 
-   No hardware writes and no $FC00-$FEFF access: the whole routine is RAM. */
+   RAM only, no hardware access. */
 
 /* $231A — see above.  Returns 1 when the branch is taken to $232B, i.e. the re-base pair is
    skipped for this slot; sets *trapped when the bytes are neither recognised shape, and the
    caller must then return exactly where the 6502 would.
 
    ⚠ The OPCODE is tested whether the branch would be taken or not.  A byte that is not a BEQ
-   at all is an instruction the model cannot execute, so it traps on the FIRST iteration
+   at all is an instruction the model cannot execute, so it traps on the first iteration
    regardless of the comparison — checking it only on the equal path let the twin re-base four
    slots the oracle never reached. */
 static int rebase_takes_branch(int equal, int* trapped)
@@ -5697,8 +5671,8 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
         return;
 
     if (near_edge_last != nearSlotCount) {
-        /* $2318-$232E — RE-BASE the surviving slots, each as a pair 40 apart so the two
-           halves of the edge arrays stay in step.  POST-tested (INY / CPY #6 / BCC): the body
+        /* $2318-$232E — RE-base the surviving slots, each as a pair 40 apart so the two
+           halves of the edge arrays stay in step.  Post-tested (INY / CPY #6 / BCC): the body
            runs once before the count is checked, so a near_edge_last past the count still
            re-bases that one wild slot and then wraps 8-bit up through slot 5. */
         unsigned slot = near_edge_last;
@@ -5717,7 +5691,7 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
         } while (slot < nearSlotCount);
     }
 
-    /* $2330-$235C — WHICH TRACK-FILE SEGMENT does the new near point come from?  As many
+    /* $2330-$235C — which track-file segment does the new near point come from?  As many
        segments back from the player's own as there are near slots left to fill, eight bytes
        to a segment, wrapped on the circuit's length in whichever direction the car is going.
        (The road pass runs with D=0, so these are ordinary 8-bit wrapping adds.) */
@@ -5738,10 +5712,10 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
     }
     near_segment_index = (uint8_t)segIndex;
 
-    /* $2360-$23A9 — the new point, TWICE: once at its own slot and once 40 up, which is what
+    /* $2360-$23A9 — the new point, twice: once at its own slot and once 40 up, which is what
        keeps the two halves parallel.  $3C = 60 is one past slot+40 for every legal slot, so
        the loop normally runs exactly twice, and only the first pass is under 40 and therefore
-       gets a projected scan line at all.  The second reads the segment's SECOND triple. */
+       gets a projected scan line at all.  The second reads the segment's second triple. */
     unsigned point   = near_edge_cursor;
     unsigned segByte = segIndex;
     for (;;) {
@@ -5750,7 +5724,7 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
         load_section_triple_core(scratchSection, (uint8_t)segByte);  /* track file -> scratch */
         bearing_to_section_core(scratchSection, 0);  /* ...and its bearing from the camera */
 
-        /* $236C-$2376 — going the other way round, the point belongs to the OTHER half. */
+        /* $236C-$2376 — going the other way round, the point belongs to the other half. */
         unsigned edgeSlot = (track_direction & 0x80u) ? (point ^ halfStride) : point;
         emit_edge_bearing_core((uint8_t)edgeSlot);   /* edge_x[Y] = bearing - car_heading */
 
@@ -5760,7 +5734,7 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
             mem[MEM_edge_y + point]              = (uint8_t)line;
             mem[MEM_edge_y + halfStride + point] = (uint8_t)line;
 
-            /* $238C-$2398 — the frame's HORIZON is the largest projected scan line, ties
+            /* $238C-$2398 — the frame's horizon is the largest projected scan line, ties
                broken in favour of the higher point index. */
             if (line > horizon_extent ||
                 (line == horizon_extent && point >= horizon_index)) {
@@ -5784,38 +5758,31 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
         horizon_extent = staleHorizonCap;
 }
 
-/* $23D2  road_edge_walk — ONE ROAD SIDE, FROM THE CURSOR INTO THE DISTANCE
-   The road pipeline's real walk, run once per side.  Starting from the section byte index
-   road_edge_side chose, it emits up to 18 edge points, stepping further along the section
-   list for each one (edge_walk_step_tbl) so the far half of the road costs almost nothing.
-   Every point is three things: its bearing from the camera turned into an angle relative to
-   the car (emit_edge_bearing_at_cursor), a perspective divide to a scan line
-   (project_point), and a second angle offset by the road's width there
-   (emit_edge_width_offset, which is also where the frame's corner markers come from).
+/* $23D2  road_edge_walk — one road side, from the cursor into the distance
+   Run once per side.  From the section byte index road_edge_side chose, it emits up to 18 edge
+   points, stepping further along the section list for each (edge_walk_step_tbl), so the far
+   road costs little.  Each point gets its bearing as an angle relative to the car
+   (emit_edge_bearing_at_cursor), a perspective divide to a scan line (project_point), and a
+   second angle offset by the road's width there (emit_edge_width_offset, which also places the
+   corner markers).
 
-   Two things make it more than a loop:
+     * The running nearest.  A point whose scaled distance beats edge_nearest_lo/hi becomes
+       project_point's far clip, and the section count then becomes the subdivision floor.
+     * Subdivision.  A step that lands behind the camera or past the clip, or swings more than
+       $14 off the view axis, is replaced by three quarter-way midpoints staged in the scratch
+       section triple; one is emitted and the side ends.  A midpoint may not append a corner
+       marker, hence the marker_count save/restore around the call.
 
-     * THE RUNNING NEAREST.  Whenever a point's scaled distance beats edge_nearest_lo/hi it
-       becomes project_point's far clip, and the section count at that moment becomes the
-       SUBDIVISION FLOOR — the walk will not interpolate before it.
-     * SUBDIVISION.  A step that lands behind the camera or past the clip, or one where the
-       road has swung more than $14 off the view axis in a single point, is replaced by three
-       quarter-way midpoints staged in the scratch section triple; one of them is emitted and
-       the side ends there.  A midpoint is not allowed to append a corner marker, which is
-       what the marker_count save/restore around the call is for.
-
-   ⚠ SELF-MODIFYING at $248B: Silverstone's `BCS $24B8 / JMP $2403` (stop, or subdivide) is
-   rewritten by every expansion circuit into a single JMP into its own hook block.
-   ⚠ In the transliteration the body is the multi-entry region `region_23d8` rather than one
-   function, because $2490 is both a branch target and a container split; the oracle for this
-   twin is the $23D2 stub plus that whole region. */
+   ⚠ Self-modifying at $248B: every expansion circuit rewrites Silverstone's
+   `BCS $24B8 / JMP $2403` into one JMP into its hook block.
+   The oracle is the $23D2 stub plus the multi-entry region `region_23d8`, because $2490 is
+   both a branch target and a container split. */
 
 /* $2477-$2489 — |edge_x_hi[…]| against the off-axis threshold.  EOR #$FF rather than a true
    negate: one less in magnitude, which is all a threshold needs.
    ⚠ The magnitude and the CMP's own N/Z/C DO survive into the $248B SMC site, so an expansion
-   circuit's hook reads them — but only on the PATCHED arm.  So this is plain C and returns
-   them, and the caller publishes them into cpu immediately before it dispatches; Silverstone
-   no longer pays five cpu field writes per compare, twice per edge point past the floor. */
+   circuit's hook reads them — but only on the patched arm.  So this is plain C and returns
+   them, and the caller publishes them into cpu only before it dispatches to a hook. */
 typedef struct { uint8_t magnitude, carry, neg, zero; } OffAxis;
 
 static OffAxis angle_off_axis(unsigned addr, uint8_t threshold)
@@ -5831,9 +5798,9 @@ static OffAxis angle_off_axis(unsigned addr, uint8_t threshold)
     return o;
 }
 
-/* $2479-$248F — THE OFF-AXIS SEAM, reached once the point at edge_cursor has swung past the threshold.
+/* $2479-$248F — the off-axis seam, reached once the point at edge_cursor has swung past the threshold.
    Shared by the C loop and the asm walk's wrapper (the asm hands this exit back with the cursor
-   untouched), so the $248B SMC site and a circuit's hook have ONE implementation. */
+   untouched), so the $248B SMC site and a circuit's hook have one implementation. */
 static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot);
 static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t offAxis)
 {
@@ -5841,8 +5808,8 @@ static uint8_t road_edge_walk_seam(unsigned section, uint8_t midSlot, uint8_t of
     OffAxis prev = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
 
     /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
-       a circuit's own JMP is real 6502 code that READS the registers, so before
-       dispatching to it re-establish the entry ABI: A + N/Z/C are the SECOND
+       a circuit's own JMP is real 6502 code that reads the registers, so before
+       dispatching to it re-establish the entry ABI: A + N/Z/C are the second
        compare's ($2489, the previous point's — it is the last flag writer before
        the SMC site), Y = edge_cursor (the $2475 LDY), X = section.  After the
        hook runs it owns the exit. */
@@ -5959,10 +5926,10 @@ static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t p
                of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
             unsigned distHi = emit_edge_bearing_at_cursor_core((uint8_t)section);
 
-            /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
+            /* $23DB-$23FA — the running nearest, which is also project_point's far clip and the
                floor below which the walk refuses to subdivide. */
             unsigned pointDist = (distHi << 8) | point_dist_lo;
-            if (pointDist <= edge_nearest_v) {          /* ONE 16-bit compare — see the note above */
+            if (pointDist <= edge_nearest_v) {          /* One 16-bit compare — see the note above */
                 edge_nearest_v          = (uint16_t)pointDist;
                 edge_nearest_section    = shared_counter_42;
                 nearest_edge_cursor     = edge_cursor;
@@ -5976,11 +5943,11 @@ static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t p
                     return road_edge_walk_subdivide(section, midSlot);
             }
 
-            /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
+            /* $246A — emit: the point's second angle, and any corner marker it carries. */
             EMIT_WIDTH(section);
 
             /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
-               view axis in this one step?  If so, subdivide — unless the point BEFORE it was
+               view axis in this one step?  If so, subdivide — unless the point before it was
                already out there, in which case the side is done. */
             if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
                 unsigned here = edge_cursor;                             /* $2475 LDY $12 */
@@ -6004,12 +5971,10 @@ static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t p
         unsigned step = mem[MEM_edge_walk_step_tbl + emitted];
         /* $249F — the 6502 parks the step in $74 only to compare against it two instructions
            later; the twin uses the local, but the store is kept because it is observable in
-           principle.  ⚠ DELETING IT SURVIVES SABOTAGE at 3000 cases on BOTH this fixture and
-           road_edge_walk's, and that is the "no change" explanation rather than a gap: the
-           store is only reached on a path that goes round the loop again, and the next point's
-           point_distance_hypot (far arm) or emit_edge_width_offset rewrites $74.  Observing it
-           needs the next point to clip, its midpoint to clip too, both hypots to take the near
-           arm and the point count to be under 3 — a conjunction neither fixture reached. */
+           principle.  Only in principle: the path goes round the loop again, and the next
+           point's point_distance_hypot (far arm) or emit_edge_width_offset rewrites $74 unless
+           the next point and its midpoint both clip, both hypots take the near arm and fewer
+           than 3 points are out, which no fixture reaches. */
         math_lo = (uint8_t)step;
 
         unsigned from = section;
@@ -6020,7 +5985,7 @@ static uint8_t road_edge_walk_run_c(unsigned section, uint8_t midSlot, uint8_t p
 }
 
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_GEO_ASM) && defined(REVS_WALK_ASM)
-/* THE AMIGA RUNS THE WALK'S POINT LOOP IN 68000 ASSEMBLY — src/platform/amiga/walk_m68k.s, whose
+/* The Amiga runs the walk's point loop in 68000 assembly — src/platform/amiga/walk_m68k.s, whose
    banner has the shape: bearing, hypot, nearest, projection, the width emitter and the step, with
    the bases and constant words in registers.  It hands back the exits that are not "the cap": a
    subdivide, and the off-axis seam (the $248B SMC site), which C finishes here exactly as the loop
@@ -6048,10 +6013,10 @@ static uint8_t road_edge_walk_run_asm(unsigned section, uint8_t midSlot, uint8_t
 
 #ifdef REVS_GEO_CHECK
 volatile unsigned long g_walkChecks       = 0;
-volatile unsigned long g_walkMismatch     = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_walkMismatch     = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_walkMismatchAt   = 0;   /* first differing address; $10000 the exit X, $10001 a C word */
 volatile unsigned long g_walkFuzzCases    = 0;
-volatile unsigned long g_walkFuzzMismatch = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_walkFuzzMismatch = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_walkFuzzDiag     = 0;   /* cases whose last point was a diagonal — must be non-zero */
 volatile unsigned long g_walkFuzzDeep     = 0;   /* cases that kept 3+ points — must be non-zero */
 volatile unsigned long g_walkFuzzCap      = 0;   /* cases that ran to the 18-point cap — must be non-zero */
@@ -6064,7 +6029,7 @@ static void walk_words_set(WalkWords w)
 {   edge_nearest_v = w.nearest; bearing_v = w.bearing; hypot_min_v = w.hmin; hypot_max_v = w.hmax; }
 void view_origin_marshal_out(void);
 
-/* The 6502 working cells walk_m68k.s deliberately does not store (THE RESULTS RULE — its header
+/* The 6502 working cells walk_m68k.s deliberately does not store (the results rule — its header
    carries the five-circuit reader audit): math_lo/math_hi, the raw arctan $7E, point_delta_lo[0]/[2],
    point_delta_hi[0] and point_delta_sign[1].  The compare takes the asm's bytes for these into the C
    snapshot, so it checks everything else and never touches the game's mem[]. */
@@ -6077,7 +6042,7 @@ static uint8_t walk_compare(unsigned section, uint8_t midSlot, uint8_t pointCap,
     WalkWords wBefore = walk_words(), wC;
     uint8_t xC, xA, count0 = shared_counter_42;
     unsigned i;
-    /* ⚠ The words the walk only READS are restored between the arms too: a circuit hook's resume
+    /* ⚠ The words the walk only reads are restored between the arms too: a circuit hook's resume
        ($2490, road_edge_walk_resume_from) marshals the camera and heading back IN from mem[], so
        an arm can leave them changed — the same value in the game, where the two copies agree. */
     const uint16_t head0 = car_heading_v, vo0 = view_origin_16[0], vo1 = view_origin_16[1],
@@ -6114,7 +6079,7 @@ static uint8_t walk_compare(unsigned section, uint8_t midSlot, uint8_t pointCap,
         } else {
             for (i = 0; i < sizeof walk_dead_cells; i++)
                 s_geoAfterC[walk_dead_cells[i]] = mem[walk_dead_cells[i]];
-            /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+            /* ENDIAN-OK: an equality test a longword at a time (see emit_width_compare). */
             const uint32_t* a = (const uint32_t*)(const void*)mem;
             const uint32_t* c = (const uint32_t*)(const void*)s_geoAfterC;
             for (i = 0; i < 65536u / 4u; i++)
@@ -6135,7 +6100,7 @@ static uint8_t walk_compare(unsigned section, uint8_t midSlot, uint8_t pointCap,
     return xA;
 }
 
-/* THE WALK FUZZER, once, before the first real walk.  Driving data reaches the diagonal (two
+/* The walk fuzzer, once, before the first real walk.  Driving data reaches the diagonal (two
    magnitudes exactly equal) almost never, the resume entry never on Silverstone, and a far-clipped
    first point only at a crest — so each case randomises the section planes, the view origin, the
    heading, the nearest, the cursor and the counters, forces equal magnitudes on a quarter of the
@@ -6180,7 +6145,7 @@ static void walk_fuzz(void)
             const uint16_t d2 = (m & 0x40u) ? d0 : (uint16_t)(0u - d0);
             section_word_set(section + 2u, (uint16_t)(view_origin_16[2] + d2));
         }
-        /* mem[]'s copies of the fuzzed words must AGREE with them, as they do in the game: a
+        /* mem[]'s copies of the fuzzed words must agree with them, as they do in the game: a
            circuit hook's resume marshals them back in from mem[] mid-walk. */
         view_origin_marshal_out();  car_heading_marshal_out();  edge_nearest_marshal_out();
         hypot_min_marshal_out();  hypot_max_marshal_out();  bearing_marshal_out();
@@ -6201,7 +6166,7 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                                   uint8_t offAxis, int resume)
 {
     static int fuzzed;
-    /* ⚠ A circuit's hook RE-ENTERS the walk ($2490, road_edge_walk_resume) from inside the seam,
+    /* ⚠ A circuit's hook RE-enters the walk ($2490, road_edge_walk_resume) from inside the seam,
        i.e. from inside a comparison already running: that walk belongs to the arm that called the
        hook, and a nested comparison would overwrite the outer one's 64 KB snapshot. */
     if (s_walkRef == 1) return road_edge_walk_run_c(section, midSlot, pointCap, offAxis, resume);
@@ -6229,7 +6194,7 @@ uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
     return road_edge_walk_run(sectionIndex, midSlot, pointCap, offAxis, 0);
 }
 
-/* $2490 — THE EXPANSION CIRCUITS' RE-ENTRY.  Silverstone's `BCS $24B8 / JMP $2403` at $248B is
+/* $2490 — the expansion circuits' RE-entry.  Silverstone's `BCS $24B8 / JMP $2403` at $248B is
    one JMP into the circuit's own hook on every other circuit, and every one of those hooks ends
    by jumping back here: keep the point that was just emitted and carry on walking.  Entered with
    the section byte in X; edge_cursor, shared_counter_42 and the edge buffers carry the rest of
@@ -6242,7 +6207,7 @@ uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot,
     return road_edge_walk_run(section, midSlot, pointCap, offAxis, 1);
 }
 
-/* $2505-$250C and $2513-$251A — ONE ROAD SIDE.  road_edge_side picks which side and which
+/* $2505-$250C and $2513-$251A — one road side.  road_edge_side picks which side and which
    traversal direction the walk uses (A=0 and A=$80 are opposites whatever the car's
    direction bit holds); the walk then emits that side's points from `firstPoint` upward. */
 static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
@@ -6264,12 +6229,12 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
     /* $253B — the two sides' x at the horizon point, differenced.  D=0 on the geometry path
        (static-map §Decimal mode), so this is a plain 8-bit subtract, and its own sign (bit 7)
        is what abs8 negated on.  The subtract's C/V/Z are dead (abs8 overwrote them when it
-       negated, and on the keep path they reach build_track_geometry's exit UNREAD). */
+       negated, and on the keep path they reach build_track_geometry's exit unread). */
     uint8_t diff = (uint8_t)(mem[MEM_edge_x_hi + horizonPoint] -
                              mem[MEM_edge_x_hi + EDGE_HALF + horizonPoint]);
     uint8_t mag  = abs8_value(diff);    /* |diff| — cpu-free abs8 */
 
-    /* ⚠ The RETURN VALUE is part of build_track_geometry's exit ABI (its fixture compares A):
+    /* ⚠ The RETURN value is part of build_track_geometry's exit ABI (its fixture compares A):
        the half-width on both compute arms, the unhalved difference on either trap
        fall-through — the 6502 has it in A from the subtract and executes no LDA on those
        paths — and the hook's own A on the circuit arm. */
@@ -6284,7 +6249,7 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
             return horizon_half_width;
         }
         if (target >= 0x5300 && target <= 0x5A25) {
-            /* Circuit-hook seam: the hook READS A and its sign N, so re-establish the 6502
+            /* Circuit-hook seam: the hook reads a and its sign N, so re-establish the 6502
                entry ABI before dispatching, then hand its own exit A back verbatim. */
             HookRegs hr;
             /* The whole file, from this routine's own values — no cpu.  Y is the horizon point
@@ -6311,22 +6276,19 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
     return diff;
 }
 
-/* $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY
-   The view pipeline's FIRST producer, and the fifth call of the frame.  It turns the track
-   ahead into the two 40-point edge lists everything downstream reads: road_edge_start emits
-   the nearest point of each side, then one road_edge_walk per side climbs the section list
-   into the distance, and the three lines at the end record where the road's HORIZON came out
-   — its scan line (horizon_extent), which point it was (horizon_index), and how wide the road
-   still looks there (horizon_half_width).
+/* $24F6  build_track_geometry — the frame's road geometry
+   The view pipeline's first producer, and the body's 5th call.  It turns the track ahead into
+   the two 40-point edge lists everything downstream reads: road_edge_start emits the nearest
+   point of each side, one road_edge_walk per side climbs the section list into the distance,
+   and the tail records where the road's horizon came out: its scan line (horizon_extent), its
+   point (horizon_index) and how wide the road still looks there (horizon_half_width).
 
-   The routine itself is 84 bytes of driver — every edge point is projected by the walk — and
-   what it owns is the four SEEDS that shape both walks (the "no nearest point yet" pair and the
-   13-section subdivision floor) plus the frame's horizon record.  Pure RAM: no hardware writes,
-   no $FC00-$FEFF access.
+   An 84-byte driver; what it owns is the four seeds both walks start from (the "no nearest
+   point yet" pair and the 13-section subdivision floor) and the horizon record.  RAM only.
 
-   ⚠ SELF-MODIFYING, twice, and both sites belong to the expansion circuits: $2538 and $2542
-   are rewritten by each circuit's ModifyGameCode, so the bytes below are Silverstone's and
-   the other four circuits take the hook arms.  docs/static-map.md §Open items. */
+   ⚠ Self-modifying at $2538 and $2542: each expansion circuit's ModifyGameCode rewrites both,
+   so the bytes below are Silverstone's and the other circuits take the hook arms
+   (docs/static-map.md §Open items). */
 
 /* `firstPoint` per side: the cursor each walk starts from.  They are 6 and $2E = 6 + 40 — the
    same offset into each half of the 2x40 edge arrays, which is what makes the two lists
@@ -6338,15 +6300,15 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
     /* the nearest point of each side, and last frame's clamp */
     GEO_PHASE(GEO_PHASE_START);
-    /* ⚠ The stale-horizon cap is an SMC OPERAND, not the literal 7 it reads as on Silverstone:
-       every expansion circuit's $5672 hook writes $07 or $87 to $23B3 at RUN TIME (`LDA #$0E /
-       ROR`), and $87 is the common case on all five — so the clamp is effectively OFF there.  It
+    /* ⚠ The stale-horizon cap is an SMC operand, not the literal 7 it reads as on Silverstone:
+       every expansion circuit's $5672 hook writes $07 or $87 to $23B3 at run time (`LDA #$0E /
+       ROR`), and $87 is the common case on all five — so the clamp is effectively off there.  It
        is not a ModifyGameCode patch, so `make track-smc` never saw it and this call site passed a
        hard 7 for as long as the twin has existed. */
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)MEM_section_near_point, 0x3C,
                          mem[MEM_smc_stale_horizon_cap]);
 
-    /* $24F9: only the HIGH lane is armed — the low one keeps last frame's value (see above). */
+    /* $24F9: only the high lane is armed — the low one keeps last frame's value (see above). */
     edge_nearest_v = (uint16_t)((edge_nearest_v & 0x00FFu) | 0xFF00u);
     edge_nearest_section = 0x0D;     /* ...and do not subdivide before section 13 */
 
@@ -6360,7 +6322,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     ex.x = road_side_walk(0x80, firstPointSide1);
     GEO_PHASE(GEO_PHASE_TAIL);
 
-    /* $251D-$2529 — WHICH POINT IS THE HORIZON?  The walks record it as an index into
+    /* $251D-$2529 — which point is the horizon?  The walks record it as an index into
        whichever half they were writing, so fold it back into 0..39 and keep it for next
        frame's road_edge_start, which clamps the horizon down when it climbed too far. */
     unsigned horizonPoint = horizon_index;
@@ -6372,7 +6334,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
         horizonPoint = (unsigned)(uint8_t)(horizonPoint - 0x28);
         horizon_index = (uint8_t)horizonPoint;
     }
-    /* The `TAY` at $2528 — and it has to happen HERE, not at the tail that reads it: both
+    /* The `TAY` at $2528 — and it has to happen here, not at the tail that reads it: both
        SMC sites below are exits, and on the trap path Y is already the horizon point. */
     ex.y = (uint8_t)horizonPoint;
     horizon_index_prev = (uint8_t)horizonPoint;
@@ -6387,7 +6349,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
         horizon_extent = 0x4E;
     }
 
-    /* $2535-$253A — the horizon's line is written into BOTH sides' edge_y at the horizon
+    /* $2535-$253A — the horizon's line is written into both sides' edge_y at the horizon
        point, so a span walk that reaches it from either side stops on the same line.
        ⚠ SMC $2538: on an expansion circuit the second store is a call to the circuit's own
        code instead, which is why the bytes are dispatched rather than assumed. */
@@ -6429,29 +6391,25 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     return ex;
 }
 
-/* $1A20  draw_road — THE ROAD RASTERISER
-   The view pipeline's SECOND producer, and the eleventh call of the frame: it consumes
+/* $1A20  draw_road — the road rasteriser
+   The view pipeline's second producer, and the body's 11th call: it consumes
    build_track_geometry's two edge lists and produces the per-scan-line data view_paint_lines
-   turns into screen bytes.  It writes SIX visible frame-buffer bytes in a whole frame
-   (measured, `make fbwrites`) — the name says rasteriser, and what it really fills are the
-   forty $80-spaced source blocks at $3000, the four surface_edge buffers, line_attr_0/1 and
-   view_line_surface.  Nothing here draws.
+   turns into screen bytes.  It draws nothing on screen; it fills the forty $80-spaced source
+   blocks at $3000, the four surface_edge buffers, line_attr_0/1 and view_line_surface.
 
-   The body is four passes over the same two edge lists, and the four are one shape:
+   Four passes over the same two edge lists:
 
-       for each of the two road sides:            fill_line_attr    — line -> edge point
-       for each of the two sides, twice:          draw_surface_spans — the spans themselves
-       for each of the two road sides:            mark_line_surfaces — line -> surface class
+       for each road side:           fill_line_attr     — line -> edge point
+       for each side, twice:         draw_surface_spans — the spans themselves
+       for each road side:           mark_line_surfaces — line -> surface class
 
-   with three cells carrying the pass's identity into the callees: surface_style_base steps
-   $00 -> $08 -> $10 -> $1C (which of the four style records the span uses), shared_temp_8c
-   is the style for everything nearer than the split, and road_split_index is where near
-   becomes far.  ⚠ road_split_index is REREAD before every use below and that is deliberate:
-   both fill_line_attr ($19A2) and draw_surface_spans ($19F1) write it, so a local copy would
-   be a different program.  horizon_index is reread for the same reason — nothing in this
-   subtree writes it today, but that is a claim about a large subtree and the cell is one byte.
+   Three cells carry the pass's identity into the callees: surface_style_base steps
+   $00 -> $08 -> $10 -> $1C (which style record the span uses), shared_temp_8c is the style
+   nearer than the split, and road_split_index is where near becomes far.  ⚠ road_split_index
+   is reread before every use because fill_line_attr ($19A2) and draw_surface_spans ($19F1) both
+   write it; horizon_index is reread too, since the subtree is large and the cell one byte.
 
-   No hardware writes and no $FC00-$FEFF access: RAM only, like its sibling above. */
+   RAM only. */
 
 /* $1A98 twice — the third stage, whose return value is the scan line at which that side's
    line_attr buffer stops being valid.  surface_colour_at reads exactly that: at or past
@@ -6469,7 +6427,7 @@ static void surface_pass(uint8_t pass, uint8_t firstPoint)
     draw_surface_spans_core(pass, firstPoint);
 }
 
-/* The two side cursors are arguments; horizon_index and road_split_index deliberately are NOT.
+/* The two side cursors are arguments; horizon_index and road_split_index deliberately are not.
    The cursors are written only by build_track_geometry and its walk, so they cannot change under
    this routine — but road_split_index is written by two of the callees below and horizon_index is
    read four separate times by the 6502, so both are read from mem[] at every use. */
@@ -6477,7 +6435,7 @@ uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 {
     ROAD_COUNT(g_roadFrames);
     /* The reference differential's sample point: build_track_geometry has just finished, so
-       every edge_* cell here is the road pass's real INPUT rather than end-of-frame scratch
+       every edge_* cell here is the road pass's real input rather than end-of-frame scratch
        (platform_mem_snapshot_at; the BBC side is `--mem-at=1A20`).  A no-op unless asked. */
     platform_mem_snapshot_at(0x1A20);
     PLOT_SET_LO(plot_ptr, 0x80u);   /* $1A20: every span plotter stores through this */
@@ -6490,7 +6448,7 @@ uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        reader after $1722 engine_sound_update (the fixture's reader audit). */
     unsigned sum      = (unsigned)horizon_index + 0x28u;
     unsigned farBase  = sum & 0xFFu;
-    /* Each fill's ENTRY carry is the clamp's CMP just before it ($1A2A CMP #$31, $1A63 CMP #9 —
+    /* Each fill's entry carry is the clamp's CMP just before it ($1A2A CMP #$31, $1A63 CMP #9 —
        a CMP rewrites C, so the ADC's own carry never reaches it), and it matters only at the
        fill's circuit-hook seam, which hands it to the hook.  The 6502 also threaded V from stage
        to stage (the span passes are V-transparent), and that chain went nowhere: each stage's
@@ -6516,7 +6474,7 @@ uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 
     surface_style_base = 0x08;
     shared_temp_8c  = 0x00;
-    /* ⚠ Pass 1 does not go through surface_pass: its base is RECOMPUTED rather than farBase
+    /* ⚠ Pass 1 does not go through surface_pass: its base is recomputed rather than farBase
        reused, because that is what the 6502 does (draw_surface_spans recomputes its own start
        flags from firstPoint, so only the value matters). */
     draw_surface_spans_core(1, (uint8_t)(horizon_index + 0x28));   /* base only; the spans walk
@@ -6528,7 +6486,7 @@ uint8_t draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
         line_attr_0_limit = mark_side_surfaces(0x04);
     }
 
-    /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
+    /* $1A60-$1A69 — and the near half, whose split is the horizon point itself, floored at
        point 9 for the same reason.  (The 6502's `TAX` here is overwritten two instructions
        later by `LDX $51` with nothing reading X in between, so it is not reproduced.) */
     ROAD_PHASE(11);                  /* the near-half clamp: enclosing-phase remainder */
@@ -6598,7 +6556,7 @@ void model_state_marshal_out(void)
     }
 }
 
-/* THE VIEW ORIGIN'S two rows.  view_origin_16 is indexed by the 6502's byte offset, so the live
+/* The view origin's two rows.  view_origin_16 is indexed by the 6502's byte offset, so the live
    slots are 0..2 (the camera) and 6..8 (the road sign); 3..5 would alias 0..2's high bytes and are
    deliberately skipped.  See the banner in revs_native_seam.h. */
 uint16_t view_origin_16[9];
@@ -6624,49 +6582,44 @@ void view_origin_marshal_out(void)
 }
 
 /* $46A1  apply_driving_model — the player car's physics
-   The body's 4th call, and nothing else in the frame writes the car's motion: a 136-byte driver
-   over fifteen sub-models.  The driver itself owns three things:
+   The body's 4th call, and the only writer of the car's motion: a 136-byte driver over fifteen
+   sub-models.  The driver itself owns three things:
 
-     1. The speed split.  car_speed_lo/hi is element 9 of the driving model's state vector and
-        is signed; the rest of the game reads only its magnitude, so this routine takes abs16 of
-        it once a frame and publishes road_speed (the integer part) and road_speed_frac (the
-        fraction).  wheel_spin_rate, the one cell that means "the car is moving", is road_speed,
-        or the fraction's top nibble when the integer part is zero, so that a crawling car still
-        turns its front wheels.
+     1. The speed split.  car_speed_lo/hi (state element 9) is signed; the rest of the game reads
+        its magnitude, so this takes abs16 once a frame and publishes road_speed (integer part)
+        and road_speed_frac.  wheel_spin_rate, "the car is moving", is road_speed, or the
+        fraction's top nibble when that is zero, so a crawling car still turns its wheels.
 
-     2. The two lever arms.  car_lateral_speed_lo/hi is element 8, the lateral velocity that
-        rotate_state_0_into_8 has just rebuilt from 0/1; nothing accumulates in it across frames.
-        The entry value is saved, stage_lateral_speed_delta subtracts the yaw rate's lever arm s,
-        the next four sub-models run against x - s (the rear axle), and then the entry value is
-        restored and 1.5s added (lateral_speed_delta_lo/hi) for the front axle.  Geometry, not a
-        timestep (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).
+     2. The two lever arms.  car_lateral_speed_lo/hi (element 8) is the lateral velocity
+        rotate_state_0_into_8 has just rebuilt.  The entry value is saved,
+        stage_lateral_speed_delta subtracts the yaw rate's lever arm s, the next four sub-models
+        run against x - s (the rear axle), then the entry value is restored and 1.5s added
+        (lateral_speed_delta_lo/hi) for the front axle.  Geometry, not a timestep
+        (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).
 
-     3. The off-power gate.  Once car_height reaches 2 (the car is in the air, or $7F from
-        check_crash) elements 5..7 of the state vector are forced to zero instead of integrated.
+     3. The off-power gate.  Once car_height reaches 2 (airborne, or $7F from check_crash)
+        elements 5..7 are forced to zero instead of integrated.
 
    The sub-model chain, in order: the car's angles, a rotation of the world-frame pair 0/1 into
    the car-frame pair 8/9, the rear lever arm, the grip limits, the engine, the two axles' slip
-   sound with two steering rotations between them, the load terms, then (past the off-power gate)
-   drag, a second rotation, the rate integrator, the heading integrator and the camera.
-   Every sub-model name is [INFERRED] from what the routine computes.
+   sound with two steering rotations between them, the load terms, then (past the gate) drag, a
+   second rotation, the rate integrator, the heading integrator and the camera.  The sub-model
+   names are [INFERRED] from what each computes.
 
-   Measured on the reference loop: 0/1 is the car's velocity in world axes and 8/9 the same
-   vector in the car's axes (lateral, forward), |(0,1)| == |(8,9)| frame for frame, and (0,1)'s
-   direction is car_heading while the car runs straight and lags it while it slides.  2 is the
-   heading step and 3/4/5 the rates of 0/1/2; 6/7 is the acceleration in the car's axes, which
-   rotate_state_6_into_3 turns into the rates of 0/1 (element 6 is zero on a straight);
-   $0A..$0D are two per-axle pairs (front + 0, rear + 1) and 14 is scratch.  The runs are in
-   disasm/symbols.csv under model_state_lo, and revs_native_seam.h names the elements.
+   The state vector: 0/1 is the car's velocity in world axes and 8/9 the same vector in the
+   car's axes (lateral, forward); (0,1) points along car_heading on a straight and lags it in a
+   slide.  2 is the heading step and 3/4/5 the rates of 0/1/2; 6/7 is the acceleration in the
+   car's axes, which rotate_state_6_into_3 turns into the rates of 0/1.  $0A..$0D are two
+   per-axle pairs (front + 0, rear + 1) and 14 is scratch.  symbols.csv lists them under
+   model_state_lo; revs_native_seam.h names the elements.
 
-   No hardware writes.  Every model cell is read at the point of use and never cached in a
-   local: any sub-model can write any of them, and stage_lateral_speed_delta is meant to change
-   car_lateral_speed under the four calls that follow it.
+   No hardware writes.  Every model cell is read at its point of use, never cached: any
+   sub-model can write any of them, and stage_lateral_speed_delta changes car_lateral_speed
+   under the four calls that follow it.
 
-   lateral_speed_entry_v: the entry value ($38/$39), written at $46AE and read back by the
-   restore ($46DF) and by apply_drag_terms ($4C65/$4C7E).  All three sites are native and the
-   pair is never indexed, so it is a native word.  apply_driving_model__t6502 sets mem[$38/$39]
-   and then calls the native apply_drag_terms, so that shim marshals the cells in; the shipping
-   chain is core-to-core. */
+   lateral_speed_entry_v: the entry value ($38/$39), written at $46AE and read by the restore
+   ($46DF) and apply_drag_terms ($4C65/$4C7E).  apply_driving_model__t6502 sets mem[$38/$39] and
+   calls the native apply_drag_terms, so that shim marshals the cells in. */
 static uint16_t lateral_speed_entry_v;
 
 /* The 6502-ABI publisher, by the IN/OUT rule (docs/wide-value-cleanup.md): the producer writes
@@ -6696,11 +6649,11 @@ CameraExit apply_driving_model_core(uint16_t heading)
     math_lo = (uint8_t)speed;
     if (speed & 0x8000u) {                              /* negative: neg16_math */
         uint16_t v = (uint16_t)(0u - speed);
-        math_hi         = (uint8_t)(speed >> 8);        /* neg16_math writes math_hi = the original hi.
-                                                           Faithful but dead scratch: stage_lateral_speed_delta
-                                                           overwrites math_hi before any read, so a sabotage
-                                                           of THIS byte alone is unobservable (kept per the
-                                                           scratch-write rule; road_speed/math_lo below ARE live). */
+        math_hi         = (uint8_t)(speed >> 8);        /* neg16_math writes math_hi = the original hi:
+                                                           dead, as the next sub-model
+                                                           overwrites it first, but written
+                                                           as the 6502 does.  road_speed and
+                                                           math_lo are live. */
         math_lo         = (uint8_t)v;                   /* the negated low byte */
         road_speed      = (uint8_t)(v >> 8);            /* the negated high byte */
     } else {                                            /* non-negative: abs16_math is a no-op */
@@ -6709,23 +6662,21 @@ CameraExit apply_driving_model_core(uint16_t heading)
     road_speed_frac = math_lo;
     wheel_spin_rate = road_speed ? road_speed : (uint8_t)(math_lo & 0xF0);
 
-    /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  stage_lateral_speed_delta is
-       what offsets it, and what leaves lateral_speed_delta_lo/hi behind. */
+    /* $46CF-$46DA — the four sub-models that run against the offset accumulator.
+       stage_lateral_speed_delta offsets it, and leaves lateral_speed_delta_lo/hi behind. */
     stage_lateral_speed_delta_core();
     update_grip_limits_core();
-    /* update_engine_revs consumes the caller's CARRY (the coast arm's ADC #7, $49A6) and preserves
-       its ENTRY Y on the off-power arms — that Y is the ANDed surface bytes update_grip_limits left
-       at $4C46.  Its EXIT Y is live: it stays the ambient Y that update_slip_sound's OSBYTE 21
+    /* update_engine_revs consumes the caller's carry (the coast arm's ADC #7, $49A6) and preserves
+       its entry Y on the off-power arms — that Y is the ANDed surface bytes update_grip_limits left
+       at $4C46.  Its exit Y is live: it stays the ambient Y that update_slip_sound's OSBYTE 21
        (sound_stop_channel, $0E6B) passes to the MOS, so replay the engine's exit registers here as
        the shim does, before the sound call reads them. */
     {
-        /* The carry update_engine_revs consumes is update_grip_limits' EXIT carry, and that is
+        /* The carry update_engine_revs consumes is update_grip_limits' exit carry, and that is
            always 0: its last carry-writing instruction is the axle-0 pass's mul8 ($4C57), whose
            closing `ROR math_lo` always shifts out a 0 (checked over all 65536 operand pairs).
-           ⚠ It was once apply_driving_model's ENTRY carry, on the reasoning that "every callee
-           above is a cpu-free core" — true of the port's cores, false of the 6502 routines they
-           replace.  So the coast arm's throttle step is exactly +7: the race-proper lockstep
-           against a real BBC caught +8 at frame 4163, an airborne frame. */
+           ⚠ Not apply_driving_model's entry carry: the 6502 routines in between write C even
+           where the port's cores do not.  So the coast arm's throttle step is exactly +7. */
         EngineExit ee = update_engine_revs_core(0u,
                             (uint8_t)(SURFACE_BYTE_0 & SURFACE_BYTE_1));
         /* Only the exit Y escapes: it is the ambient Y update_slip_sound's OSBYTE 21
@@ -6749,7 +6700,7 @@ CameraExit apply_driving_model_core(uint16_t heading)
     /* MOS-seam replay: rotate_velocity_by_steer ends in model_integrate_element on element 8, leaving
        Y = 8 (its last apply_angle_term source index).  update_slip_sound's silence arm reaches
        OSBYTE 21 (sound_stop_channel) with Y still holding it — a dead input the MOS ignores, but
-       the real 6502 passes it, so it is reconstructed here now the core no longer leaves it in cpu. */
+       the real 6502 passes it, so it is reconstructed here. */
     update_slip_sound_core(0x00, 8u);
     rotate_pair_a_by_steer_core();
     derive_axle_loads_core();
@@ -6770,34 +6721,29 @@ CameraExit apply_driving_model_core(uint16_t heading)
                                                 ...and the body-axes acceleration back out */
     integrate_state_rates_core();
     integrate_car_position_core();
-    /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_height's (its last
+    /* apply_driving_model's exit A/X/Y/flags are update_camera_and_height's (its last
        call), so they are handed straight back for the shim to publish. */
     return update_camera_and_height_core();
 }
 
-/* $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN
-   The body's 15th call, entered with an object SLOT index in X.  There are 24 slots and they
-   hold both the other cars and the road signs, which is why the main loop can reuse this call
-   for slot $17 — the sign build_road_sign has just assembled.
+/* $2AD1  draw_track_object — one object slot onto the screen
+   The body's 15th call, with an object slot index in X.  The 24 slots hold both the other cars
+   and the road signs, so the main loop reuses this call for slot $17, the sign build_road_sign
+   has just assembled.  It fills the object plotter's argument block and calls plot_object:
 
-   What it computes is the object plotter's four-cell argument block:
+       plot_shape    the low nibble of the slot's car_flags_shape byte
+       plot_x        4 x (the object's distance ahead of the player), biased by $50
+       plot_line     object_line[slot], projected when the slot was filled
+       proj_width    object_width[slot], likewise
 
-       plot_shape    the low nibble of the slot's own car_flags_shape byte
-       plot_x      4 x (the object's distance ahead of the player), biased by $50
-       plot_line   object_line[slot]        — projected when the slot was filled
-       proj_width    object_width[slot]      — likewise
+   It returns early for a negative car_flags_shape (an empty slot) and for a distance whose
+   high byte is outside $E0..$1F (off the screen).
 
-   and then calls plot_object.  Two things stop it early: a NEGATIVE car_flags_shape byte, which
-   is how an empty slot is spelled, and a distance whose high byte falls outside $E0..$1F —
-   more than $2000 either side of the player is off the screen entirely.
-
-   ⚠ THE EXIT CONTRACT IS `LDX saved_slot_index`, ON ALL THREE PATHS, and it is not the slot
    ⚠ The 6502 exit is `LDX saved_slot_index` on all three paths, and it is not the slot just
-   drawn: entered at $2ACB (one instruction earlier) the routine writes that cell itself, but
-   entered at $2AD1, as the main loop does, the cell holds whatever its previous owner left (six
-   routines share it).  The core has no exit ABI (see scale_shape_vectors_core); the shim
-   rebuilds the LDX because draw_car_field__t6502 walks its ring on it, and the native
-   draw_car_field reads the cell itself.  No hardware writes. */
+   drawn: entered at $2ACB the routine writes that cell itself, but entered at $2AD1, as the
+   main loop does, the cell holds whatever its previous owner left (six routines share it).  The
+   core has no exit ABI; the shim rebuilds the LDX because draw_car_field__t6502 walks its ring
+   on it, and the native draw_car_field reads the cell itself.  No hardware writes. */
 void draw_track_object_core(uint8_t slot)
 {
     uint8_t flags = mem[MEM_car_flags_shape + slot];
@@ -6825,24 +6771,19 @@ void draw_track_object_core(uint8_t slot)
     plot_object_core(slot);
 }
 
-/* $1E15  fill_dash_edge_columns — THE VIEW/DASHBOARD SEAM
-   The body's 18th call, and the smallest driver in the frame: 35 bytes, two calls of
-   fill_edge_column_run.  What it makes happen is that the road view MEETS the front tyres and
-   the dashboard without a gap — the columns at the two ends of the viewport still have source
-   bytes left at zero after draw_road, and this pass fills each of them with the colour
-   surface_colour_at gives for that scan line.
-
-   The two passes are the two ends of the viewport:
+/* $1E15  fill_dash_edge_columns — the view/dashboard seam
+   The body's 18th call: 35 bytes, two calls of fill_edge_column_run.  It makes the road view
+   meet the front tyres and the dashboard without a gap: the columns at the two ends of the
+   viewport still have zero source bytes after draw_road, and each is filled with the colour
+   surface_colour_at gives for its scan line.
 
        columns 3..6    from scan line $1B, boundary table view_left_start_src  ($0504)
        columns $1A..22 from scan line $2B, boundary table view_right_start_src ($4400)
 
-   AND THAT SECOND ARGUMENT IS WHY THE CALL MATTERS DOWNSTREAM.  plot_ptr2 is what
-   fill_edge_column_run patches its store through on alternate passes, so each run writes the
-   run's FIRST cell into one of those two per-scan-line tables instead of into the column's own
-   $80-byte source block.  view_paint_lines then composes each row's leading edge cell out of
-   exactly those bytes: this call is their only producer.
-   No hardware writes; the whole subtree lives in RAM. */
+   The boundary tables matter downstream: fill_edge_column_run stores through plot_ptr2 on
+   alternate passes, so each run's first cell goes into one of those per-scan-line tables
+   instead of the column's source block.  view_paint_lines composes each row's leading edge cell
+   from those bytes, and this call is their only producer.  RAM only. */
 
 /* One end of the viewport.  `stopColumn` is exclusive of the plot_ptr2 half of the run and
    inclusive of the plot_ptr half — fill_edge_column_run walks two columns per iteration and
@@ -6850,7 +6791,7 @@ void draw_track_object_core(uint8_t slot)
 static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t stopColumn,
                                  uint8_t firstLine)
 {
-    /* This is a genuine wide SEED for fill_edge_column_run, not residue. */
+    /* This is a genuine wide seed for fill_edge_column_run, not residue. */
     plot_ptr2_v = startSrc;
     plot_ptr2_marshal_out();
     /* entry V is dead on this path (fill_edge_column_run's own note): pass 0. */
@@ -6864,7 +6805,7 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
 {
     PROBE_SHAPE_EDGE_CALL();
 #ifdef REVS_EDGE_FLAT
-    /* ONE test per CALL selects the flattened driver for both runs, or the faithful chain for
+    /* One test per call selects the flattened driver for both runs, or the faithful chain for
        both — never a mix, so the two can never interleave their `mem[]` bookkeeping. */
     if (edge_flat_ok(leftStartSrc, 0x03, 0x06) && edge_flat_ok(rightStartSrc, 0x1A, 0x22)) {
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_EDGE_ASM)
@@ -6880,41 +6821,34 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
     return edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
 }
 
-/* $18EA  copy_dash_data — THE SECOND UNPACK / STOW
-   The whole call tree is this one routine — it has no JSR of its own; it just moves bytes.
-   race_main_loop calls it twice per race:
+/* $18EA  copy_dash_data — the second unpack, and the stow
+   No callees; it moves bytes.  race_main_loop calls it twice per race:
 
-       A = $00  ASSEMBLE the $7B00-$7FFF overlay (the view rasteriser, the wing mirrors and
-                the dashboard bitmap) out of the live TAILS of the 41 $80-spaced source
-                blocks at $3000, which is why that page is $00 in every static image;
-       A = $80  STOW the (by now heavily self-modified) overlay back into those same tails
-                before the page goes back to being MODE 7 screen memory.
+       A = $00  assemble the $7B00-$7FFF overlay (the view rasteriser, the wing mirrors and the
+                dashboard bitmap) out of the live tails of the 41 $80-spaced source blocks at
+                $3000, which is why that page is $00 in every static image;
+       A = $80  stow the (by now self-modified) overlay back into those tails before the page
+                goes back to being MODE 7 screen memory.
 
-   Both directions are the same block walk; only the copy direction flips, so it is one loop
-   with the store gated on bit 7 of A.  The two zero-page pointers are seeded from
-   dash_ptr_init ($192F): $70/$71 walks UP the source blocks (+$80 per block) and $72/$73
-   descends through the overlay page ($7FB0 down to $7768).
+   One block walk with the store direction gated on bit 7 of A.  The pointers are seeded from
+   dash_ptr_init ($192F): $70/$71 walks up the source blocks (+$80 each) and $72/$73 down the
+   overlay page ($7FB0 to $7768).
 
-   ⚠ TWO 6502 idioms are load-bearing and kept faithfully:
-     * Y and the per-block byte count are 8-bit and the loop tests Y AFTER decrementing it,
-       so the block's start offset is a sentinel that is NOT itself copied, and an out-of-range
-       start would wrap Y through all 256 offsets.  A `do { } while (y != start)` over uint8_t
-       reproduces both exactly.
-     * The forward copy in the original writes src->dst and then reads that byte straight back
-       to store dst->src — a provably identical value into the cell it just came from, so the
-       twin drops the redundant readback (it cannot change mem[]: src and dst never alias, the
-       block ranges being $3000-$444F and $7768-$7FFF).
+   ⚠ Y and the per-block count are 8-bit and the loop tests Y after decrementing it, so a
+   block's start offset is a sentinel that is not copied, and an out-of-range start wraps Y
+   through all 256 offsets; `do { } while (y != start)` over uint8_t reproduces both.  The
+   original's forward copy reads each byte straight back to store it where it came from; that
+   readback is dropped (src $3000-$444F and dst $7768-$7FFF never alias).
 
-   No hardware writes and no callees — the whole thing is RAM.  Addresses are masked to 16 bits
-   so the faithful Y-wrap can never index past mem[]; with real data (block starts all < $4F)
-   the copy provably stays inside $3000-$7FFF and never reaches the hardware window. */
+   RAM only.  Addresses are masked to 16 bits so the Y-wrap cannot index past mem[]; with real
+   data (block starts all < $4F) the copy stays inside $3000-$7FFF. */
 
 /* DASH_BLOCK_COUNT is in revs_native_seam.h — race_main_loop_core's exit needs it too. */
-#define DASH_BLOCK_TOP    0x4Fu     /* a block's live data always ENDS at offset $4F */
+#define DASH_BLOCK_TOP    0x4Fu     /* a block's live data always ends at offset $4F */
 
 void copy_dash_data_core(uint8_t dirFlag)
 {
-    /* Direction decided ONCE, not per byte: assemble reads a source block and writes the
+    /* Direction decided once, not per byte: assemble reads a source block and writes the
        overlay; stow does the reverse.  The block-side pointer walks UP the $80-spaced blocks
        and the page-side pointer descends; only their read/write roles depend on the flag. */
     const int stow = (dirFlag & 0x80) != 0;
@@ -6929,7 +6863,7 @@ void copy_dash_data_core(uint8_t dirFlag)
 
         /* Copy offsets $4F down to the block's start offset + 1 (the 6502 tests Y after
            decrementing, so the start is a sentinel and is not itself copied).  ⚠ The sentinel
-           is RE-READ from mem[] each pass, not cached: block 18's source is $3900 — the
+           is RE-read from mem[] each pass, not cached: block 18's source is $3900 — the
            dash_block_starts table itself — so in stow mode this very copy overwrites the table,
            including its own sentinel cell mid-descent, exactly as `CMP $3900,X` sees it.  Y and
            the byte count are 8-bit and wrap as the 6502 register does. */
@@ -6937,7 +6871,7 @@ void copy_dash_data_core(uint8_t dirFlag)
         uint8_t y = DASH_BLOCK_TOP;
         do {
             to[y] = from[y];
-            /* ⚠ In STOW mode this writes the view's own SOURCE blocks, so it is a producer the
+            /* ⚠ In stow mode this writes the view's own source blocks, so it is a producer the
                skip has to know about — the one that is not a plotter and never passes the seam
                (`make determinism-race`: 207 stale source bytes at rows $4A..$4F of every
                column until it marked). */
@@ -6962,50 +6896,35 @@ void copy_dash_data_core(uint8_t dirFlag)
 }
 
 /* $0C47  div16by8 — the engine's divide
-   mul8's opposite number: unsigned (A : math_lo) / shared_temp_76, quotient back in math_lo,
-   remainder in A.  On the 6502 every edge point goes through it (bearing_to_section divides
-   the smaller camera-relative delta by the larger to index the arctan table, project_point the
-   point's distance by the normalised far clip); the twins of those divide directly (below).
+   Unsigned (A : math_lo) / shared_temp_76: quotient in math_lo, remainder in A.  Eight unrolled
+   restoring steps, shifting the remainder:dividend pair one bit at a time.  Its contract:
 
-   Eight unrolled restoring steps.  Four things about its contract — the first three the twin has
-   to reproduce, the fourth why the callers are safe:
+     * C is always clear on exit: the closing `ROL math_lo` ($0CA2) shifts out the zero the
+       opening `ASL math_lo` put in.  N and Z come from the quotient, from that same ROL.
+     * The eighth step does not restore ($0C9E-$0CA2 is a bare CMP), so the remainder returned
+       is the true one plus the divisor whenever the quotient is odd.  No caller reads it.
+     * V is left by whichever of the first seven steps subtracted last.
+     * A zero divisor returns $FF, and a dividend high byte >= the divisor overflows silently.
+       Neither reaches here from the game (both callers normalise the divisor and branch away
+       on equal magnitudes); the fixture feeds both anyway.
 
-     * C IS ALWAYS CLEAR ON EXIT.  The closing `ROL math_lo` ($0CA2) inserts the eighth
-       quotient bit and shifts out the ZERO the opening `ASL math_lo` put in — never a quotient
-       bit.  N and Z come from the finished quotient, from that same ROL.
-     * THE EIGHTH STEP DOES NOT RESTORE ($0C9E-$0CA2 computes the quotient bit with a bare CMP
-       and no SBC), so the remainder handed back is the true remainder PLUS the divisor whenever
-       the quotient is odd.  That is a deliberate cycle saving in the original, not a bug: no
-       caller reads the remainder.
-     * V is left by whichever of the first SEVEN steps subtracted last — which is the one place
-       this twin still needs the 6502, see below.
-     * A divisor of 0 makes every step "fit" and returns $FF; a dividend whose high byte is >=
-       the divisor overflows the 8-bit quotient silently.  Neither reaches here from the game:
-       both callers normalise the divisor left until bit 7 is set, and both branch to their own
-       degenerate arm when the two magnitudes come out equal.  The fixture feeds both anyway.
-   Where the 68000 shifts the whole 16-bit remainder:dividend word in one `add.w`, the 6502
-   shifts a byte pair (`ASL math_lo / ROL A`); the quotient bits accumulate in the low half as
-   the dividend bits leave the top.  No hardware writes.
+   Not DIVU.W: recovering the exit V would need a second divide and a bit scan.  It does not
+   matter for speed: bearing_arm and project_point_core divide the true ratio with
+   revs_divu16, so the only callers left are the two `__t6502` oracle bodies in revs_gen.c. */
 
-   Why not `DIVU.W`, which is this operation: the exit V belongs to the last of the seven
-   conditional subtracts, and recovering it needs a second divide and a bit scan.  It no longer
-   matters: bearing_arm and project_point_core take the true ratio in one revs_divu16 each, so
-   the only callers of div16by8() left are the two `__t6502` oracle bodies in revs_gen.c, and the
-   loop costs the shipping build nothing (docs/native-maintenance.md). */
-
-/* The numerator is ONE 16-bit value; the 6502 keeps its top half in A and its bottom half in
+/* The numerator is one 16-bit value; the 6502 keeps its top half in A and its bottom half in
    math_lo, which the loop consumes bit by bit and hands back as the quotient, so the shim
    below is where the two halves are joined. */
 static Div16By8 div16by8_core(uint16_t dividend, uint8_t divisor)
 {
     GEO_COUNT(g_geoDiv);
     /* remainder in the high byte, dividend-becoming-quotient in the low byte — the pair the
-       6502 keeps in A and math_lo, here shifted as ONE word. */
+       6502 keeps in A and math_lo, here shifted as one word. */
     uint16_t work = dividend;
     Div16By8 r;
     int step;
 
-    /* Only the LAST restoring subtract's V leaves this routine, so the loop computes VALUES
+    /* Only the last restoring subtract's V leaves this routine, so the loop computes values
        only and the one flag is replayed from its operands afterwards.  That is the whole
        difference between ~900 instructions a call and this: seven times five cpu-struct stores
        plus seven V computations, for flags the algorithm never reads.  `lastMinuend` is what the
@@ -7062,42 +6981,31 @@ Div16By8 div16by8_core_oracle(uint16_t dividend, uint8_t divisor)
 
 /* $2145/$2147 bearing_to_section — the bearing
    $2285/$2287 project_point      — the perspective divide
-   The road pass's two coordinate transforms, and every edge point in the frame goes through
-   both: bearing_to_section turns a track section's position into an ANGLE measured from the
-   view origin, project_point turns the same section's height into a SCAN LINE.  They are
-   taken together because they are very nearly one routine twice over — the same opening
-   subtract, the same normalise-and-divide on the 6502 (one true-ratio DIVU each here), the same
-   pair of entry points — and because between them the 6502 calls exactly ONE function,
-   div16by8, which is already real C.
+   The road pass's two coordinate transforms; every edge point goes through both.
+   bearing_to_section turns a section's position into an angle from the view origin,
+   project_point turns its height into a scan line.  They share the opening subtract, the
+   divide and the entry-point pair.
 
-   TWO ENTRY POINTS EACH, AND THE SECOND ONE IS AN ORIGIN.  $2145 and $2285 are two bytes
-   long — `LDY #0` — and fall into $2147 / $2287, which subtract view_origin[Y].  Y is a byte
-   offset into a STRIDE-SIX array of three-component positions, so Y = 0 is the camera and
-   Y = 6 is the road sign's own displaced viewpoint (build_road_sign is the only caller that
-   passes it, at $4CED and $4D1A; build_sign_origin is what fills that second row).  Ghidra
-   split each pair into two functions and the transliteration kept them that way.
+   $2145 and $2285 are `LDY #0` falling into $2147 / $2287, which subtract view_origin[Y].  Y
+   is a byte offset into a stride-six array of positions: 0 is the camera and 6 the road sign's
+   displaced viewpoint (passed only by build_road_sign, at $4CED and $4D1A; build_sign_origin
+   fills that row).
 
-   ONE DELTA VECTOR, THREE PARALLEL ARRAYS.  Both routines' opening is the same three
-   instructions per component, and the cells line up: low bytes at $80-$82, the magnitude's
-   high bytes at $83-$85, the RAW signed high bytes at $86-$88, all indexed by component 0..2.
-   bearing_to_section fills components 0 and 2 — the ground plane, whose ratio is the bearing —
-   and project_point fills component 1, the height.  Those are point_delta_lo / _hi / _sign
-   now.
+   The delta vector is three parallel arrays indexed by component 0..2: low bytes at $80-$82
+   (point_delta_lo), magnitude high bytes at $83-$85 (point_delta_hi), raw signed high bytes at
+   $86-$88 (point_delta_sign).  bearing_to_section fills components 0 and 2, the ground plane;
+   project_point fills component 1, the height.
 
-   ⚠ THE ARCTAN SCALE IS THE SAME IN BOTH ARMS.  Both have exactly three LSR/ROR pairs, so both
-   scale the table byte by 32 and 45 degrees is $1FE0 either way.  What differs is the octant:
-   the quadrant base, and which way the negate goes.
+   ⚠ Both arctan arms have three LSR/ROR pairs, so both scale the table byte by 32 and 45
+   degrees is $1FE0 either way; the arms differ only in octant.
+   ⚠ Decimal mode reaches every subtract, so the abs, the negate and both closing adjustments
+   go through the 6502's own ADC/SBC; the fixtures randomise D, and that is where exit V comes
+   from.
 
-   ⚠ DECIMAL MODE REACHES EVERY ONE OF THESE SUBTRACTS, so the abs, the negate and both
-   closing adjustments go through the 6502's own ADC/SBC.  The fixtures randomise D for the
-   same reason div16by8's do, and that is also where the exit V comes from.
-
-   AND BOTH DIVIDES ARE ONE `DIVU` OF THE TRUE OPERANDS — see `bearing_arm` and
-   `project_point_core` below.  Neither twin calls div16by8 or normalises anything: each takes
-   (smaller << 8) / larger directly, which is the ratio the 6502's truncated-divisor quotient
-   approximated (0..+2 above it).  That is a deliberate departure from byte equality, accepted
-   by the user at +-1 LSB against a real BBC and validated to a tolerance, not to equality
-   (tools/validate_native.c §bearing / §projection tolerance, docs/validation-harness.md). */
+   Both divides are one DIVU of the true operands, (smaller << 8) / larger (see bearing_arm and
+   project_point_core): an accepted departure from the 6502's truncated-divisor quotient (0..+2
+   above it), validated to +-1 LSB (tools/validate_native.c §bearing / §projection tolerance,
+   docs/validation-harness.md). */
 
 /* One component of the camera-relative delta: the section coordinate minus the view origin,
    split into its sign (the high byte of the signed difference) and its magnitude (the absolute
@@ -7131,31 +7039,25 @@ static void bearing_diagonal(void)
     bearing_v      = (uint16_t)(diagonal[quadrant] << 8);   /* $2211 — low byte 0; relocated */
 }
 
-/* $21C1-$220C and $2239-$2284 — the two arms, which differ in three things and nothing else:
-   which component is the divisor, which sign byte picks the quadrant base, and which way the
-   negate goes.  Arm A measures off component 0 (base $40/$C0, negate when the two signs
-   AGREE); arm B measures off component 2 (base $00/$80, negate when they DIFFER).  Together
-   they are an octant decomposition of a full turn.
+/* $21C1-$220C and $2239-$2284 — the two arms.  Arm A measures off component 0 (base $40/$C0,
+   negate when the two signs agree); arm B off component 2 (base $00/$80, negate when they
+   differ).  Together they are an octant decomposition of a full turn.
 
-   THE TRUE RATIO, NOT THE 6502'S (accepted departure, docs/validation-harness.md).  The 6502 had an 8-bit
-   divide, so it normalised the larger magnitude until its top bit fell out, divided the equally
-   shifted smaller one by the larger's HIGH BYTE, and read a quotient that is the ratio with an
-   8-bit-truncated divisor: never below the true one and up to 2 above it (398 890 inputs: 67%
-   equal, 32% +1, 1% +2).  A 68000 divides the real operands in one DIVU — (smaller << 8) /
-   larger, a proper fraction, so the quotient is 0..255 — and needs no normalise, no shift count
-   and none of the four scratch stores the 6502 made on the way (the shifted point_delta lanes,
-   shared_temp_76, math_lo).  The reader audit that frees them is `make rangeaudit DEFUSE=1` on
-   all five circuits: nothing outside this routine and the 6502's own divide reads any of them.
-   ⚠ And the 6502's SECOND 45-degree door goes with it: a normalised dividend that caught the
-   divisor was the truncated quotient reaching 256, which the true quotient never does — it lands
-   on arctan_table[253..255] instead, within 96 of the diagonal's angle.  Equal magnitudes still
-   take the diagonal (bearing_diagonal), because there the ratio is exactly 1.
-   Validated to that tolerance, not to equality: tools/validate_native.c §bearing tolerance. */
+   The true ratio (accepted departure, docs/validation-harness.md).  The 6502 normalised the
+   larger magnitude, divided the equally shifted smaller one by the larger's high byte, and got
+   the ratio with an 8-bit-truncated divisor, 0..+2 above the true one.  Here one DIVU,
+   (smaller << 8) / larger, a proper fraction, so 0..255, with none of the 6502's four scratch
+   stores (the shifted point_delta lanes, shared_temp_76, math_lo).  Reader audit: `make
+   rangeaudit DEFUSE=1` on all five circuits finds no other reader of them.
+   ⚠ The 6502's second 45-degree exit goes with it: that was the truncated quotient reaching
+   256, which the true quotient never does (it lands on arctan_table[253..255], within 96 of the
+   diagonal).  Equal magnitudes still take bearing_diagonal, where the ratio is exactly 1.
+   Validated to a tolerance: tools/validate_native.c §bearing tolerance. */
 static void bearing_arm(unsigned largerComponent, uint16_t larger, uint16_t smaller,
                         uint8_t quadrantBase, int negateWhenSignsAgree)
 {
 #ifdef REVS_EXACT_RATIO
-    /* `make EXACTRATIO=1` — THE 6502'S RATIO, for the real-BBC lockstep (the physics reads the
+    /* `make EXACTRATIO=1` — the 6502's ratio, for the real-BBC lockstep (the physics reads the
        road surface off the picture, so the accepted ±1 LSB here would steer the two machines
        apart within a few frames).  $21BD-$21DF: normalise the larger until its top bit falls out,
        shift the smaller one place fewer, divide by the larger's high byte (with the 1 rotated
@@ -7206,7 +7108,7 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
     mem[MEM_point_delta_hi   + 2] = (uint8_t)(d2.mag >> 8);
     mem[MEM_point_delta_sign + 2] = d2.rawHi;
 
-    /* $2187-$2191 THE SORT.  The divide wants a proper fraction, so the smaller magnitude
+    /* $2187-$2191 the sort.  The divide wants a proper fraction, so the smaller magnitude
        becomes the dividend and the larger the divisor.  point_distance_hypot reads the same
        two pairs afterwards as its min and max. */
     {
@@ -7230,14 +7132,14 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 {
-    /* The 6502 dropped a point by returning with carry SET (the far clip's $22BC SEC, or the
+    /* The 6502 dropped a point by returning with carry set (the far clip's $22BC SEC, or the
        >$80 quotient); both exits are this same "clipped" answer.  behind is 0 on a drop — the
        caller's BPL is behind a taken BCS, so it is never read here. */
     static const ProjPoint PROJ_CLIPPED = { 0, 1, 0 };
 
     GEO_COUNT(g_geoProject);
 
-    /* $2287-$22AE — component 1 of the delta, the HEIGHT, and the only component that is
+    /* $2287-$22AE — component 1 of the delta, the height, and the only component that is
        scaled on the way in: >> 3 as a 16-bit pair before anything looks at it. */
     ViewDelta d      = view_delta(sectionByte, 1, origin);
     uint16_t  height = (uint16_t)(d.mag >> 3);
@@ -7246,31 +7148,27 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 
     mem[MEM_point_delta_sign + 1] = d.rawHi;
 
-    /* $22B0-$22BD THE FAR CLIP — the scaled height against point_dist, which
-       point_distance_hypot filled in for THIS point a moment ago, so it is a vertical
+    /* $22B0-$22BD the far clip — the scaled height against point_dist, which
+       point_distance_hypot filled in for this point a moment ago, so it is a vertical
        field-of-view test and not a comparison with a stale distance.  Height at or beyond the
        distance drops the point. */
     dist = (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo);
     if (height >= dist)
         return PROJ_CLIPPED;                        /* $22BC SEC — "drop this point" */
 
-    /* $22BE-$22E1 — THE PERSPECTIVE DIVIDE, AS THE TRUE RATIO (accepted departure, docs/validation-harness.md).
-       The 6502 normalised the distance until its top bit fell out, divided the equally shifted
-       height by the distance's HIGH BYTE, and left the normalised pair behind as a software
-       float of 1/distance — reciprocal_table's entry for the mantissa in proj_width, the shift
-       count in proj_width_shift — for the two routines that want the road's and an object's
-       apparent width.  The quotient that makes was the ratio with an 8-bit-truncated divisor,
-       0..+2 above the true one.  Here: (height << 8) / distance in one DIVU, a proper fraction
-       (the far clip has just proved height < distance), so 0..255.
-       NOTHING ELSE IS WRITTEN, and the reader audit is what licenses it (`make rangeaudit
-       DEFUSE=1`, all five circuits): the shifted height lanes, shared_temp_76 and the quotient in
-       math_lo are read by nothing but this routine and the 6502's own divide; point_dist_lo,
-       which the 6502 shifted IN PLACE, is read by nothing after it — so it now simply SURVIVES,
-       and that is what the two width routines take instead of the float: emit_edge_width_offset
-       and write_object_slot divide by point_dist themselves (see edge_width_offset_for and
-       object_width_for).  proj_width / proj_width_shift keep their other tenancy, the object
-       plotter's scale (draw_track_object → scale_shape_vectors), which never came from here.
-       Validated to a tolerance, not to equality: tools/validate_native.c §projection tolerance. */
+    /* $22BE-$22E1 — the perspective divide as the true ratio (accepted departure,
+       docs/validation-harness.md).  The 6502 normalised the distance, divided the equally
+       shifted height by its high byte (0..+2 above the true ratio), and left the normalised
+       pair as a float of 1/distance (the reciprocal_table mantissa in proj_width, the shift
+       count in proj_width_shift) for the two width routines.  Here (height << 8) / distance in
+       one DIVU, 0..255 (the far clip has just proved height < distance).
+       Nothing else is written.  Reader audit (`make rangeaudit DEFUSE=1`, all five circuits):
+       the shifted height lanes, shared_temp_76 and math_lo have no other reader, and
+       point_dist_lo, which the 6502 shifted in place, is read by nothing after it.  So it
+       survives unshifted, and emit_edge_width_offset and write_object_slot divide by it
+       themselves (edge_width_offset_for, object_width_for).  proj_width / proj_width_shift
+       keep their other tenant, the object plotter's scale.
+       Validated to a tolerance: tools/validate_native.c §projection tolerance. */
 #ifdef REVS_EXACT_RATIO
     /* `make EXACTRATIO=1` — the 6502's divide and its float of 1/distance (see bearing_arm):
        point_dist_lo is shifted in place, and the mantissa/exponent go to proj_width(_shift). */
@@ -7309,36 +7207,32 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 }
 
 /* $2B26-$2FFF  the span rasteriser
-   Everything draw_road reaches below its three stages.  Read as one subsystem it is a Bresenham
-   span painter with an unusual amount of machinery around it:
+   Everything draw_road reaches below its three stages: a Bresenham span painter.
 
      interp_edge            picks the arm, builds the colour patterns and the two surface
-                            codes, and plants SEVEN self-modified bytes in the four arms
+                            codes, and plants seven self-modified bytes in the four arms
                             and the two plotters
      draw_span_*_fwd/rev    four arms = {X-major, Y-major} x {ascending, descending}, each an
-                            eight-column chain UNROLLED once and entered partway through
-     road_span_plot / _2    the leaf that actually merges one column's pixels into a buffer
-     span_end_marker_p1/p2  the $FF terminator that closes a run, and itself an opcode slot
+                            eight-column chain unrolled once and entered partway through
+     road_span_plot / _2    the leaf that merges one column's pixels into a buffer
+     span_end_marker_p1/p2  the $FF terminator that closes a run, itself an opcode slot
 
-   WHAT THE SELF-MODIFICATION IS FOR, because it is not obfuscation and the twins have to
-   model all of it:
-     * the Y-STEP slots ($2F47/$2F60/$2F89/$2FA2/$2F18) hold INY, DEY or NOP — a span walks up
-       the screen, down it, or stays on one line, and the direction is a per-span value;
-     * the DESTINATION operands ($2F4F/$2F50, $2F91/$2F92) name one of the four surface_edge
+   What the self-modification is for:
+     * the Y-step slots ($2F47/$2F60/$2F89/$2FA2/$2F18) hold INY, DEY or NOP: a span walks up
+       the screen, down it, or stays on one line;
+     * the destination operands ($2F4F/$2F50, $2F91/$2F92) name one of the four surface_edge
        buffers, so one plotter serves all four passes;
-     * the ENTRY OFFSETS ($2D28/$2DAB/$2E2F/$2EA8) are a computed jump into the middle of an
-       unrolled chain — "start at sub-column k", the standard way to run a partial unrolled
-       loop without a counter;
-     * and the two END MARKERS are switched between `CPX #$80` and `RTS`, i.e. the whole
-       routine is turned off, when the run needs no terminator.
+     * the entry offsets ($2D28/$2DAB/$2E2F/$2EA8) are a computed jump into an unrolled chain,
+       "start at sub-column k";
+     * the two end markers are switched between `CPX #$80` and `RTS` when the run needs no
+       terminator.
 
-   ⚠ The nine bytes at $80-$88 are a second tenant of point_delta_lo/hi/sign
-   (symbols.csv): to build_track_geometry they are a camera-relative delta vector, to this
-   pass they are DDA state.  The windows never overlap — draw_road runs after
-   build_track_geometry has finished — and the defines below are what make the code readable. */
+   ⚠ $80-$88 are a second tenant of point_delta_lo/hi/sign (symbols.csv): a delta vector to
+   build_track_geometry, DDA state here.  draw_road runs after build_track_geometry, so the
+   windows never overlap; the defines below name this tenant's cells. */
 
 #define SPAN_LINE_END  (MEM_point_delta_lo + 2u)   /* point_delta_lo[2]   — the scan line the span stops at */
-/* ⚠ All three off ONE base, because they are three CONTIGUOUS cells and that is the fact a
+/* ⚠ All three off one base, because they are three contiguous cells and that is the fact a
    reader needs; mem.h also names the upper two individually (shared_temp_84 / shared_temp_85,
    the static asserts below hold them to it), and spelling two of the three by those names hid
    the adjacency the interp_edge → span_walk handover depends on. */
@@ -7359,24 +7253,18 @@ _Static_assert(SPAN_BLOCK == MEM_shared_temp_85, "point_delta_hi[2] is shared_te
 #define OP_DEY 0x88u
 #define OP_NOP 0xEAu
 
-/* The walk direction as a value, not as an opcode in mem[].
-   The 6502 remembers which way the span walk steps Y by planting DEY/INY/NOP into the
-   plotters' own instruction streams ($2F47 and $2F60 inside road_span_plot, $2F89/$2FA2 inside
-   road_span_plot_2, and $2F18 for the descending arms' cap), and switches the two end markers
-   off by planting RTS over $2FC0/$2FD7.  The port keeps the direction instead: -1 (DEY),
-   +1 (INY), 0 (NOP).
+/* The walk direction as a value, not as an opcode in mem[]: -1 (DEY), +1 (INY), 0 (NOP).
+   The 6502 plants DEY/INY/NOP at $2F47/$2F60 (road_span_plot), $2F89/$2FA2 (road_span_plot_2)
+   and $2F18 (the descending arms' cap), and switches the end markers off by planting RTS over
+   $2FC0/$2FD7.  interp_edge writes all four step slots together ($2CC5, swapped at $2CBC) and
+   both markers together ($2CAA/$2CB4), so one pair and one flag serve both plotters.
 
-   Both plotters always carry the SAME pair and both markers the same switch — interp_edge
-   writes all four step slots in one go at $2CC5 and swaps in/out together at $2CBC, and plants
-   the marker opcode over both at $2CAA/$2CB4 — so one pair and one flag serve both.
-
-   The opcode bytes survive as the 6502-ABI channel: the four draw_span_*__t6502 oracles and
-   every fixture drive these routines through them (`plant_step` plants an unexecutable opcode
-   one case in ten, to reach the trap).  The two ABI entries (span_walk_oracle,
-   span_plot_oracle) decode mem[] into the values below, so the trap fires at the same point
-   with the same operands; nothing on the native path touches those bytes.
-   Safe because interp_edge is their only writer, and it is the twin at the boundary.  Reader
-   audit for dropping the writes: docs/validation-harness.md §THE RESULTS RULE, ...CODE bytes. */
+   The opcode bytes survive as the 6502-ABI channel: the four draw_span_*__t6502 oracles and the
+   fixtures drive these routines through them (`plant_step` plants an unexecutable opcode one
+   case in ten, to reach the trap).  span_walk_oracle and span_plot_oracle decode mem[] into the
+   values below, so the trap fires at the same point; the native path never touches the bytes.
+   interp_edge is their only writer.  Reader audit for dropping the writes:
+   docs/validation-harness.md §THE RESULTS RULE. */
 typedef signed char SpanStep;
 #define SPAN_STEP_TRAP  ((SpanStep)2)   /* an opcode slot the model cannot execute */
 
@@ -7384,10 +7272,10 @@ typedef signed char SpanStep;
 #define SPAN_MARK_ON    1               /* ...== CPX #imm — close the run */
 #define SPAN_MARK_TRAP  2
 
-/* Seeded from the RUNTIME IMAGE's own bytes ($2F47/$2F89 = NOP, $2F60/$2FA2 = INY,
+/* Seeded from the RUNTIME image's own bytes ($2F47/$2F89 = NOP, $2F60/$2FA2 = INY,
    $2FC0/$2FD7 = CPX #imm), so the port starts where the binary starts.  Nothing reads any of
    the three before writing it, though: interp_edge's step 5a sets the pair on every path that
-   reaches a walk, and the marker flag is written and read on the SAME branch — sw_marker is
+   reaches a walk, and the marker flag is written and read on the same branch — sw_marker is
    called only where `!arm->steep`, which is the X-major branch that plants it. */
 static SpanStep g_spanStepIn  = (SpanStep)0;
 static SpanStep g_spanStepOut = (SpanStep)+1;
@@ -7436,7 +7324,7 @@ static int g_spanSlotsWrapped;          /* this span is running the long way rou
 #define SPAN_SLOT_MARK(cached, slot)  (cached)
 #endif
 
-/* Take one step.  A trap is an EXIT and the caller has to take it as one, exactly where the
+/* Take one step.  A trap is an exit and the caller has to take it as one, exactly where the
    transliteration does; *y is untouched then.  `slot` is only ever used for the trap report,
    so it stays an immediate on the cold path.
    ⚠ The trap re-reads mem[slot] rather than remembering the byte, because that is what the
@@ -7453,43 +7341,38 @@ int span_step_take(SpanStep step, unsigned slot, uint8_t *y)
 
 /* $2FEE  road_span_advance
    "Has this span walked off the top of its source block?"  Returns nothing but the CARRY:
-   set while the scan line is still PAST the block's first line, clear the moment it reaches
+   set while the scan line is still past the block's first line, clear the moment it reaches
    it.  Both plotters consult it before merging a pixel into an occupied cell, and a clear
    carry there ends the column.
 
    ⚠ Its exit N/Z come from reloading X, not from the compare — the compare's own N/Z are
    dead by then, and no caller reads them (both plotters and both markers consult only the
-   CARRY).  A and X are preserved — the whole point of the 6502's math_lo/math_hi round trip,
+   carry).  A and X are preserved — the whole point of the 6502's math_lo/math_hi round trip,
    which the pure-C core simply does not need — so the routine is a pure predicate on Y. */
 int road_span_advance_core(uint8_t y)
 {
-    /* CMP then a CLC on equal: carry SET while the scan line is still past the block's first
-       line, CLEAR the moment it reaches (or precedes) it.  C = (Y > dash_block_starts[block]). */
+    /* CMP then a CLC on equal: carry set while the scan line is still past the block's first
+       line, clear the moment it reaches (or precedes) it.  C = (Y > dash_block_starts[block]). */
     return y > mem[MEM_dash_block_starts + mem[SPAN_BLOCK]];
 }
 
-/* $2F12-$2F44  the run's SURFACE CAP
-   Not a function of its own in the disassembly — it is the tail two of the four arms fall
-   into, and the plotters' abort path jumps to it.  It stamps ONE view_line_surface entry:
-   the class of the scan line the run ended on, which view_paint_lines later turns into that
-   line's background colour.
+/* $2F12-$2F44  the run's surface cap
+   Not a function in the disassembly: the tail two of the four arms fall into, and the
+   plotters' abort path jumps to.  It stamps one view_line_surface entry, the class of the scan
+   line the run ended on, which view_paint_lines turns into that line's background colour.
 
-   Which of the two codes it writes is the walk direction (span_swapped), and the two are the
-   style's OVER colour and its FILL colour: an ascending walk stamps the run's END line, which
-   is beyond the run and so still the surface the span was drawn on, while a descending walk
-   steps BACK one line onto a line the run itself covered and stamps the fill.  It gives up if
-   that stepped-onto line already carries a class.  Past 45
-   degrees off the section (view_yaw_offset >= $28) the low two bits are left alone; below it
-   they are cleared unless they are already 3.
+   The walk direction (span_swapped) picks the code: an ascending walk stamps the run's end
+   line, beyond the run, with the style's over colour; a descending walk steps back one line
+   onto a line the run covered and stamps the fill colour.  It gives up if that line already
+   has a class.  Past 45 degrees off the section (view_yaw_offset >= $28) the low two bits are
+   left alone; below it they are cleared unless already 3.
 
-   ⚠ X is CLOBBERED here — $2F2E loads view_yaw_offset into it — and Y by the descending
-   arm's step.  Both are live at the plotters' exit, so both are part of the contract. */
-/* $2F23's per-circuit "is this scan line already classified?" test — the one operation in the
-   surface cap whose answer genuinely leaves an external routine.  Silverstone reads
+   ⚠ X is clobbered ($2F2E loads view_yaw_offset into it), and Y by the descending arm's step.
+   Both are live at the plotters' exit. */
+/* $2F23's per-circuit "is this scan line already classified?" test.  Silverstone reads
    view_line_surface directly ($2F23 == LDA abs,Y); an expansion circuit runs its own hook,
-   whose Z flag is the answer.  This is the sanctioned flag-escape seam: the cpu.h read is
-   isolated in a named helper right at the external call.  Returns 1 when Z is set (the line is
-   still empty — go on and stamp it), 0 when clear (already classified — leave it), -1 on a trap. */
+   whose Z flag is the answer, read through cpu.h here at the external call.  Returns 1 when Z
+   is set (the line is empty: stamp it), 0 when clear (leave it), -1 on a trap. */
 static int span_cap_line_slot_z(uint8_t y, uint8_t entryX)
 {
     if (mem[MEM_smc_span_cap_load] == 0xB9) {                       /* unpatched: Silverstone, LDA $5F60,Y */
@@ -7506,7 +7389,7 @@ static int span_cap_line_slot_z(uint8_t y, uint8_t entryX)
             hr.n = (y >> 7) & 1; hr.z = (y == 0);
             /* X is the entry X of whichever arm fell into this tail — $2F on the walk's own
                exit (the `CPX #$2F` that let it through) and S+2 on the abandon path's
-               `TSX/INX/INX`.  The entry C and V are DEAD: the hook's opening `CMP` writes C
+               `TSX/INX/INX`.  The entry C and V are dead: the hook's opening `CMP` writes C
                before anything reads it, and nothing here can observe V (the V note at $248B). */
             hr.x = entryX;
             hr.c = 0u;  hr.v = 0u;
@@ -7527,7 +7410,7 @@ static void span_cap_line(uint8_t y, uint8_t entryX)
         y--;
         int z = span_cap_line_slot_z(y, entryX);
         if (z <= 0) return;              /* trapped, or the line already has a class — leave it */
-        code = span_cap_surface_fill;    /* it stepped onto a line the run COVERED */
+        code = span_cap_surface_fill;    /* it stepped onto a line the run covered */
     } else {
         code = span_cap_surface_over;    /* the run's end line, beyond the run itself */
     }
@@ -7541,10 +7424,10 @@ static void span_cap_line(uint8_t y, uint8_t entryX)
     mem[MEM_view_line_surface + y] = (uint8_t)code;
 }
 
-/* $2F7E — the plotter has reached the span's end line.  `TSX/INX/INX/TXS` drops the ARM's
+/* $2F7E — the plotter has reached the span's end line.  `TSX/INX/INX/TXS` drops the arm's
    return address as well as this one, so the RTS below lands back in interp_edge and the
    whole eight-column chain is abandoned.  The model keeps return addresses on the C stack,
-   so the drop is a flag (cpu.h's UNWIND) that every caller in the chain consults.
+   so the drop is a flag (cpu.h's unwind) that every caller in the chain consults.
    ⚠ X really is clobbered by the idiom — it comes back as S+2 — and the differential sees it. */
 static void span_abandon_chain(uint8_t y)
 {
@@ -7558,28 +7441,25 @@ static void span_abandon_chain(uint8_t y)
 #define span_chain_abandoned()  UNWIND_TAKEN()
 
 /* $2F45  road_span_plot  and  $2F87  road_span_plot_2
-   THE LEAF OF THE WHOLE VIEW PIPELINE: one column of one span, merged into one buffer cell.
-   The two are the same routine against different pointers — that is the only difference —
-   so they share a core and differ by a descriptor.
+   The leaf of the view pipeline: one column of one span, merged into one buffer cell.  The two
+   differ only in their pointers, so they share a core and differ by a descriptor.  One call:
 
-   WHAT ONE CALL DOES:
-     1. steps Y by the span's direction (an opcode slot), and gives up on the entire chain if
-        that lands on the span's end line;
-     2. records which SOURCE BLOCK feeds this scan line, in the pass's own surface_edge
-        buffer (the store's address is the patched operand pair);
-     3. merges the column's pixels into the cell: an EMPTY cell takes the style's pattern
+     1. steps Y by the span's direction (an opcode slot), and abandons the chain if that lands
+        on the span's end line;
+     2. records which source block feeds this scan line in the pass's surface_edge buffer
+        (the store's address is the patched operand pair);
+     3. merges the column's pixels into the cell: an empty cell takes the style's pattern
         whole, an occupied one keeps the other columns' bits and takes this column's from
-        colour_pattern_or_tbl.  $55 is the "all four columns lit" value and is treated as
-        empty on the way in and substituted back on the way out, so it never reads as zero;
+        colour_pattern_or_tbl.  $55, "all four columns lit", is treated as empty on the way in
+        and substituted back on the way out, so it never reads as zero;
      4. copies the span's bearing high byte alongside, through the second pointer;
      5. steps Y again and returns with the carry clear.
 
-   A cell that is occupied AND past its block's first scan line ends the column instead
-   (road_span_advance is the test) — that is how a span stops where the previous one already
-   painted.
+   A cell that is occupied and past its block's first scan line ends the column instead
+   (road_span_advance), so a span stops where the previous one already painted.
 
-   ⚠ The two cell stores are raw mem[] stores, not bus_read/bus_write, so a bus_write aliasing
-   probe does not cover the plotters. */
+   ⚠ The two cell stores are raw mem[] stores, so a bus_write aliasing probe does not see the
+   plotters. */
 
 const SpanPlotter SPAN_PLOT_1 = {
     MEM_span_step_p1_in_slot, MEM_span_step_p1_out_slot, MEM_span_dest_p1_operand, (MEM_span_dest_p1_operand + 1u),
@@ -7622,7 +7502,7 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
         return SPAN_PLOT_PACK(y, carryIn, 0);
     if (y == mem[SPAN_LINE_END]) { span_abandon_chain(y); return SPAN_PLOT_PACK(y, carryIn, 1); }
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 3
-    /* ⚠ `make ROADARM=3` — PICTURE WRONG BY CONSTRUCTION: the plot BODY is skipped (its three
+    /* ⚠ `make ROADARM=3` — picture wrong by construction: the plot body is skipped (its three
        stores, the pattern compose and the block-first-line exit), keeping the Y steps and the
        abandon test the walk's control flow depends on.  Prices the plotter against the DDA. */
     { unsigned c = span_step_take(g_spanStepOut, p->stepOut, &y) ? 0u : 0u;
@@ -7663,18 +7543,15 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
 }
 
 /* $2FC0  span_end_marker_p1  and  $2FD7  span_end_marker_p2
-   Close a run: write the $FF terminator the view rasteriser reads as "no more spans on this
-   line" through one of the two pointers, then reset X to $80.  Called once after each group
-   of four columns.
+   Close a run: write the $FF terminator ("no more spans on this line") through one of the two
+   pointers, then reset X to $80.  Called after each group of four columns.
 
-   ⚠ THE FIRST BYTE IS AN OPCODE SLOT, so the routine has two shapes: `CPX #$80` (do the
-   work) and `RTS` (do nothing at all).  interp_edge chooses between them at $2CAA/$2CB4, and
-   the RTS form leaves X, A and every flag untouched — which is why it cannot be modelled as
-   an `if` around the body.
+   ⚠ The first byte is an opcode slot, `CPX #$80` (do the work) or `RTS` (do nothing), chosen
+   by interp_edge at $2CAA/$2CB4.  The RTS form leaves X, A and every flag untouched.
 
-   X is the "the column ran clean to its end" mark: the arms load 0..3 into it before each
-   plot and only the untouched $80 gets a terminator.  A is preserved across the store by the
-   TAX/TXA pair, which is also what makes X's exit value $80 rather than the pattern byte. */
+   X is the "column ran clean to its end" mark: the arms load 0..3 into it before each plot and
+   only an untouched $80 gets a terminator.  The TAX/TXA pair preserves A across the store and
+   leaves X = $80. */
 /* By value, for the same reason as span_plot_core: taking `&colMark`/`&carry` would pin
    span_walk's DDA state in its stack frame.  Returns 0 for an opcode slot the marker cannot
    mean; colMark and the carry then stand, as the 6502's RTS / unhandled arms leave them. */
@@ -7697,7 +7574,7 @@ void span_end_marker_body(const uint16_t *ptr, uint8_t y, uint8_t colMark)
 }
 
 /* The 6502-ABI form: the slot is still an opcode byte, which is what the shims in
-   revs_native_abi.c and the two marker fixtures hand it.  Its ONE caller is the out-of-line
+   revs_native_abi.c and the two marker fixtures hand it.  Its one caller is the out-of-line
    span_end_marker wrapper just below, so it stays static — the rasteriser's own path goes
    through span_end_marker_body instead. */
 static int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t colMark)
@@ -7722,35 +7599,31 @@ static int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, u
 }
 
 /* $2D17 draw_span_shallow_fwd   $2D9A draw_span_shallow_rev
-   $2E20 draw_span_steep_fwd   $2E99 draw_span_steep_rev
-   THE SPAN WALK ITSELF, and the four are one algorithm with two independent choices:
+   $2E20 draw_span_steep_fwd     $2E99 draw_span_steep_rev
+   The span walk.  One algorithm with two independent choices:
 
-     X-MAJOR ("shallow", dx >= dy)   one pixel per column; the DDA adds dy and a carry is
-                                     what moves the pixel to the next scan line
-     Y-MAJOR ("steep",   dx <  dy)   the column REPEATS until the DDA carries, which is how
-                                     a steep span paints several lines of the same column
-     ASCENDING / DESCENDING          columns 0..3 or 3..0, the three screen pointers and the
+     X-major ("shallow", dx >= dy)   one pixel per column; a DDA carry moves the pixel to the
+                                     next scan line
+     Y-major ("steep",   dx <  dy)   the column repeats until the DDA carries, painting
+                                     several lines of the same column
+     ascending / descending          columns 0..3 or 3..0, the three screen pointers and the
                                      source-block index stepped up or down, and the bound
                                      plot_ptr2_hi == $44 or == $2F
 
-   One iteration of the loop is EIGHT columns: four through road_span_plot into one buffer,
-   then the source block steps, then four through road_span_plot_2 into the other.  The
-   shallow arms close each half with its end marker; the steep arms have none.  The two
-   descending arms fall into the surface cap at $2F12 when the walk finishes.
+   One iteration is eight columns: four through road_span_plot into one buffer, the source
+   block steps, four through road_span_plot_2 into the other.  The shallow arms close each half
+   with its end marker; the steep arms have none.  The two descending arms fall into the surface
+   cap at $2F12 when the walk finishes.
 
-   THE ENTRY IS A COMPUTED JUMP INTO THE MIDDLE OF THE UNROLLED CHAIN.  The sub-column
-   phase (math_hi & 7) indexes the arm's entry-offset table, the byte is written over the
-   chain's own `BCC` operand, and the `CLC` in front of that branch makes it unconditional:
-   "start at sub-column k".  It is the standard way to run a partial unrolled loop without a
-   counter, and it applies to the FIRST iteration only — every later one starts at the top.
+   The entry is a computed jump into the unrolled chain: the sub-column phase (math_hi & 7)
+   indexes the arm's entry-offset table, the byte is written over the chain's own `BCC` operand,
+   and the `CLC` in front makes it unconditional.  It applies to the first iteration only.
 
-   ⚠ DECLARED COVERAGE LIMIT, and it is derived rather than assumed: the twin recognises the
-   chain top and the sixteen (shallow) or eight (steep) slot offsets, which is exactly the set
-   the four tables in the image hold.  Those tables are static — `LDA table,X` at $2D17 /
-   $2D9A / $2E20 / $2E99 are the only references to them in the whole listing, and although
-   they sit inside the $80-spaced source blocks they sit in the blocks' TAILS (offset $50 and
-   $58), above the $50 scan lines the span plotters can reach through ($70),Y.  Anything else
-   goes to platform_smc_unhandled, exactly as an unrecognised opcode slot does. */
+   ⚠ Coverage limit: the twin recognises the chain top and the sixteen (shallow) or eight
+   (steep) slot offsets, the set the four tables hold.  The tables are static (`LDA table,X` at
+   $2D17/$2D9A/$2E20/$2E99 are their only references) and sit in the source blocks' tails,
+   above the $50 scan lines the plotters can reach.  Anything else goes to
+   platform_smc_unhandled, as an unrecognised opcode slot does. */
 
 
 /* promoted for revs_native_abi.c */ const SpanArm ARM_SHALLOW_FWD = { 0x3E50u, 0x2D28u, 0x2D29u, SPAN_DY, SPAN_DX, 0, 0, 0x44u };
@@ -7811,7 +7684,7 @@ int span_entry_decode(const SpanArm* arm, uint8_t offset,
     } else {
         switch (offset) {
         case 0x00: *runTop = 1; return 1;                  /* the `LDX #$80` at the top */
-        case 0x08: *column = 0; *forced = 1; return 1;  /* a COLUMN entry: plot it whole */
+        case 0x08: *column = 0; *forced = 1; return 1;  /* a column entry: plot it whole */
         case 0x13: *column = 1; *forced = 1; return 1;
         case 0x1E: *column = 2; *forced = 1; return 1;
         case 0x29: *column = 3; *forced = 1; return 1;
@@ -7830,7 +7703,7 @@ int span_entry_decode(const SpanArm* arm, uint8_t offset,
         default:   break;
         }
     }
-    /* ⚠ The trap reports the computed TARGET, not the offset byte — that is what the
+    /* ⚠ The trap reports the computed target, not the offset byte — that is what the
        transliteration's switch has in hand at the same point, and the harness diffs it. */
     platform_smc_unhandled(arm->operand - 1, (uint16_t)(arm->base + (int8_t)offset));
     return 0;
@@ -7838,7 +7711,7 @@ int span_entry_decode(const SpanArm* arm, uint8_t offset,
 
 /* $2F12-$2F18 — the two descending arms' shared exit: replay the plotters' Y step once more
    and cap the run's last line.
-   The 6502 replayed it by COPYING road_span_plot's own entry opcode into a third slot of its
+   The 6502 replayed it by copying road_span_plot's own entry opcode into a third slot of its
    own ($2F47 -> $2F18) and executing that — a read and a write per span to reach a direction it
    already knew.  The value is g_spanStepIn, so the copy and the slot are both gone; the trap
    still reports $2F18, which is where the transliteration's own switch reports it. */
@@ -7846,8 +7719,8 @@ static void span_walk_cap(uint8_t y)
 {
     const SpanStep step = SPAN_SLOT_STEP(g_spanStepIn, MEM_span_step_p1_in_slot);
     if (step == SPAN_STEP_TRAP) {
-        /* ⚠ The trap's operands are the transliteration's, not this code's: the SITE is the cap
-           slot and the VALUE the byte $2F12-$2F15 had just copied into it out of the plotter's
+        /* ⚠ The trap's operands are the transliteration's, not this code's: the site is the cap
+           slot and the value the byte $2F12-$2F15 had just copied into it out of the plotter's
            entry slot.  The harness diffs both (g_smcSite / g_smcValue). */
         platform_smc_unhandled(MEM_span_step_cap_slot, mem[MEM_span_step_p1_in_slot]);
         return;
@@ -7891,7 +7764,7 @@ unsigned sw_plot(int usePlot2, uint8_t column, uint8_t y, unsigned carryIn)
 {
     unsigned r;
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 5
-    /* ⚠ `make ROADARM=5` — PICTURE WRONG: the walk's loop runs and NO plot is called at all.
+    /* ⚠ `make ROADARM=5` — picture wrong: the walk's loop runs and NO plot is called at all.
        A plot that never abandons and never moves Y.  §ROADARM */
     (void)usePlot2; (void)column; (void)carryIn; return SPAN_PLOT_PACK(y, 0u, 0);
 #endif
@@ -7906,9 +7779,9 @@ unsigned sw_plot(int usePlot2, uint8_t column, uint8_t y, unsigned carryIn)
    so colMark is in/out; the marker's exit carry is the carry-in to the next column's DDA add
    (0 when it did work, unchanged when its slot is RTS), so it is threaded too.
 
-   ALWAYS_INLINE, AND THE SWITCHED-OFF TEST IS HOISTED TO THE CALL SITE.  `p2` is a
+   ALWAYS_INLINE, and the switched-off test is hoisted to the call site.  `p2` is a
    compile-time constant in each of span_walk's four specialisations, so the slot address and
-   the pointer fold to immediates; and interp_edge plants RTS over BOTH markers whenever the run
+   the pointer fold to immediates; and interp_edge plants RTS over both markers whenever the run
    needs no terminator, which makes "do nothing" the common answer.  Reaching that answer used
    to cost a five-argument push, a jsr and span_end_marker's own prologue — about 200 cycles,
    twice per scan line — where it is now one absolute read and a compare.  span_end_marker's own
@@ -7931,13 +7804,13 @@ unsigned sw_marker(int p2, uint8_t colMark, uint8_t y, unsigned carry)
    the direction tests from their inner loops.  The DDA is a plain binary fixed-point walk:
    `acc` is the fractional accumulator (a byte), `carry` its carry between columns.  D is 0 on
    the render path (docs/static-map.md §Decimal mode). */
-/* ⚠ OUT OF LINE: the exact walk runs only for a span span_walk_fast_ok cannot prove safe —
+/* ⚠ Out of line: the exact walk runs only for a span span_walk_fast_ok cannot prove safe —
    never in the game — so it must not share registers with the hot one (see span_walk_fast). */
 static __attribute__((noinline))
 void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 {
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 1
-    /* ⚠ `make ROADARM=1` — PICTURE WRONG BY CONSTRUCTION: no walk and no plot, the per-span
+    /* ⚠ `make ROADARM=1` — picture wrong by construction: no walk and no plot, the per-span
        setup still runs.  ph11's drop against the control IS the walk + plot.  §ROADARM. */
     (void)arm; (void)phase; (void)startLine; return;
 #endif
@@ -7962,15 +7835,15 @@ void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
     acc   = (uint8_t)(0u - (unsigned)mem[arm->subtrahend]);
     carry = 0;
 
-    /* The walk is reached BOTH ways — through the four 6502-ABI arms and core-to-core from
-       draw_surface_spans_core — so the read of the three pointers belongs HERE, once per span,
+    /* The walk is reached both ways — through the four 6502-ABI arms and core-to-core from
+       draw_surface_spans_core — so the read of the three pointers belongs here, once per span,
        not in the shims.  mem[] is the live mirror (every mutation writes its byte lane through),
        so this is always the current value, whoever last moved it. */
     plot_ptrs_marshal_in();
 #ifdef REVS_SPAN_SLOT_FALLBACK
-    /* Is this the in-game-impossible entry documented above — running AWAY from the bound, so
+    /* Is this the in-game-impossible entry documented above — running away from the bound, so
        the walk wraps through page $2F and scribbles on its own opcode slots? */
-    /* ⚠ ...or an ASCENDING walk that starts BELOW page $30 and climbs through $2F on its way to
+    /* ⚠ ...or an ascending walk that starts below page $30 and climbs through $2F on its way to
        the bound — not only the above-bound start.  Found by planting one (validate_native.c,
        test_span_arms): with only the wrap test this walk stored over the slots and kept its
        cached direction, 7/400 and 14/400 on the two `fwd` arms. */
@@ -7981,7 +7854,7 @@ void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
-    return;     /* ⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only.  §ROADARM */
+    return;     /* ⚠ `make ROADARM=4` — picture wrong: the walk's per-span entry only.  §ROADARM */
 #endif
 
     for (;;) {
@@ -7992,9 +7865,8 @@ void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
         int i;
 
         /* ⚠ The shallow arms only.  A steep arm reaches its own top with the column mark
-           holding the last column it plotted, and nothing reads it before the next set — so
-           resetting it there would be observationally identical, and the sabotage that does
-           it PASSES.  The shallow arms are different because their end markers test it. */
+           holding the last column it plotted, and nothing reads it before the next set, so
+           resetting it there would be invisible.  The shallow arms' end markers test it. */
         if (!arm->steep && (!first || runTop)) colMark = 0x80u;
 
         for (i = startCol; i < 8; i++) {
@@ -8049,7 +7921,7 @@ void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 
         /* One scan line down (or up): the three screen pointers and the source block move
            together, and plot_ptr2_hi is the one the bound is measured on. */
-        /* One scan line is one PAGE for each of the three pointers — a whole-word add, where
+        /* One scan line is one page for each of the three pointers — a whole-word add, where
            the 6502 needed three separate INC/DECs of three high-byte lanes. */
         if (arm->rev) { PLOT_STEP_PAGE(plot_ptr, -0x100); PLOT_STEP_PAGE(plot_ptr2, -0x100);
                         PLOT_STEP_PAGE(plot_ptr3, -0x100); mem[SPAN_BLOCK]--; }
@@ -8068,19 +7940,15 @@ void span_walk_exact(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 }
 
 /* The span walk in registers: the walk the game actually runs.
-   span_walk_exact survives what the game cannot do, a walk whose stores land on its own state
-   (the DDA deltas and source block in zero page, the three pointer lanes, the step and
-   end-marker opcode slots and the patched destination operands in page $2F), by re-reading all
-   of it from mem[] every column and storing through plot_store_resync.  The right oracle, the
-   wrong renderer.
-   A host census over 300 driving frames on each of the five circuits put every cell and bearing
-   store in $301C..$4439 and every surface_edge store in $0555..$0692, as interp_edge's own
-   arithmetic says.  So when span_walk_fast_ok proves, per span, that all three pointers stay in
-   pages $30..$45 and both destinations in low RAM, that state lives in locals (the deltas, the
-   end line, the source block, the three pointers, both destinations, both Y steps, the marker
-   switch and the bearing byte), written back once at the exit.
-   Two things still come from mem[] every time, because a store can legally land on them:
-   dash_block_starts ($3900, the dead offsets of block $12) and the colour pattern and/or tables
+   span_walk_exact handles a walk whose stores land on its own state (the DDA deltas and source
+   block in zero page, the three pointer lanes, the step and end-marker slots and the patched
+   destination operands in page $2F) by re-reading all of it from mem[] every column and storing
+   through plot_store_resync.  The game never does that: interp_edge's arithmetic keeps cell and
+   bearing stores in $301C..$4439 and surface_edge stores in $0555..$0692.  So when
+   span_walk_fast_ok proves, per span, that all three pointers stay in pages $30..$45 and both
+   destinations in low RAM, that state lives in locals, written back once at the exit.
+   Two inputs are still read from mem[] every time, because a store can legally land on them:
+   dash_block_starts ($3900, the dead offsets of block $12) and the colour pattern tables
    ($337C, $629C...).
    Anything the guard cannot prove (the fixtures' planted above-bound entry, a trapping slot, an
    odd destination) takes span_walk_exact. */
@@ -8140,7 +8008,7 @@ int span_walk_fast_ok(const SpanArm *arm)
     if (!arm->steep && g_spanMarkOn == SPAN_MARK_TRAP) return 0;
 
     /* How many scan-line iterations: the walk stops when plot_ptr2's page reaches the bound, so
-       a start ON or PAST it (the fixture's planted wrap) is the exact walk's business. */
+       a start ON or past it (the fixture's planted wrap) is the exact walk's business. */
     p2hi = plot_ptr2_v >> 8;
     if (arm->rev) { if (p2hi <= arm->bound) return 0; n = p2hi - arm->bound; }
     else          { if (p2hi >= arm->bound) return 0; n = arm->bound - p2hi; }
@@ -8162,7 +8030,7 @@ int span_walk_fast_ok(const SpanArm *arm)
 }
 
 /* The register walk's state: what span_walk_fast reads once per span and the walk carries.
-   ⚠ Only ever a LOCAL of span_walk_fast, handed by address to always_inline code, so GCC keeps
+   ⚠ Only ever a local of span_walk_fast, handed by address to always_inline code, so GCC keeps
    every field in a register (SROA) — the WALKCHECK build is the one place its address escapes. */
 typedef struct {
     uint16_t p1, p2, p3, dest1, dest2;  /* the three screen pointers and both patched operands */
@@ -8183,8 +8051,8 @@ volatile unsigned long g_walkCheckArms[4], g_walkCheckExact;   /* every span_wal
    cell through plot_ptr2 and copies bearing_hi through plot_ptr; plotter 2 through plot_ptr and
    plot_ptr3 (SPAN_PLOT_1 / SPAN_PLOT_2).  Marker p1 stores through plot_ptr, p2 through plot_ptr2.
    Returns 1 when a plot reached the end line (the abandon) and 0 when the walk ran out of lines;
-   either way w holds the final y, pointers and block, and the CALLER writes them back and caps.
-   On the Amiga this is also the REFERENCE span_walk_m68k is checked against (`make WALKCHECK=1`). */
+   either way w holds the final y, pointers and block, and the caller writes them back and caps.
+   On the Amiga this is also the reference span_walk_m68k is checked against (`make WALKCHECK=1`). */
 static inline __attribute__((always_inline))
 int span_walk_fast_loop(const SpanArm *arm, FastWalk *w)
 {
@@ -8203,10 +8071,10 @@ int span_walk_fast_loop(const SpanArm *arm, FastWalk *w)
 
 #define FAST_SAVE() do { w->y = y; w->p1 = p1; w->p2 = p2; w->p3 = p3; w->block = block; } while (0)
 /* One plot through plotter 1 or 2; an abandon hands the state back and leaves.
-   ⚠ dest1 and dest2 are the two plotters' patched operands and every writer makes them EQUAL
+   ⚠ dest1 and dest2 are the two plotters' patched operands and every writer makes them equal
    (draw_surface_spans_core stores one byte into both; every fixture plants them equal), so
-   giving plotter 2 dest1 is a sabotage that PASSES — no change at all; one byte off fails.
-   They stay two values because the exact walk treats them as two, and so does the 6502. */
+   swapping them is invisible.  They stay two values because the exact walk treats them as
+   two, and so does the 6502. */
 #define FAST_PLOT(usePlot2, column, r) do {                                                        \
         (r) = (usePlot2) ? fast_plot(p1, p3, dest2, block, lineEnd, bh, stepIn, stepOut,           \
                                      (uint8_t)(column), y, carry)                                  \
@@ -8356,14 +8224,14 @@ int span_walk_asm(FastWalk *w, int variant, unsigned n)
 }
 
 #ifdef REVS_WALKCHECK
-/* `make WALKCHECK=1` — THE ASM'S GATE, on the target, on the game's own spans (the host cannot
+/* `make WALKCHECK=1` — the asm's gate, on the target, on the game's own spans (the host cannot
    run 68000 code).  Per span the asm takes: snapshot every byte the walk can write (the pages the
    three pointers visit plus one for y, and the destination's 256 bytes), run the C loop above,
    keep what it wrote, restore, run the asm, and compare the bytes and the handed-back state.
-   ⚠ SCOPE: it shares span_walk_fast_ok and span_asm_variant with the asm, so it cannot see a
-   defect in either — the host's `validate` sabotages gate the guard, and the variant filter is
+   ⚠ Scope: it shares span_walk_fast_ok and span_asm_variant with the asm, so it cannot see a
+   defect in either; the host's `validate` gates the guard, and the variant filter is
    argued at span_asm_variant.  g_walkCheckCarryIns is the carry derivation's direct test: the
-   REFERENCE counts every DDA add whose carry-in is not 0, and it must read 0. */
+   reference counts every DDA add whose carry-in is not 0, and it must read 0. */
 volatile unsigned long g_walkCheckSpans, g_walkCheckMismatch, g_walkCheckFallback;
 volatile unsigned long g_walkCheckFirstAddr, g_walkCheckFirstC, g_walkCheckFirstAsm;
 volatile unsigned long g_walkCheckVariants[12];
@@ -8422,11 +8290,11 @@ int span_walk_compare(const SpanArm *arm, FastWalk *w, int variant, unsigned n, 
     return bad;
 }
 
-/* THE SELF-TEST: the game on one circuit does not reach every routine (Silverstone driving
+/* The self-test: the game on one circuit does not reach every routine (Silverstone driving
    never makes a steep span or a +1 step), so before the first real span WALKCHECK also runs
    WALK_SELF_CASES random spans through the same comparison — every variant, every entry column,
    abandons, markers, a wrapping block, pointers whose low byte carries y across a page, filled and
-   `$55` cells.  Each case is drawn INSIDE what span_walk_fast_ok and span_asm_variant admit (that
+   `$55` cells.  Each case is drawn inside what span_walk_fast_ok and span_asm_variant admit (that
    is the claim under test) and runs on randomised bytes in the pages it can touch; every byte it
    could have touched, and the pattern tables it reads, is saved first and restored after. */
 #define WALK_SELF_CASES 6000u
@@ -8532,15 +8400,15 @@ void span_walk_fast_run(const SpanArm *arm, uint8_t phase, FastWalk *wp)
 
     mem[arm->operand] = mem[arm->table + phase];    /* the entry offset over the branch operand */
 #ifdef REVS_SPAN_SLOT_FALLBACK
-    /* ⚠ The guard has just proved this span runs TOWARD its bound, so say so: span_walk_cap reads
-       this flag, span_walk_exact recomputes it per span, and span_plot_oracle leaves it SET — a
+    /* ⚠ The guard has just proved this span runs toward its bound, so say so: span_walk_cap reads
+       this flag, span_walk_exact recomputes it per span, and span_plot_oracle leaves it set — a
        stale 1 made the cap decode an unwritten slot (interp_edge 78/600, but only after the
        draw_span fixtures had run). */
     g_spanSlotsWrapped = 0;
 #endif
     if (!span_entry_decode(arm, mem[arm->operand], &w.col, &w.forced, &w.runTop)) return;
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 4
-    return;     /* ⚠ `make ROADARM=4` — PICTURE WRONG: the walk's per-span ENTRY only. */
+    return;     /* ⚠ `make ROADARM=4` — picture wrong: the walk's per-span entry only. */
 #endif
 
 #ifdef REVS_SPAN_ASM_ON
@@ -8601,15 +8469,15 @@ void span_walk_fast(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 static inline __attribute__((always_inline))
 void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine);
 
-/* interp_edge's OWN entry, which knows everything span_walk_fast_ok would test.  On this path
-   the page tests are ALWAYS true: interp_edge has just set all three pointers' pages from a block
+/* interp_edge's own entry, which knows everything span_walk_fast_ok would test.  On this path
+   the page tests are always true: interp_edge has just set all three pointers' pages from a block
    below $28 — plot_ptr/plot_ptr2 on page (block >> 1) + $30, at most $43, plot_ptr3 one above —
    so every page the walk can visit lies in $30..$44 whichever way it goes (bounds $2F / $44), and
    the start is strictly on the near side of the bound.  The steps and the marker switch are the
    ones interp_edge has just set, so they cannot trap.  What is left is the destination, which a
    fixture can plant anywhere; out of range, the span takes the general dispatcher, unchanged.
    The cells interp_edge just stored (the deltas, the end line, the block) arrive as values
-   instead of being read back.  The pointers' LOW bytes still come from mem[], as the guard's
+   instead of being read back.  The pointers' low bytes still come from mem[], as the guard's
    marshal took them. */
 static inline __attribute__((always_inline))
 void span_walk_direct(const SpanArm *arm, uint8_t phase, uint8_t startLine, uint8_t page,
@@ -8685,55 +8553,41 @@ static void interp_edge_publish(void)
 }
 
 /* $2B26  interp_edge
-   The span rasteriser's setup, and the routine that decides everything the four arms and the
-   two plotters then do.  draw_surface_spans calls it once per span with the span's two
-   endpoints: X names the point in one edge half, Y the point in the other, A the surface
-   style, and the CARRY means "no span — just publish this endpoint and return".
+   The span rasteriser's setup: it decides everything the four arms and two plotters do.
+   draw_surface_spans calls it once per span: X names the point in one edge half, Y the point
+   in the other, A the surface style, and carry set means "no span, just publish this endpoint".
 
-   WHAT IT COMPUTES, in order:
-
-     1. THE CLIP BIT.  One bit per call, rotated into span_clip's top: set when the endpoint
-        is off the bottom of the view or more than $14 off axis.  Bit 7 is this call's, bit 6
-        the previous call's, so the pair says whether the SPAN has two usable ends — which is
-        the whole reason the cell is a shift register rather than a flag.
-
-     2. THE ENDPOINT.  edge_x_hi:edge_x_lo shifted left twice with $80 added to the high byte
-        (shared_temp_77), and the point's scan line (span_line_end).  Both are published into
-        shared_temp_7e / span_line_cursor on the way out, so the NEXT span starts where this
-        one ended.
-
-     3. THE TWO DELTAS.  span_dy is |end line - start line|.  span_dx is either the difference
-        between the two endpoints' angles, normalised left until its top bit pair is in range
-        (and span_dy shifted down to match), or — when one end was clipped — simply the
-        difference between the two x positions.  Their comparison picks X-major or Y-major.
-
-     4. THE PIXELS.  Four bytes of the style record become colour_pattern_tbl and, masked,
+     1. The clip bit, rotated into span_clip's top: set when the endpoint is off the bottom of
+        the view or more than $14 off axis.  Bit 7 is this call's and bit 6 the previous call's,
+        so the pair says whether the span has two usable ends.
+     2. The endpoint: edge_x_hi:edge_x_lo shifted left twice with $80 added to the high byte
+        (shared_temp_77), and its scan line (span_line_end).  Both are published into
+        shared_temp_7e / span_line_cursor, so the next span starts where this one ended.
+     3. The two deltas.  span_dy is |end line - start line|.  span_dx is the difference between
+        the endpoints' angles, normalised left until its top bit pair is in range (span_dy
+        shifted to match), or, when one end was clipped, the difference of the x positions.
+        Their comparison picks X-major or Y-major.
+     4. The pixels.  Four bytes of the style record become colour_pattern_tbl and, masked,
         colour_pattern_or_tbl; the two per-line surface codes are composed from them and the
-        pass number; and bearing_hi — the byte the plotters copy alongside every pixel — is
-        the record's first byte, with $00 read as "all four columns" ($55).
+        pass number; bearing_hi, the byte the plotters copy alongside every pixel, is the
+        record's first byte, with $00 read as $55.
+     5. The self-modification: five Y-step slots and two end-marker slots.  The step direction
+        is span_ystep's sign; the end markers are switched off when the pattern is solid ($FF)
+        or the far surface code's low bits are 3.  The `LDA $2F60 / STA $2F47` at $2CC5 moves
+        the step from the exit slot to the entry slot, so the first column lands on the right
+        line.
+     6. The screen pointers, from the endpoint's high byte: (x - $30) >> 2 is the source block,
+        >> 3 plus $30 the page, and plot_ptr3 one page above.  A block index of $28 or more is
+        off the side: publish and return.
 
-     5. THE SELF-MODIFICATION.  Five Y-step slots, two end-marker opcode slots.  The step
-        direction comes from the sign of span_ystep; the end markers are switched OFF when the
-        pattern is solid ($FF) or the far surface code's low bits are 3, because a solid run
-        needs no terminator.  The `LDA $2F60 / STA $2F47` shuffle at $2CC5 MOVES the step
-        from the exit slot to the entry slot for one arm's worth of walking, which is how the
-        first plotted column lands on the right line.
+   The entry PHP only captures the caller's carry, taken here as `publishOnly`; its N/Z/V die
+   at the first test, and the exit registers and flags are dead (LIVE_NONE).  The one 6502-stack
+   byte the PHP writes is ignored by the fixture.
 
-     6. THE SCREEN POINTERS.  All three come from the endpoint's high byte: (x - $30) >> 2 is
-        the source block, >> 3 plus $30 is the page, and plot_ptr3 is one page above.  A block
-        index of $28 or more means the span is off the side and the routine publishes and
-        returns.
-
-   The carry is an argument: the 6502's PHP on entry only captures the caller's carry ("publish
-   this endpoint without drawing"), which the twin takes as `publishOnly`.  The N/Z/V in the
-   same byte die at the first internal test, and the exit registers and flags are all dead
-   (LIVE_NONE).  The only mem[] the PHP writes is one 6502-stack byte the oracle still writes;
-   the fixture ignores it.
-
-   Written over locals: every cell this routine stores it still stores, with the same final
-   value and before anything that could read it (interp_edge_publish, the walk's general
-   fallback, the return), but it never reads back a cell it has just written; the clip history,
-   the endpoint, the end line, the deltas, the arm, the step and the patterns stay in locals. */
+   Every cell the 6502 stores is still stored, with the same final value and before anything
+   that could read it (interp_edge_publish, the walk's fallback, the return), but nothing is
+   read back from a cell just written: the clip history, endpoint, end line, deltas, arm, step
+   and patterns stay in locals. */
 void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
                                     int publishOnly)
 {
@@ -8770,7 +8624,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
     span_saved_index   = nearPoint;
     if (publishOnly) { interp_edge_publish(); return; }
 #if defined(REVS_ROAD_ARM) && REVS_ROAD_ARM == 2
-    /* ⚠ `make ROADARM=2` — PICTURE WRONG BY CONSTRUCTION, a PRICING arm: the span body (setup,
+    /* ⚠ `make ROADARM=2` — picture wrong by construction, a pricing arm: the span body (setup,
        walk and plot) is skipped and only the endpoint hand-over runs, so ph11 minus the control
        IS what one span's body costs the port.  amiga/Makefile §ROADARM. */
     { interp_edge_publish(); return; }
@@ -8780,7 +8634,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
     uint8_t x7e    = shared_temp_7e;
     uint8_t cursor = span_line_cursor;
 
-    /* Both ends have to be usable.  Bit 6 clear means the PREVIOUS point was on screen and
+    /* Both ends have to be usable.  Bit 6 clear means the previous point was on screen and
        this one starts a span; bit 6 set with bit 7 set means neither is. */
     if (clip & 0x40u) {
         if (clip & 0x80u) { interp_edge_publish(); return; }
@@ -8849,8 +8703,8 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
         mem[SPAN_YSTEP] = ystep;
     }
 
-    /* 5a — the Y step the plotters take on the way OUT; the entry step does nothing for now.
-       $2CC5-$2CD7 wrote this as FOUR opcode bytes into the two plotters' own instruction
+    /* 5a — the Y step the plotters take on the way out; the entry step does nothing for now.
+       $2CC5-$2CD7 wrote this as four opcode bytes into the two plotters' own instruction
        streams; the port keeps the direction (see SpanStep above). */
     g_spanStepOut = (ystep & 0x80u) ? (SpanStep)-1 : (SpanStep)+1;
     g_spanStepIn  = (SpanStep)0;
@@ -8872,9 +8726,9 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
     mem[MEM_colour_pattern_or_tbl + 3] = (uint8_t)(s3 & mem[MEM_colour_pattern_keep_tbl + 3]);
 
     /* The two surface classes a cap can stamp on the scan line the span ends on.  The style
-       record is a boundary RAMP: byte 0 is its no-fill end (a uniform-colour byte, $00/$0F/
+       record is a boundary ramp: byte 0 is its no-fill end (a uniform-colour byte, $00/$0F/
        $F0/$FF) and byte 3 has the fill colour in columns 0-2.  So the two bit pairs below are
-       the OVER colour and the FILL colour read out whole, and which one caps the line is only
+       the over colour and the fill colour read out whole, and which one caps the line is only
        the walk direction.  $40/$80 tag the writer and never reach a colour — both consumers
        mask the class with 3.  Verified over all ten reachable styles (symbols.csv). */
     const uint8_t pass     = surface_pass_index;
@@ -8896,7 +8750,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
       capFill = (uint8_t)(code | 0x80u | passBits);
       span_cap_surface_fill = capFill; }
 
-    /* The LAST span of a pass is clamped to the top or the bottom of the view rather than to
+    /* The last span of a pass is clamped to the top or the bottom of the view rather than to
        its own end line, so the walk always terminates on a real scan line. */
     if ((uint8_t)(nearPoint + 1u) == span_end_index || lineEnd >= 0x50u) {
         lineEnd = (ystep & 0x80u) ? 0x00u : 0x4Fu;
@@ -8922,7 +8776,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
     uint8_t startLine = cursor;
 
     if (dx >= dy) {
-        /* X-MAJOR.  A solid run needs no terminator, so the two end markers are switched off
+        /* X-major.  A solid run needs no terminator, so the two end markers are switched off
            by planting RTS over their first byte. */
         int wantMarkers = (pattern0 == 0xFFu) || ((capFill & 3u) == 3u);
         g_spanMarkOn = wantMarkers ? SPAN_MARK_ON : SPAN_MARK_OFF;  /* $2CAA / $2CB4 */
@@ -8938,7 +8792,7 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
                 if (ystep & 0x80u) startLine++; else startLine--;
             }
         }
-        ROAD_PHASE(ROAD_PHASE_WALK);    /* everything above this line is per-span SETUP */
+        ROAD_PHASE(ROAD_PHASE_WALK);    /* everything above this line is per-span setup */
         if (arm & 0x80u)
             span_walk_direct(&ARM_SHALLOW_REV, phase, startLine, page, block, dx, dy, lineEnd, pattern0, wantMarkers);
         else
@@ -8956,41 +8810,34 @@ void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
 }
 
 /* $1933 edge_x_offscreen and $193E fill_line_attr
-   draw_road's FIRST stage, run once per road side: it turns the side's edge points into a
-   PER-SCAN-LINE MAP.  line_attr_0 and line_attr_1 hold, for every scan line, the index of the
-   edge point that covers it — which is exactly what surface_colour_at reads them for.
+   draw_road's first stage, run once per road side: the side's edge points become a per-scan-
+   line map.  line_attr_0 and line_attr_1 hold, for every scan line, the index of the edge point
+   covering it, which is what surface_colour_at reads.
 
    The walk climbs the edge list from the horizon point; each point fills every line from the
    previous point's line down to its own.  Three things end a point instead:
-     * a line at or past $50 — off the bottom, so the point is CLAMPED (its edge_y is pulled
-       back to the cursor) and the walk finishes with the remaining lines filled from a MARKED
-       index, whose bit 7 also terminates the loop on the next increment;
+     * a line at or past $50 (off the bottom): the point is clamped (edge_y pulled back to the
+       cursor) and the remaining lines are filled from a marked index, whose bit 7 also ends
+       the loop on the next increment;
      * a point whose line has not moved, when the previous point was off axis;
-     * a point that would fill upward rather than down.
-   The last two set bit 7 of the point's edge_style, and the tail then advances
-   road_split_index past every marked point.
+     * a point that would fill upward.
+   The last two set bit 7 of the point's edge_style, and the tail advances road_split_index past
+   every marked point.
 
-   ⚠ TWO SELF-MODIFYING SITES.  $1946 is a per-circuit extent — Silverstone calls
-   edge_x_offscreen, an expansion circuit calls its own hook instead.  $1970 is the store's
-   own low operand byte, which is how ONE loop serves both line_attr buffers: draw_road passes
-   $00 or $50 in A and the routine writes it into the instruction. */
+   ⚠ Self-modifying at two sites.  $1946 is a per-circuit extent: Silverstone calls
+   edge_x_offscreen, an expansion circuit its own hook.  $1970 is the store's own low operand
+   byte, so one loop serves both line_attr buffers: draw_road passes $00 or $50 in A. */
 
 /* $1933 — "is edge point X more than $14 off the road centre?"  Computes
-   (edge_x_hi[X] + $14) >= $28 and rolls that answer into shared_temp_76's top bit; the cell's
-   previous top bit slides down to bit 6, which fill_line_attr reads back as the PREVIOUS
-   point's answer.
-   ⚠ This is a FLAG PRODUCER — its whole output is a mem write plus four escaping flags, so it
-   returns them BY VALUE (the caller replays them; the shim marshals them into cpu).  Escapes:
-   A = the add's sum (draw_road never reads it, but the standalone fixture compares it);
-   V = the add's signed overflow (draw_road's exit V on the mark path); C = the byte rolled OUT
-   (old bit 0); N = the rolled-in answer; Z = "cell now zero".
+   (edge_x_hi[X] + $14) >= $28 and rolls the answer into shared_temp_76's top bit; the previous
+   top bit slides to bit 6, which fill_line_attr reads as the previous point's answer.
+   A flag producer: its output is a mem write plus four escaping flags, returned by value (the
+   caller replays them; the shim marshals them into cpu).  A = the add's sum (only the
+   standalone fixture compares it); V = its signed overflow (draw_road's exit V on the mark
+   path); C = the bit rolled out (old bit 0); N = the rolled-in answer; Z = "cell now zero".
 
-   The add is PLAIN BINARY C, not a decimal-aware helper.  This is draw_road's subtree, and
-   docs/static-map.md §Decimal mode inventories all eight SED sites — race-stats, marker-draw and
-   front-end menu, each bracketed by its own CLD — with none on build_track_geometry -> draw_road,
-   so an ADC here computes nothing a `+` does not.  Its one in-tree caller, fill_line_attr, has
-   pinned c.D = 0 on that citation all along; the fixture below now does too, and
-   determinism-drive is the backstop that D = 0 really holds on the path. */
+   The add is plain binary: no SED site reaches build_track_geometry -> draw_road
+   (docs/static-map.md §Decimal mode), and the caller and fixture pin D = 0. */
 
 /* edge_x_offscreen's one mem[] result as a value: `rolled` with this point's off-axis answer
    rotated in at bit 7.  fill_line_attr's walk holds the rolled byte in a local and calls this
@@ -9014,7 +8861,7 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
     /* CMP #$28 — off axis if the recentred value has left the $50-wide window. */
     uint8_t offAxis = (uint8_t)(sum >= 0x28u);
 
-    /* ROR shared_temp_76: this point's answer enters at bit 7 and the PREVIOUS point's slides
+    /* ROR shared_temp_76: this point's answer enters at bit 7 and the previous point's slides
        down to bit 6, which is where fill_line_attr reads it back. */
     uint8_t old  = shared_temp_76;
     uint8_t newv = off_axis_roll(old, pointX);
@@ -9028,10 +8875,10 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
    result is mem[] (line_attr, road_split_index, edge_style).  The 6502's exit V was the last BIT's
    or edge_x_offscreen's, handed down draw_road's stages only to reach the circuit-hook seams, where
    no hook reads V; everything else is dead at both callers (the fixture's reader audit). */
-/* ⚠ NO LOOP IN HERE IS UNROLLED — and it takes the function attribute, because `#pragma GCC
+/* ⚠ No loop in here is unrolled — and it takes the function attribute, because `#pragma GCC
    unroll 1` cannot reach the loop that matters.  The walk's two `continue` arms (mark the point,
    next point) form a loop GCC synthesises itself, bounded by the `x >= onePastLast` clamp, and
-   -funroll-loops peels it EIGHT ways behind a mod-8 dispatch kept in a stack slot; the
+   -funroll-loops peels it eight ways behind a mod-8 dispatch kept in a stack slot; the
    road_split_index tail got the same, and each fill (runs of ~4 lines) its own prologue.  750
    instructions with the pragma on both source loops still left 725; the attribute gives 201,
    the fill a three-instruction `move.b / cmpa / bne` loop. */
@@ -9047,22 +8894,15 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
     math_hi = onePastLast;
 
 
-    /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place.  These
-       are 6502-ABI shims, so the seam must hand over EVERY register the 6502 has live at $1946,
-       not just the ones Silverstone's callee happens to read — the one genuine hook-seam cpu
-       access left in this routine.
-       ⚠ X *AND* Y.  edge_x_offscreen reads only the start index in X, so seeding X alone looked
-       complete and passed every fixture — all of which race Silverstone.  But each expansion
-       circuit replaces this call with a hook that opens `TYA` and walks `edge_y` DOWNWARD with
-       `DEY` ($56C8, $56C4 on Snetterton), and its only range exit is `edge_y[Y] >= horizon_extent`.
-       Handed a stale Y, that walk can miss the horizon entry, run off the bottom of edge_y and
-       wrap Y to $FF..$E0 — writing $5F20+Y = $601F..$6000, i.e. 32 bytes of view_cell_bytes, the
-       source-byte -> screen-byte identity table the cell chains paint through.  A table full of
-       $1F then paints red+green wherever a nonzero source byte is carried: the horizontal red
-       streaks on the expansion circuits.  The live Y here is the $1943 DEY's value, which the
-       three surrounding instructions confirm ($1941 STY span_end_index, $1943 DEY, $1944 STY
-       math_hi); $1949 `LDY horizon_extent` then discards whatever the hook left, which is why
-       the walk below re-seeds y from horizon_extent rather than from cpu.Y. */
+    /* $1946 — Silverstone's `JSR edge_x_offscreen`, or a circuit's hook in its place.  The hooks
+       are 6502-ABI code, so the seam hands over every register live at $1946, not just the ones
+       edge_x_offscreen reads.
+       ⚠ X and Y.  Each expansion circuit's hook opens `TYA` and walks edge_y downward with `DEY`
+       ($56C8; $56C4 on Snetterton), exiting only on `edge_y[Y] >= horizon_extent`.  A stale Y
+       can miss the horizon entry and wrap to $FF..$E0, writing 32 bytes of view_cell_bytes
+       ($6000..$601F): red streaks across the expansion circuits.  The live Y is the $1943 DEY's
+       ($1941 STY span_end_index, $1943 DEY, $1944 STY math_hi).  $1949 `LDY horizon_extent`
+       discards whatever the hook leaves, so the walk below re-seeds y from horizon_extent. */
     HookRegs hr;
     hr.x = firstPoint;
     hr.y = onePastLast;
@@ -9090,7 +8930,7 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
         return;
     }
 
-    /* $196F's store operand, once: the walk only rewrites its LOW byte ($193E above), and the
+    /* $196F's store operand, once: the walk only rewrites its low byte ($193E above), and the
        high byte $1971 is engine code no circuit patches (`make track-patch`: no circuit's
        ModifyGameCode touches $1970-$1971, and no hook stores there) — so every fill lands in
        line_attr's $0400-$054F, clear of the zero-page cells and edge tables the walk holds in
@@ -9130,11 +8970,11 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
             } else {
                 /* $195C BIT — bit 7 = "previous point off axis". */
                 if ((rolled & 0x80u) && ptLine == mem[MEM_edge_y + x + 1]) {
-                    /* previous point off axis + this one on the SAME line ⇒ nothing to add */
+                    /* previous point off axis + this one on the same line ⇒ nothing to add */
                     mem[MEM_edge_style + x] |= 0x80u; continue;
                 }
                 if (ptLine >= y) {
-                    /* a point that would fill UPWARD from the cursor adds nothing either */
+                    /* a point that would fill upward from the cursor adds nothing either */
                     mem[MEM_edge_style + x] |= 0x80u; continue;
                 }
                 fillDownTo = ptLine;                  /* $1969 — fill down to this point's line */
@@ -9181,22 +9021,22 @@ void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoin
 }
 
 /* $19AF  draw_surface_spans
-   draw_road's SECOND stage, run four times.  It walks the two edge halves in lockstep — index
+   draw_road's second stage, run four times.  It walks the two edge halves in lockstep — index
    i in one, i + span_pair_offset_tbl[pass] in the other — and hands each pair to interp_edge
    as a span.  Before the walk it patches both plotters' destination operands with this pass's
    surface_edge buffer, which is how one span plotter serves all four passes.
 
-   THE STYLE PER SPAN IS THE WHOLE POINT OF THE ROUTINE.  Spans NEARER than
+   The style per span is the whole point of the routine.  Spans nearer than
    road_split_index all take shared_temp_8c whole; spans beyond it take 4 * (the point's own
    surface class) + surface_style_base.  The boundary case — the walk arriving exactly at
    road_split_index — either moves the split to here and publishes without drawing, or falls
-   into the near arm, depending on the pass.  ⚠ The CARRY is an argument to interp_edge and
+   into the near arm, depending on the pass.  ⚠ The carry is an argument to interp_edge and
    means "publish this endpoint, draw nothing": it is set on the first call of every pass and
    on the boundary arms, and clear everywhere else. */
 static inline __attribute__((always_inline)) void draw_surface_spans_loop(uint8_t styleLo);
 
-/* THE AMIGA RUNS A WHOLE PASS IN 68000 ASSEMBLY — src/platform/amiga/span_pass_m68k.s: this
-   routine's loop, interp_edge_core and the span walk as ONE routine, with every walk input computed
+/* The Amiga runs a whole pass in 68000 assembly — src/platform/amiga/span_pass_m68k.s: this
+   routine's loop, interp_edge_core and the span walk as one routine, with every walk input computed
    in the register the walk takes it in.  Single-stepped, a real span cost ~450 instructions of which
    the walk was 79; the rest was C that the three passes over it had taken to its floor (the direct
    entry, the locals, the four walk shapes).  It stores every cell interp_edge_core stores, in the
@@ -9230,14 +9070,14 @@ void span_asm_trap(unsigned v16, unsigned block)
 }
 
 #ifdef REVS_SETUPCHECK
-/* `make SETUPCHECK=1` — THE ASM PASS'S GATE, on the target, on the game's own passes.  Per pass:
-   snapshot ALL of mem[] (and the three pointer words and the cpu struct — the cap can run circuit
+/* `make SETUPCHECK=1` — the ASM pass's gate, on the target, on the game's own passes.  Per pass:
+   snapshot all of mem[] (and the three pointer words and the cpu struct — the cap can run circuit
    code, which uses both), run the C pass with the C walk, keep the result, restore, run the asm
    pass, and compare all 64 KB plus the pointer words and the cpu struct.
-   ⚠ SCOPE: whole-pass, whole-memory — so it sees any store the asm makes or misses anywhere, and a
-   wrong value handed to the cap, which the cap then writes; it compares at the END of the pass, so
+   ⚠ Scope: whole-pass, whole-memory — so it sees any store the asm makes or misses anywhere, and a
+   wrong value handed to the cap, which the cap then writes; it compares at the end of the pass, so
    an intermediate difference that a later span overwrites is invisible (none exists by design: the
-   asm stores what the C stores, span by span).  It does NOT compare g_spanStepIn / g_spanStepOut /
+   asm stores what the C stores, span by span).  It does not compare g_spanStepIn / g_spanStepOut /
    g_spanMarkOn, which the asm never writes: C-private scratch every C walk path sets before reading.
    It shares draw_surface_spans_core's destination test with the asm, so it cannot see a defect in
    that one comparison.  Safe to restore wholesale because the VERTB ISR writes no mem[] byte. */
@@ -9245,7 +9085,7 @@ volatile unsigned long g_setupCheckPasses, g_setupCheckMismatch;
 volatile unsigned long g_setupCheckFirstAddr, g_setupCheckFirstC, g_setupCheckFirstAsm, g_setupCheckFirstPass;
 volatile unsigned long g_setupSelfCases, g_setupSelfMismatch, g_setupSelfSpans;
 volatile unsigned long g_setupSelfFirstAddr, g_setupSelfFirstC, g_setupSelfFirstAsm, g_setupSelfFirstCase;
-/* The compare runs over two COPIES held as longwords (mem[] itself is never aliased wide —
+/* The compare runs over two copies held as longwords (mem[] itself is never aliased wide —
    make endian-lint): a byte loop over 64 KB was most of the check's cost.  Equality is endian-free. */
 static uint32_t s_scRef[0x4000], s_scGot[0x4000];
 /* span_saved_index, saved_slot_index, plot_ptr/2/3 page bytes, math_lo/hi, SPAN_DX/DY/BLOCK,
@@ -9261,8 +9101,8 @@ static void setup_aux_put(const SetupAux *a) { plot_ptr_v = a->p1; plot_ptr2_v =
 
 /* Run the C pass and the asm pass on the same state; 0 if they agree, else 1 with the first
    difference in *addr / *cv / *av (an address above $FFFF names a pointer word or the cpu struct).
-   Leaves everything as the asm left it — or, on a mismatch, as the C left it, so a defect (a
-   sabotage) cannot derail the very run that is counting it. */
+   Leaves everything as the asm left it, or on a mismatch as the C left it, so a defect cannot
+   derail the run that is counting it. */
 static int span_pass_diff(uint8_t styleLo, unsigned dest, unsigned long *addr, unsigned long *cv,
                           unsigned long *av, SetupAux *ref);
 static __attribute__((noinline))
@@ -9296,7 +9136,7 @@ static int span_pass_diff(uint8_t styleLo, unsigned dest, unsigned long *addr, u
     *refOut = ref;
 
     memcpy(s_scGot, (const void *)mem, 0x10000u);
-    /* The twelve 6502 working cells the asm leaves unwritten (THE RESULTS RULE — the reader
+    /* The twelve 6502 working cells the asm leaves unwritten (the results rule — the reader
        audit is at the top of span_pass_m68k.s): the C's value stands in for the asm's, so only
        these bytes are excused and a stray store anywhere else still fails. */
     for (i = 0; i < sizeof span_pass_dead_cells; i++)
@@ -9317,7 +9157,7 @@ static int span_pass_diff(uint8_t styleLo, unsigned dest, unsigned long *addr, u
     return 0;
 }
 
-/* THE SELF-TEST, before the first real pass: Silverstone driving never makes a steep span or a
+/* The self-test, before the first real pass: Silverstone driving never makes a steep span or a
    +1 step, and one circuit reaches few of the style arms, so SETUP_SELF_CASES random passes go
    through the same comparison first — random edge points (on and off the view, on and off axis,
    marked and not), style records, clip and arm history, split, pass number, pointer low bytes,
@@ -9512,8 +9352,8 @@ void draw_surface_spans_loop(uint8_t styleLo)
             }
         }
 
-        /* $1A15 — interp_edge reads span_index_far (the PREVIOUS far, not x) internally, so the
-           two cells are only advanced AFTER the call. */
+        /* $1A15 — interp_edge reads span_index_far (the previous far, not x) internally, so the
+           two cells are only advanced after the call. */
         interp_edge_core(styleArg, x, y, publishOnly);
         span_index_near = y;             /* $1A18 */
         span_index_far  = x;             /* $1A1A */
@@ -9521,8 +9361,8 @@ void draw_surface_spans_loop(uint8_t styleLo)
 }
 
 /* $1A98  mark_line_surfaces
-   draw_road's THIRD stage, run once per road side: it stamps each edge point's surface class
-   onto the SCAN LINE that point projects to, in view_line_surface — the array view_paint_lines
+   draw_road's third stage, run once per road side: it stamps each edge point's surface class
+   onto the scan line that point projects to, in view_line_surface — the array view_paint_lines
    reads for a line's background colour.
 
    A point is rejected when its line is off the bottom, when fill_line_attr marked it, or when
@@ -9530,7 +9370,7 @@ void draw_surface_spans_loop(uint8_t styleLo)
    in one go.  An entry that is already there wins unless it belongs to a different class and
    the sign test at $1AF4 says this one is nearer.
 
-   IT RETURNS THE LIMIT, in Y: edge_y at road_split_index plus one, i.e. the scan line at
+   It returns the limit, in Y: edge_y at road_split_index plus one, i.e. the scan line at
    which this side's line_attr buffer stops being valid.  draw_road stores it as
    line_attr_0_limit / line_attr_1_limit.
    ⚠ And the whole walk is SKIPPED once view_yaw_offset reaches $28 — 45 degrees off the
@@ -9540,7 +9380,7 @@ uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 {
     uint8_t a;                                /* the 6502's A as the walk tests it */
 
-    /* THE WALK'S STATE IN LOCALS, each cell written once at the end with the value the 6502
+    /* The walk's state in locals, each cell written once at the end with the value the 6502
        leaves there.  The cursor was the zero-page cell math_hi (loaded, compared and incremented
        in memory every point), the class was re-read from $88 at every point, and the last
        `other` / `entry` were stored on every hit.  Nothing inside the loop calls out, so the
@@ -9565,9 +9405,9 @@ uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
             a = mem[MEM_edge_style + cur];
             if (a & 0x80u) continue;
 
-            uint8_t other;                    /* the point's OTHER boundary, order per side */
+            uint8_t other;                    /* the point's other boundary, order per side */
             if (surfaceClass == 0x14u) {
-                /* high byte only, as the 6502 does: this is a COARSE angle test and the low byte
+                /* high byte only, as the 6502 does: this is a coarse angle test and the low byte
                    is never loaded (see the note on edge_x_word). */
                 other = mem[MEM_edge_x_hi + cur];
                 a     = mem[MEM_edge_opp_x_hi + cur];
@@ -9624,60 +9464,56 @@ uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 }
 
 /* The view/dashboard seam's callees, under fill_dash_edge_columns:
-     $1DEF  fill_edge_column_run   walk a RUN of view source columns, two passes per column
-     $1DA6  fill_column_gaps       ...the three-register PATCH, then the walk
+     $1DEF  fill_edge_column_run   walk a run of view source columns, two passes per column
+     $1DA6  fill_column_gaps       ...the three-register patch, then the walk
      $1DAF  column_gap_walk        ...the walk itself: fill this column's empty source bytes
      $1E9E  surface_colour_at      which track surface is at (line, position), as a colour
 
-   draw_road leaves a source byte at ZERO wherever no span
-   covered it, and view_paint_lines reads a zero as "same byte as the cell to my left".  At
-   the two ends of the viewport — beside the front tyres and up against the dashboard — that
-   is wrong: there is no cell to the left, so the gap has to be filled with the colour of
-   whatever surface the road actually has at that point.  This pass walks each end column from
-   its block's first scan line down to the cursor and substitutes surface_colour_at's answer
-   for every zero it finds.
+   draw_road leaves a source byte zero wherever no span covered it, and view_paint_lines reads
+   zero as "same byte as the cell to my left".  At the two ends of the viewport there is no
+   cell to the left, so this pass walks each end column from its block's first scan line down
+   to the cursor and replaces every zero with surface_colour_at's answer.
 
-   AND EACH COLUMN IS WALKED TWICE, THROUGH TWO DIFFERENT POINTERS, which is the whole
-   reason fill_column_gaps is self-modifying rather than parameterised:
+   Each column is walked twice, through two pointers, which is why fill_column_gaps is
+   self-modifying rather than parameterised:
 
      pass B (plot_ptr2, offset $EF, fallback $00)  writes the per-scan-line boundary table
             view_left_start_src / view_right_start_src, and maps a $55 source byte to 0
-     pass A (plot_ptr,  offset $09, fallback $55)  writes the column's own $80-byte source
-            block at $3000 + column*$80, and leaves a non-zero byte alone
+     pass A (plot_ptr,  offset $09, fallback $55)  writes the column's own source block at
+            $3000 + column*$80, and leaves a non-zero byte alone
 
-   The three registers ARE the patch: X is the store's zero-page pointer NUMBER ($1DDE), Y a
-   BRANCH OFFSET that picks which arm a non-zero source byte takes ($1DD5), and A the fallback
-   colour immediate ($1DDC).  All three sites are declared in transpile.py.
+   The three registers are the patch: X is the store's zero-page pointer number ($1DDE), Y a
+   branch offset choosing the arm a non-zero byte takes ($1DD5), and A the fallback colour
+   immediate ($1DDC).  All three sites are declared in transpile.py.
 
-   ⚠ $1DAF has a second caller outside this tree ($1D77, the other column filler), which
-   enters the walk WITHOUT patching — i.e. it runs on whatever the last fill_column_gaps left
-   behind.  That is why the walk decodes the three bytes out of mem[] instead of taking them as
-   arguments, and why it is a twin of its own rather than fill_column_gaps' loop body. */
+   ⚠ $1DAF has a second caller outside this tree ($1D77, the other column filler), which enters
+   without patching and runs on whatever the last fill_column_gaps left.  So the walk decodes
+   the three bytes from mem[] rather than taking arguments, and is a twin of its own. */
 
 #define EDGE_RUN_LIMIT     MEM_shared_counter_42   /* shared_counter_42 — the column the run stops at */
 /* ⚠ Both off their own array's base for the same reason SPAN_DX/DY/BLOCK are — this pass is
-   the SECOND tenant of the $80-$88 window (docs/static-map.md), and naming one cell
+   the second tenant of the $80-$88 window (docs/static-map.md), and naming one cell
    `shared_temp_85` and its neighbour `point_delta_lo + 2` made two tenants look like three. */
 #define EDGE_COLUMN        (MEM_point_delta_hi + 2u)   /* point_delta_hi[2] — this pass's column cursor */
 #define EDGE_BLOCK_START   (MEM_point_delta_lo + 2u)   /* point_delta_lo[2] — dash_block_starts[column] */
 _Static_assert(EDGE_COLUMN == MEM_shared_temp_85, "point_delta_hi[2] is shared_temp_85");
-#define EDGE_STYLE_PREV    (MEM_edge_style - 1u)   /* a line_attr entry is an index PLUS ONE */
+#define EDGE_STYLE_PREV    (MEM_edge_style - 1u)   /* a line_attr entry is an index plus one */
 
 #define GAP_BRANCH_OPERAND (MEM_smc_gap_walk_branch + 1)   /* the non-zero-source arm's branch offset */
 
 /* One range test per column instead of one per cell.  The
    walk touches at most $80 bytes above a pointer it reads once, so the hardware window can be
    ruled out for the whole column — but the else arm stays, because under a randomised fixture
-   a pointer really can land in SHEILA. */
+   a pointer really can land in sheila. */
 static int pointer_is_ram(unsigned base)
 {
     return page_is_ram(base);
 }
 
-/* $1E9E  surface_colour_at — WHICH SURFACE IS AT (LINE, POSITION)?
-   The road renderer's colour decision, and the only routine that reads all four
-   surface_edge buffers together.  Given a scan line in Y and a position along it in
-   EDGE_COLUMN, it walks the boundaries outward and returns the surface's colour byte:
+/* $1E9E  surface_colour_at — which surface is at (line, position)
+   The road renderer's colour decision, and the only routine that reads all four surface_edge
+   buffers together.  Given a scan line in Y and a position in EDGE_COLUMN, it walks the
+   boundaries outward and returns the surface's colour byte:
 
      line past horizon_extent        → surface_colours[1], the off-road colour
      position at or past edge 0      → surface_colours[3]
@@ -9686,14 +9522,13 @@ static int pointer_is_ram(unsigned base)
      ...past edge 1                  → the first road side's line_attr, ditto
      inside every boundary           → view_line_surface[line], the line's background
 
-   The two line_attr arms end the same way: the attribute byte is an edge-point index PLUS
-   ONE (hence EDGE_STYLE_PREV), its style's low two bits pick the colour, and X is left
-   holding that style — which is why X is part of the exit contract and not scratch.
+   In both line_attr arms the attribute byte is an edge-point index plus one (hence
+   EDGE_STYLE_PREV), its style's low two bits pick the colour, and X is left holding that style,
+   so X is part of the exit contract.
 
-   ⚠ EVERY EXIT'S CARRY IS THE LAST COMPARE'S, and the caller's next instruction is a store,
-   not a branch — so the carry is only observable through the differential.  It is 1 on every
-   arm reached by a taken BCS and 0 on the two that fall through, which is what the compares
-   below reproduce rather than compute. */
+   ⚠ Every exit's carry is the last compare's: 1 on each arm reached by a taken BCS, 0 on the
+   two that fall through.  The caller stores next rather than branching, so only the
+   differential sees it. */
 
 /* Build surface_colour_at's exit: A = colour with N/Z from it, Y = the scan line, V unchanged
    from entry, X and C are per-arm.  (Nothing in the routine writes V, and CPY/CPX/CMP never do,
@@ -9750,10 +9585,8 @@ REVS_FLAG_OP SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
     }
 
     /* $1EDC — the attribute is an edge-point index + 1; its style's low bits are the colour.
-       ⚠ The 6502's first `TAX` (the masked index) is NOT reproduced: the second one below
-       always overwrites X before anything can read it, so that intermediate value is dead.
-       Verified by sabotage — dropping the mask HERE passes 2000 cases, while dropping it on
-       the table index one line down fails, which is the pair that proves which one matters.
+       ⚠ The 6502's first `TAX` (the masked index) is not reproduced: the second one below
+       always overwrites X before anything can read it.
        X = the surface class; C = 0, carried from the cpy_ge that fell through above. */
     attr = mem[EDGE_STYLE_PREV + (attr & 0x7Fu)];
     return surf_exit(mem[MEM_surface_colours + (attr & 3u)], (uint8_t)(attr & 3u),
@@ -9762,7 +9595,7 @@ REVS_FLAG_OP SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
 
 /* The reachable-from-outside wrapper over the static core, parametrised by the scan line and
    by the two registers the 6502 arrives with.  It lives here because the core and EDGE_COLUMN
-   are both private to this file, and it is cpu-FREE: `surface_colour_at` in
+   are both private to this file, and it is cpu-free: `surface_colour_at` in
    revs_native_seam.c replays the exit ABI.
    Its former second job is gone: column_gap_walk and plot_view_src_line both call
    surface_colour_at_core directly now, so this is reached only through that shim — i.e. only
@@ -9773,7 +9606,7 @@ SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entry
 }
 
 /* One `surface_edge_N[line]` entry as a breakpoint, or 0xFF meaning "not on this line".
-   ⚠ 1..39 is on the line.  A breakpoint at 0 would open an EMPTY first interval (the interval
+   ⚠ 1..39 is on the line.  A breakpoint at 0 would open an empty first interval (the interval
    starting at cell 0 already covers it), and `$80` is what `clear_surface_buffers` leaves in an
    unwritten entry, i.e. "no road on this line" — so both become the sentinel, which sorts to the
    end and is skipped there.  0xFF cannot collide with a real breakpoint, which is what lets
@@ -9784,24 +9617,21 @@ static unsigned char span_breakpoint(unsigned addr)
     return (unsigned char)(((unsigned)(e - 1u) < (VIEW_SPAN_CELLS - 1u)) ? e : 0xFFu);
 }
 
-/* ── THE SPAN RECORD — ONE VIEW LINE AS AT MOST FIVE SOLID RUNS (view_span.h) ─────────
-   The replacement renderer's producer.  `surface_colour_at_core` above is a pure function of
-   (line, position) whose only position-dependence is the four `>=` tests, so the colour along
-   a line is piecewise constant with at most four breakpoints and asking the classifier once
-   per interval is EXACTLY asking it per cell.  That is what makes this exact by construction:
-   it reuses the game's validated colour decision rather than re-deriving the road.
+/* ── The span record: one view line as at most five solid runs (view_span.h) ─────────
+   The span renderer's producer.  surface_colour_at_core is a pure function of (line,
+   position) whose only position-dependence is four `>=` tests, so the colour along a line is
+   piecewise constant with at most four breakpoints, and asking it once per interval is exactly
+   asking it per cell.
 
-   The classifier's byte needs no translation on the way to the screen.  `view_cell_bytes`
-   ($6000) is the identity map with one hole — index $55 reads $00 — and `surface_colours`
-   ($38FC) is `00 0F F0 FF`, the four solid MODE 5 bytes.  So a surface class's painted cell IS
-   its `surface_colours` entry, and the $55 the dash-edge walk substitutes for a colourless
-   surface is just the RLE's escape for "$00 without meaning same-as-my-left" (the walk's own
-   fallback operand, $1DAC's $55), which translates straight back to $00.
+   The classifier's byte needs no translation on the way to the screen: view_cell_bytes ($6000)
+   is the identity map except that $55 reads $00, and surface_colours ($38FC) is `00 0F F0 FF`,
+   the four solid MODE 5 bytes.  The $55 the dash-edge walk substitutes for a colourless surface
+   (its fallback operand at $1DAC) is the escape for "$00, not same-as-my-left", and translates
+   back to $00.
 
-   ⚠ A breakpoint AT or PAST cell 40 is off the line and contributes no interval; `$80` is what
-   `clear_surface_buffers` leaves in an unwritten `surface_edge` entry, so this is also the
-   "no road on this line" case.  A breakpoint at 0 would open an empty first interval, so it is
-   dropped too and its colour comes out of the interval that starts there. */
+   ⚠ A breakpoint at or past cell 40 is off the line and contributes no interval; $80, what
+   clear_surface_buffers leaves in an unwritten surface_edge entry, is the "no road on this
+   line" case.  A breakpoint at 0 would open an empty first interval, so it is dropped too. */
 #ifdef REVS_SPAN_PAINT_COST
 volatile unsigned char g_spanCostSink = 0;
 #endif
@@ -9814,19 +9644,19 @@ volatile unsigned char g_spanCostSink = 0;
    the top, so the first $FF ends the list; `bp[4]` is that sentinel made unconditional.
    This routine runs on 77 rows a frame (budget ~150 cycles a line, docs/span-render-plan.md
    §10e); read its instruction count after any edit (~325 now, `jsr` 0).
-   GATE: `make SHAPE=1 HOLD_THROTTLE=1 STRAIGHT_TO_RACE=1`, then `REVS_SHAPE_WATCH=600
-   REVS_SCREEN_FRAME=1500 ./build/revs`, and read SPANPRED's COMPOSITE MISS, which must be 0.
-   MATCH and carry-miss are the raw per-cell prediction and are not failures.  Check that the
+   Gate: `make SHAPE=1 HOLD_THROTTLE=1 STRAIGHT_TO_RACE=1`, then `REVS_SHAPE_WATCH=600
+   REVS_SCREEN_FRAME=1500 ./build/revs`, and read SPANPRED's composite miss, which must be 0.
+   Match and carry-miss are the raw per-cell prediction and are not failures.  Check that the
    report prints a non-zero `road_speed`: a parked scene exercises none of this. */
 
 unsigned view_span_line(unsigned char line, ViewSpan* out)
 {
-    /* The boundaries read in the CLASSIFIER's priority order — 0, 2, 3, 1, which is NOT their
-       numeric order.  `e0..e3` below are these same four values sorted for EMISSION, and the
+    /* The boundaries read in the classifier's priority order — 0, 2, 3, 1, which is not their
+       numeric order.  `e0..e3` below are these same four values sorted for emission, and the
        two orders are why this routine both classifies and sorts.
        ⚠ The four edge buffers are in no particular order and never were: they are four drawing
-       PASSES, not four sorted boundaries (draw_surface_spans patches its store operand per). */
-    /* Every table here is indexed by the SAME line, so hand GCC one base: left as
+       passes, not four sorted boundaries (draw_surface_spans patches its store operand per). */
+    /* Every table here is indexed by the same line, so hand GCC one base: left as
        `mem[CONST + line]` it emitted a separate `lea (0,a0,dN.l),aM` per table (five of them
        in the objdump) instead of one displacement off a shared register. */
     const unsigned char* const row = mem + line;
@@ -9834,9 +9664,9 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
     const unsigned char x2 = row[MEM_surface_edge_2];
     const unsigned char x3 = row[MEM_surface_edge_3];
     const unsigned char x1 = row[MEM_surface_edge_1];
-    /* THE FIVE COLOURS THE CLASSIFIER CAN RETURN, AND NONE OF THEM DEPENDS ON POSITION.
-       Read `surface_colour_at_core` beside this: the position appears ONLY in the four `>=`
-       tests, so every one of its six arms yields a value that is a function of the LINE alone.
+    /* The five COLOURS the classifier can return, and none of them depends on position.
+       Read `surface_colour_at_core` beside this: the position appears only in the four `>=`
+       tests, so every one of its six arms yields a value that is a function of the line alone.
        Hoisting them turns each evaluation from ~100 instructions and ten `mem[]` loads into
        four register compares, which is what makes emitting from a loop actually pay. */
     const unsigned char cOut = mem[MEM_surface_colours + 3];   /* p >= edge 0: outside it all */
@@ -9869,8 +9699,8 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
         return 1u;
     }
 
-    /* FOUR NAMED REGISTERS AND A SORTING NETWORK, not an array and an insertion sort.  The
-       obvious `for (j = n; j > k; j--) bp[j] = bp[j-1]` over a four-byte array compiled to TWO
+    /* Four named registers and a sorting network, not an array and an insertion sort.  The
+       obvious `for (j = n; j > k; j--) bp[j] = bp[j-1]` over a four-byte array compiled to two
        `jsr <memmove>` calls and put the array in the stack frame, because its address escaped
        there.  Five compare-exchanges sort four
        registers and touch no memory; only the finished order is spilled to `bp` below. */
@@ -9884,14 +9714,11 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
     bp[0] = e0; bp[1] = e1; bp[2] = e2; bp[3] = e3;
     bp[4] = 0xFFu;                     /* the loop's only bound — see the header */
 
-    /* Each interval asked ONCE and merged with its left neighbour when the answer repeats —
+    /* Each interval asked once and merged with its left neighbour when the answer repeats —
        an interval starts AT its breakpoint, because the classifier selects on
-       `position >= edge`.  (That is why the Stage A oracle's +1-cell sabotage is weak and its
-       -1-cell sabotage is 6x: +1 misclassifies only the boundary cell, which a producer writes
-       anyway; -1 corrupts an interior cell nobody writes.  Argument at the oracle in shape.cpp.)
-       Merging is the common case: two of the four boundaries usually coincide off the line, and
-       the census's 1.9 runs a line is this count.
-       Sorted, so duplicates are ADJACENT and comparing with the immediate predecessor is the
+       `position >= edge`.  Merging is the common case: two of the four boundaries usually
+       coincide off the line.
+       Sorted, so duplicates are adjacent and comparing with the immediate predecessor is the
        whole dedup; and a sentinel cannot equal a real breakpoint, so the first `!= 0xFF` guard
        also retires every later one. */
     out[0].start  = 0u;
@@ -9908,7 +9735,7 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
     for (i = 0; bp[i] != 0xFFu; i++) {
         const unsigned char st = bp[i];
         unsigned char c;
-        if (st == prev) continue;      /* sorted ⇒ duplicates are ADJACENT, so this is the dedup */
+        if (st == prev) continue;      /* sorted ⇒ duplicates are adjacent, so this is the dedup */
         prev = st;
         c = SPAN_COLOUR(st);
         if (out[count - 1].colour != c) {
@@ -9920,10 +9747,10 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
     return count;
 }
 
-/* $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES
+/* $1DAF  column_gap_walk — fill one column's empty source bytes
    Walks EDGE_COLUMN's source block from span_line_cursor down to (not including)
-   dash_block_starts[column], replacing every ZERO byte with surface_colour_at's answer for
-   that scan line.  Which pointer it stores through, what a NON-ZERO byte does and what a zero
+   dash_block_starts[column], replacing every zero byte with surface_colour_at's answer for
+   that scan line.  Which pointer it stores through, what a non-zero byte does and what a zero
    colour becomes are all read out of the three patch bytes — see the header above.
 
    ⚠ The block address is computed, not tabulated: plot_ptr = $3000 + column*$80, spelled by
@@ -9972,7 +9799,7 @@ REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
        load is 16 cycles, no dearer than a spilled stack slot. */
     unsigned storeBase = 0u;
     if (!reread) storeBase = zp_pointer(mem[MEM_gap_ptr_operand]);
-    /* `branch` is $1DD5's operand, read ONCE per walk by the caller and passed in: on the fast
+    /* `branch` is $1DD5's operand, read once per walk by the caller and passed in: on the fast
        path nothing the walk stores can reach it (walk_stores_are_private rules the patch bytes
        out), so the loop below needs no load and no third-value test.  The slow copy ignores it
        and re-reads. */
@@ -9993,7 +9820,7 @@ REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
 #endif
     for (;;) {
         /* CPY #EDGE_BLOCK_START — the loop test.  On the equal exit its N/Z/C (0/1/1) are the
-           routine's exit flags.  ⚠ Its CARRY is live only at the trap exit below, and computing
+           routine's exit flags.  ⚠ Its carry is live only at the trap exit below, and computing
            it every pass cost a `cmp`/`scc`/`neg.b` a cell for a path the game never takes — so
            it is re-derived down there from the same `line` and `end`, which is the same value. */
         uint8_t end = mem[EDGE_BLOCK_START];
@@ -10052,7 +9879,7 @@ REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
         /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none.
            surface_colour_at's class escapes in X; its colour byte is A.
            ⚠ The fallback is loaded inside the arm that uses it.  At the top of the pass GCC
-           loaded it and immediately SPILLED it to the frame (`move.b mem+$1DDC,46(sp)`) to
+           loaded it and immediately spilled it to the frame (`move.b mem+$1DDC,46(sp)`) to
            survive the classifier — 32 cycles a cell for a byte only the colourless arm reads.
            The classifier is pure reads (it only indexes tables), so moving the load past it
            cannot observe a different value. */
@@ -10060,7 +9887,7 @@ REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
           x = sc.x;
           PROBE_SHAPE_EDGE_CELL(sc.a ? 2u : 3u);
           a = sc.a ? sc.a : mem[MEM_gap_colour_fallback_operand]; }
-        /* ⚠ storePtr is a zero-page ADDRESS chosen at runtime ($1DE9's operand), not a fixed
+        /* ⚠ storePtr is a zero-page address chosen at runtime ($1DE9's operand), not a fixed
            pointer, so the slow copy re-derives it every pass — and its store can land on
            $70..$73, which is what the resync is for.  The fast copy has proved it cannot. */
         { if (reread) storeBase = zp_pointer(mem[MEM_gap_ptr_operand]);
@@ -10074,23 +9901,19 @@ REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
 #undef GAP_RAM
 }
 
-/* Pass A, specialised on its own precondition (`make EDGEFILL=1`).  Byte-exact (all six twins
-   in the tree, all four determinism trajectories) and measured as noise: phase 18's cost is per
-   walk (22 walks of ~6 cells), not per cell, so the lever is the call chain, not the cell loop
-   (docs/perf-method.md §PHASE 18 IS PER-WALK).  Kept as the measured null.
+/* Pass A, specialised on its own precondition (`make EDGEFILL=1`, off by default: phase 18's
+   cost is per walk, not per cell; docs/perf-method.md §PHASE 18 IS PER-WALK).
    column_gap_walk_core's gate knows which pass it is running, so the pass-A configuration is
    decided once per walk:
      * a non-zero source is skipped outright (pass A's $1DD5 operand is $09), so there is no
-       branch-operand load, trap arm or table-mapping arm here;
-     * the store and the read share one pointer: pass A's patched store pointer is
-       MEM_plot_ptr_lo, so `zp_pointer(...)` is `plot_ptr_v`, the source base (the gate checks
-       `zpBase == plot_ptr_v`);
-     * the end line, the column, the fallback colour and the classifier's three limits are walk
+       branch-operand load, trap arm or table-mapping arm;
+     * the store and the read share one pointer: pass A's store pointer is MEM_plot_ptr_lo, so
+       `zp_pointer(...)` is plot_ptr_v (the gate checks `zpBase == plot_ptr_v`);
+     * the end line, column, fallback colour and the classifier's three limits are walk
        invariants, and walk_stores_are_private has proved no store can reach them.
-   seam_write/seam_read with a compile-time `ram = 1` rather than a bare mem[] access: the range
-   test folds away and the marking and ink-watch hooks keep firing (revs_native_seam.h
-   §seam_write).  `noinline` for gap_walk_reread's reason: `jsr <surface_colour_at_core>` must
-   stay 0. */
+   seam_write/seam_read with a compile-time `ram = 1`, so the range test folds away and the
+   marking and ink-watch hooks keep firing (revs_native_seam.h §seam_write).  `noinline` for
+   gap_walk_reread's reason. */
 #ifdef REVS_EDGE_FILL
 static __attribute__((noinline)) SlotExit gap_walk_fill(uint8_t x, uint8_t v, uint8_t a, uint8_t y)
 {
@@ -10130,7 +9953,7 @@ static __attribute__((noinline)) SlotExit gap_walk_fill(uint8_t x, uint8_t v, ui
 #endif /* REVS_EDGE_FILL */
 
 /* The faithful walk, out of line so that it does not make column_gap_walk_core too big to hold
-   surface_colour_at_core.  ⚠ `noinline` is load-bearing, not a hint — see the header above. */
+   surface_colour_at_core.  ⚠ `noinline` is load-bearing, not a hint — see column_gap_walk's banner. */
 static __attribute__((noinline)) SlotExit gap_walk_reread(uint8_t x, uint8_t v, uint8_t a, uint8_t y)
 {
     SlotExit out;
@@ -10189,9 +10012,9 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
       }
 
 #ifdef REVS_EDGE_FILL
-      /* PASS A GETS ITS OWN COPY, chosen by the two facts that define it: its branch operand
+      /* Pass a gets its own COPY, chosen by the two facts that define it: its branch operand
          is $09 and its patched store pointer is plot_ptr, i.e. the block it is already reading.
-         Both are PROVED here, not assumed — if either were ever false the generic body below is
+         Both are proved here, not assumed — if either were ever false the generic body below is
          still the answer. */
       if (branch == 0x09u && zpBase == plot_ptr_v) return gap_walk_fill(x, v, a, y);
 #endif
@@ -10200,7 +10023,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
         return out; } }
 }
 
-/* $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK
+/* $1DA6  fill_column_gaps — the patch, then the walk
    Three stores and a fall-through.  It exists because the walk is one routine serving two
    passes: this entry is what turns the registers into the walk's configuration.
 
@@ -10219,14 +10042,14 @@ SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
     return column_gap_walk_core(pointer, branchOffset, entryV);
 }
 
-/* $1DEF  fill_edge_column_run — ONE RUN OF END COLUMNS
+/* $1DEF  fill_edge_column_run — one run of end columns
    Entered with X = the first column, A = the column to stop at and Y = the scan line the
    first column's walk starts from.  Per iteration it walks column N through plot_ptr2 (into
    the per-line boundary table) and column N+1 through plot_ptr (into the column's own source
    block), so a run of K iterations touches columns X..X+K-1 one way and X+1..X+K the other.
 
-   THE START LINE IS NOT RE-SUPPLIED PER COLUMN, and that is the loop's real subtlety: Y
-   comes back from the walk holding the line it stopped at, and the next iteration stores THAT
+   The start line is not RE-SUPPLIED per column, and that is the loop's real subtlety: Y
+   comes back from the walk holding the line it stopped at, and the next iteration stores that
    as the next column's start line.  So each column's walk begins where its neighbour's ended,
    which is what makes the filled region follow the dashboard's diagonal edge. */
 
@@ -10235,12 +10058,12 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
 {
     unsigned column = firstColumn;
     uint8_t  y      = firstLine;   /* the scan-line cursor, threaded from each walk's exit */
-    uint8_t  v      = entryV;      /* the walk's entry V — DEAD here (see below), carried anyway */
+    uint8_t  v      = entryV;      /* the walk's entry V — dead here (see below), carried anyway */
     SlotExit e2 = { 0u, 0u, 0u, 0u, 0u, 0u, 0u };  /* the run's last walk = the routine's exit */
 
     mem[EDGE_RUN_LIMIT] = stopColumn;         /* $1DEF */
 
-    /* THE WALK'S ENTRY V NEVER SURFACES on this path: every column here is < $28, so the walk
+    /* The walk's entry V never surfaces on this path: every column here is < $28, so the walk
        always takes its normal arm — which recomputes V from `column + $60` — and its early-return
        arm (the only exit that would pass entry V through) is unreachable. */
     do {
@@ -10264,11 +10087,11 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
 #endif
 
         /* $1DFA — this column into the per-line boundary table, $55 mapped to empty.  Its exit
-           line is discarded: both walks in an iteration start from the SAME span_line_cursor. */
+           line is discarded: both walks in an iteration start from the same span_line_cursor. */
         { SlotExit e1 = fill_column_gaps_core(MEM_plot_ptr2_lo, 0xEFu, 0x00u, v);
           v = e1.v; }
 
-        /* $1E03 — and the NEXT column into its own source block, non-zero bytes kept.  THIS
+        /* $1E03 — and the next column into its own source block, non-zero bytes kept.  This
            walk's exit line is what the next column's walk starts from ($1DF3 next iteration). */
         mem[EDGE_COLUMN] = (uint8_t)(column + 1);
         e2 = fill_column_gaps_core(MEM_plot_ptr_lo, 0x09u, 0x55u, v);
@@ -10290,26 +10113,21 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
     { SlotExit e = { e2.a, (uint8_t)column, y, 0u, 1u, e2.v, 1u }; return e; }
 }
 
-/* `make EDGESTART=1`: fill_dash_edge_columns' boundary tables without the 136-cell gap fill
-   (docs/perf-method.md §fill_dash_edge_columns' GAP FILL).  Phase 18 has two outputs:
+/* `make EDGESTART=1`: fill_dash_edge_columns' boundary tables without the gap fill, a
+   measurement arm (docs/perf-method.md §fill_dash_edge_columns' GAP FILL).  Phase 18 has two
+   outputs:
 
      pass A  fills each end column's empty source bytes with the scan line's surface colour;
      pass B  writes the per-scan-line boundary tables view_left_start_src ($0504) and
-             view_right_start_src ($4400), from which the low block's painter composes each
-             run's entry cell.  It is their only producer.
+             view_right_start_src ($4400), their only producer.
 
-   Pass A is not redundant under the RLE painter: the carry into its columns ($1B..$22 and
-   $04..$06) comes from whatever draw_road last wrote to their left, a road colour, where the
-   correct colour is the off-road surface.
-   ⚠ view_edge_start_only is incomplete: it computes only the first pass-B walk of each run,
-   but mem[EDGE_BLOCK_START] is written once per iteration above both passes, so every pass B
-   walks bs[column] → bs[column+1] and none is empty (`make EDGECOUNT=1`).  So this arm's −13 ms
-   is a sound bracket, but its viewdiff failure is confounded between dropping pass A and the
-   incomplete pass B; re-run it with a complete pass B before quoting it.
-   `make EDGESTART=1 EDGESTARTCHECK=1` is the oracle: the real routine runs, then this computes
-   the same two tables into a scratch and requires every byte to match.  ⚠ The scratch is seeded
-   with what the real routine left, so outside the computed range it compares the answer with
-   itself, which is why it could not see the missing walks.  It says nothing about pass A. */
+   Pass A is not redundant: the carry into its columns ($1B..$22 and $04..$06) comes from
+   whatever draw_road last wrote to their left, where the correct colour is the off-road one.
+   ⚠ view_edge_start_only computes only the first pass-B walk of each run, but every pass B
+   walks bs[column] → bs[column+1] and none is empty, so this arm's tables are incomplete.
+   `EDGESTARTCHECK=1` compares them against the real routine's, but its scratch is seeded with
+   the real routine's output, so outside the computed range it compares the answer with itself
+   and cannot see the missing walks.  It says nothing about pass A. */
 #if defined(REVS_EDGE_START) || defined(REVS_EDGE_START_CHECK)
 
 #define EDGE_START_LEFT_COL    0x03u
@@ -10318,7 +10136,7 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
 #define EDGE_START_RIGHT_LINE  0x2Bu
 
 /* One end's boundary table.  `dst` is where the bytes go — `mem` for the live arm, a scratch for
-   the oracle — and the walk is the 6502's: from `firstLine` DOWN to (not including) the column's
+   the oracle — and the walk is the 6502's: from `firstLine` down to (not including) the column's
    block start, testing the cursor after the decrement so the start byte is a sentinel. */
 static void edge_start_side(unsigned char* dst, unsigned table,
                             unsigned column, unsigned firstLine)
@@ -10331,12 +10149,9 @@ static void edge_start_side(unsigned char* dst, unsigned table,
         const unsigned s = src[line];
         unsigned       v;
 
-        /* ⚠ KEPT THOUGH IT PROVABLY CANNOT FIRE, and the argument is why rather than a guess:
-           $55 is `SRC_CELL_BLANK`, the value pass A writes as ITS fallback, and pass A runs only
-           on columns $04..$06 and $1B..$22 — never on the $03 and $1A that pass B reads.  So no
-           source byte this loop sees can hold it.  Sabotaging the mapping survives 65 280 bytes
-           for exactly that reason.  One compare is cheaper than the next reader having to
-           re-derive this. */
+        /* ⚠ Kept though it cannot fire: $55 is SRC_CELL_BLANK, pass A's fallback, and pass A
+           runs only on columns $04..$06 and $1B..$22, never on the $03 and $1A that pass B
+           reads, so no source byte this loop sees can hold it. */
         if (s) v = (s == 0x55u) ? 0u : s;        /* $1DC5 — CMP #$55 / LDA #0, else keep it */
         else {
             /* $1DD6 — an empty cell takes the surface's colour; this pass's fallback is $00,
@@ -10356,9 +10171,9 @@ static void view_edge_start_only(unsigned char* dst)
 #endif
 
 #ifdef REVS_EDGE_START_CHECK
-/* THE ORACLE (`make EDGESTART=1 EDGESTARTCHECK=1`).  `g_edgeStartMismatch` must be 0. */
+/* The oracle (`make EDGESTART=1 EDGESTARTCHECK=1`).  `g_edgeStartMismatch` must be 0. */
 volatile unsigned long  g_edgeStartChecks      = 0;
-volatile unsigned long  g_edgeStartMismatch    = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long  g_edgeStartMismatch    = 0;   /* ⚠ Must be 0 */
 volatile unsigned short g_edgeStartMismatchAt  = 0;   /* (side << 12) | line */
 volatile unsigned char  g_edgeStartWant = 0, g_edgeStartGot = 0;
 
@@ -10406,24 +10221,20 @@ static void view_edge_start_check(void)
 #endif
 
 /* fill_dash_edge_columns as one loop (`make EDGEFLAT=1`, the default).  Phase 18's cost is
-   per-walk set-up in the 6502's own factoring, four levels deep (edge_column_pass →
-   fill_edge_column_run → fill_column_gaps → column_gap_walk → gap_walk_body), over 22 walks of
-   ~6 cells (docs/perf-method.md §PHASE 18 IS PER-WALK).
+   per-walk set-up in the 6502's four-level factoring (edge_column_pass → fill_edge_column_run →
+   fill_column_gaps → column_gap_walk → gap_walk_body), over ~22 walks of ~6 cells.
    Three of the four values threaded between those levels are dead on the game path:
-     * `entryY` is fill_column_gaps' branch offset, and column_gap_walk overwrites it with
-       span_line_cursor before reading it (live only on the `column >= $28` early return);
+     * `entryY`, fill_column_gaps' branch offset, is overwritten with span_line_cursor before
+       it is read (live only on the `column >= $28` early return);
      * `entryV` is overwritten the same way, by `adc_overflow(column, $60, 0)`;
      * `entryX`, the store pointer's zero-page number, reaches only surface_colour_at's
-       `entryX`, which no arm lets influence the colour, and the walk's exit X is discarded
-       (fill_edge_column_run returns `column` in its place); it is passed as 0.
-   So only `y` crosses a walk boundary.
+       `entryX`, which no arm lets influence the colour, and the walk's exit X is discarded;
+       it is passed as 0.
    ⚠ mem[EDGE_BLOCK_START] is written once per iteration, above both passes, so pass A on
-   `column + 1` stops at dash_block_starts[column]; that is why `end` is read once and used
-   twice below.
-   The precondition is tested once per run, and a failure hands the whole routine to the
-   faithful chain.  Pass A's bases ($3000 + column*$80) are private for every column below $28;
-   pass B's is the caller's boundary-table pointer, which the fixture aims at the zero-page
-   pointer cells, so it is really tested.
+   `column + 1` stops at dash_block_starts[column]; `end` is read once and used twice.
+   The precondition is tested once per run, and a failure hands the routine to the faithful
+   chain.  Pass A's bases ($3000 + column*$80) are private for every column below $28; pass B's
+   is the caller's boundary-table pointer, which the fixture aims at the zero-page pointers.
    seam_write with a compile-time `ram = 1`, never a bare mem[] store, so the marking and
    ink-watch hooks keep firing (revs_native_seam.h). */
 #ifdef REVS_EDGE_FLAT
@@ -10449,7 +10260,7 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
     mem[EDGE_RUN_LIMIT] = (unsigned char)stopColumn;
 
     do {
-        /* ⚠ ONE `end` FOR BOTH PASSES — see the banner; this is the original's own shape. */
+        /* ⚠ One `end` for both passes — see the banner; this is the original's own shape. */
         const unsigned end = mem[MEM_dash_block_starts + column];
         unsigned       line;
 #ifdef REVS_SHAPE
@@ -10479,7 +10290,7 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
             if (s) {
                 PROBE_SHAPE_EDGE_CELL(1);
                 seam_write(startSrc + line, 1, (s == 0x55u) ? 0u : s);
-                /* ⚠ the boundary TABLE, not a source block — nothing to record */
+                /* ⚠ the boundary table, not a source block — nothing to record */
             } else {
                 a = surface_colour_at_core((uint8_t)line, (uint8_t)column, 0u, 0u).a;
                 PROBE_SHAPE_EDGE_CELL(a ? 2u : 3u);
@@ -10490,7 +10301,7 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
         PROBE_SHAPE_EDGE_WALK(cells);
 #endif
 
-        /* ── pass A ($1E03): the NEXT column fills its own block; non-zero bytes kept ── */
+        /* ── pass A ($1E03): the next column fills its own block; non-zero bytes kept ── */
         column++;
         mem[EDGE_COLUMN]                     = (unsigned char)column;
         mem[MEM_gap_ptr_operand]             = MEM_plot_ptr_lo;
@@ -10515,7 +10326,7 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
                 PROBE_SHAPE_EDGE_CELL(c ? 2u : 3u);
                 a = c ? c : 0x55u;
                 seam_write(plot_ptr_v + line, 1, a);
-                /* 136 of the sweep's 176 source stores are THIS ONE, and here the line and the
+                /* 136 of the sweep's 176 source stores are this one, and here the line and the
                    column are already in registers — no address to decode. */
                 VIEW_NOTE_SRC_AT(line, column, a);
             }
@@ -10533,7 +10344,7 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
 }
 #endif /* REVS_EDGE_FLAT */
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_EDGE_ASM)
-/* THE AMIGA RUNS BOTH ENDS IN 68000 ASSEMBLY — src/platform/amiga/edge_m68k.s, whose banner has
+/* The Amiga runs both ends in 68000 assembly — src/platform/amiga/edge_m68k.s, whose banner has
    the shape.  edge_run_flat above stays the reference: the host runs it, `make EDGEASM=0` is the
    control, and `make EDGECHECK=1` runs both on the same 64 KB every frame. */
 unsigned edge_run_m68k(unsigned startSrc, unsigned firstColumn, unsigned stopColumn,
@@ -10557,10 +10368,10 @@ static SlotExit edge_runs_asm(uint16_t leftStartSrc, uint16_t rightStartSrc)
 }
 #else
 volatile unsigned long g_edgeChecks       = 0;
-volatile unsigned long g_edgeMismatch     = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_edgeMismatch     = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_edgeMismatchAt   = 0;   /* first differing address; $10000 the exit, $10001 a pointer */
 volatile unsigned long g_edgeFuzzCases    = 0;
-volatile unsigned long g_edgeFuzzMismatch = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_edgeFuzzMismatch = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_edgeFuzzAttr     = 0;   /* cases whose limits let an attribute arm run — must be non-zero */
 static uint8_t s_edgeBefore[65536] __attribute__((aligned(4))), s_edgeAfterC[65536] __attribute__((aligned(4)));
 static uint8_t s_edgeFuzzSave[65536] __attribute__((aligned(4)));
@@ -10588,7 +10399,7 @@ static SlotExit edge_compare(uint16_t l, uint16_t r, volatile unsigned long* bad
         if (!*bad) g_edgeMismatchAt = 0x10001u;
         (*bad)++;
     } else {
-        /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        /* ENDIAN-OK: an equality test a longword at a time (see emit_width_compare). */
         const uint32_t* a = (const uint32_t*)(const void*)mem;
         const uint32_t* c = (const uint32_t*)(const void*)s_edgeAfterC;
         for (i = 0; i < 65536u / 4u; i++)
@@ -10603,7 +10414,7 @@ static SlotExit edge_compare(uint16_t l, uint16_t r, volatile unsigned long* bad
     return eA;
 }
 
-/* THE FUZZER, once, before the first real frame.  Driving data holds each end's handful of
+/* The fuzzer, once, before the first real frame.  Driving data holds each end's handful of
    columns on a few classifier arms, so each case randomises every input the two walks read — the
    source blocks (mostly empty, some $55), the block starts, the four boundary tables, both
    attribute tables and their limits, the horizon, the line surfaces, the styles and the colours —
@@ -10660,38 +10471,31 @@ static SlotExit edge_runs_asm(uint16_t leftStartSrc, uint16_t rightStartSrc)
 
 
 /* The engine's multiply, and the negate beside it
-   The first group of apply_driving_model's callee tree, where the 68000 replaces an algorithm
-   rather than an interpreter:
+   The first group of apply_driving_model's callee tree:
 
-     $0C02  mul8_noinit    the 8x8 shift-and-add itself — ONE `mulu.w` here
-     $0C00  mul8           ...with the multiplicand taken from A
-     $0DBF  mul8_accum     (shared_temp_76:math_lo) x math_hi >> 8 — a 16x8 fixed-point step
-     $0DB3  mul16_by_pi    x4, then x $C9/256 — i.e. multiply a 16-bit angle by pi
-     $0E42  neg16_math     negate (math_hi:math_lo), the high byte leaving in A
-     $0E44  neg16_math_noinit  ...the same without parking A in math_hi first
+     $0C02  mul8_noinit        the 8x8 shift-and-add itself, one `mulu.w` here
+     $0C00  mul8               ...with the multiplicand taken from A
+     $0DBF  mul8_accum         (shared_temp_76:math_lo) x math_hi >> 8, a 16x8 fixed-point step
+     $0DB3  mul16_by_pi        x4, then x $C9/256: a 16-bit angle times pi
+     $0E42  neg16_math         negate (math_hi:math_lo), the high byte leaving in A
+     $0E44  neg16_math_noinit  ...without parking A in math_hi first
 
-   `mul8` has 28 call sites (the most-called routine in the engine) and its body is eight
-   unrolled iterations of `BCC` / `CLC` / `ADC` / `ROR A` / `ROR math_lo`, standing in for one
-   `MULU.W`.
+   mul8 has 28 call sites, the most in the engine; its body is eight unrolled `BCC / CLC / ADC
+   / ROR A / ROR math_lo` steps.
 
-   ⚠ The exit contract is not just the product.
-   Checked over all 65536 operand pairs against a replay of the 6502:
-     * A = the product's HIGH byte, math_lo = its LOW byte — but N and Z come from the closing
-       `ROR math_lo`, i.e. from the LOW byte, not from A;
-     * C is 0 on EVERY input.  The eight `ROR math_lo`s shift the multiplier out completely, so
-       the last carry-out is a bit that has already been consumed;
-     * V is the V of the LAST `ADC`, which happens at the multiplier's top set bit, where the
-       accumulator holds (addend x (multiplier mod 2^k)) >> k.  `adc_overflow` replays exactly
-       that one add.  With a zero multiplier no add runs at all and the caller's V survives.
-   ⚠ Decimal mode does not arise.  D changes the RESULT BYTE of every `ADC`, so a decimal
-   entry would stop this being a multiply at all — but none of the 8 SED sites reach here
-   (docs/static-map.md §Decimal mode) and the fixture pins D = 0 citing that table, so there is
-   no decimal arm to keep. */
+   ⚠ The exit contract is more than the product (checked over all 65536 operand pairs):
+     * A = the product's high byte, math_lo its low byte, but N and Z come from the closing
+       `ROR math_lo`, i.e. from the low byte;
+     * C is 0 on every input: the eight RORs shift the multiplier out completely;
+     * V is the last ADC's, at the multiplier's top set bit, where the accumulator holds
+       (addend x (multiplier mod 2^k)) >> k; `adc_overflow` replays that one add.  A zero
+       multiplier runs no add and the caller's V survives.
+   No SED site reaches here (docs/static-map.md §Decimal mode); the fixture pins D = 0. */
 
 /* $0C02  mul8_noinit — the 8x8 multiply, math_lo x math_hi.  Exit: A = product high, math_lo =
-   product low; N/Z from math_lo, C = 0, V = the last shift-and-add's.  This is a KEPT shim —
+   product low; N/Z from math_lo, C = 0, V = the last shift-and-add's.  This is a kept shim —
    generated code and the mul8_accum family call it. */
-/* The 8x8 product plus the ONE escaping flag: the V of the last shift-and-add.  `setV` is 0 for a
+/* The 8x8 product plus the one escaping flag: the V of the last shift-and-add.  `setV` is 0 for a
    zero multiplier (no ADC ran, so the 6502 leaves the caller's V — the shim must not overwrite it). */
 
 static Mul8 mul8_noinit_core(uint8_t multiplier, uint8_t addend)
@@ -10722,7 +10526,7 @@ static Mul8 mul8_noinit_core(uint8_t multiplier, uint8_t addend)
 
 REVS_FLAG_OP void mul8_noinit_into(HookRegs *r)
 {
-    /* $0C02 math_lo x math_hi -> A:math_lo.  The engine only ever multiplies in BINARY — none
+    /* $0C02 math_lo x math_hi -> A:math_lo.  The engine only ever multiplies in binary — none
        of the 8 SED sites reach here (docs/static-map.md §Decimal mode) — so this is one 16-bit
        product.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0, V = the
        final shift-and-add's. */
@@ -10740,13 +10544,13 @@ void mul8_noinit_regs(HookRegs *r) { mul8_noinit_into(r); }
 
 /* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
 
-/* $0DBF  mul8_accum — THE 16x8 FIXED-POINT STEP
+/* $0DBF  mul8_accum — the 16x8 fixed-point step
    Multiplies the 16-bit value (shared_temp_76 : math_lo) by math_hi and keeps the top 16 bits
-   of the 24-bit result: the low product's HIGH byte is added into the high product, which is
+   of the 24-bit result: the low product's high byte is added into the high product, which is
    the ordinary way to spell a x.8 fixed-point multiply on a machine with an 8x8 multiplier.
 
-   ⚠ Its exit flags are the closing ADD's, or the `INC math_hi`'s on the carry path — so N and
-   Z describe math_lo on one path and math_hi on the other.  A KEPT shim (generated code and the
+   ⚠ Its exit flags are the closing add's, or the `INC math_hi`'s on the carry path — so N and
+   Z describe math_lo on one path and math_hi on the other.  A kept shim (generated code and the
    mul16_by_pi / scale16_by_y twins call it); D is honoured through mul8_noinit. */
 /* mul8_accum's exit ABI: A + N/Z/C/V.  N/Z come from math_lo on the no-carry path and from the
    INCremented math_hi on the carry path — reconstructed in the shim from this typed result. */
@@ -10755,12 +10559,12 @@ Mul8AccumExit mul8_accum_core(void)
 {
     uint8_t hiOperand = shared_temp_76, mathHi = math_hi;
 
-    /* $0DBF — math_lo x math_hi, the LOW half.  Only its product-high byte is used. */
+    /* $0DBF — math_lo x math_hi, the low half.  Only its product-high byte is used. */
     Mul8   r1      = mul8_noinit_core(math_lo, mathHi);
     uint8_t lowHigh = (uint8_t)(r1.product >> 8);
     shared_temp_77  = lowHigh;                       /* $0DC2 */
 
-    /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half. */
+    /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the high half. */
     Mul8   r2   = mul8_noinit_core(hiOperand, mathHi);
     math_lo     = (uint8_t)r2.product;              /* the second product's low byte */
     math_hi     = (uint8_t)(r2.product >> 8);       /* $0DC9 */
@@ -10788,76 +10592,67 @@ Mul8AccumExit mul8_accum_core(void)
 
 
 /* The driving model's 16-bit arithmetic
-   The layer between the multiply and the sub-models: everything that reads or writes the
-   model's 16-bit state vector as a NUMBER rather than as physics.
+   The layer between the multiply and the sub-models: the model's state vector as numbers.
 
      $0DD7  mul16_signed             16x16 -> 16 with the sign carried in a byte
-     $4753  scale16_by_y             |x| * Y >> 8, sign restored — the model's scale operation
+     $4753  scale16_by_y             |x| * Y >> 8, sign restored: the model's scale operation
      $4765  mul16_by_1_5             x * 1.5, arithmetic (a shift and an add)
-     $47E5  model_integrate_element   element X += element 14
-     $48A0  add_signed_into_element   element Y += ±(math_hi:math_lo)
-     $4874  apply_angle_term          element x car angle -> element, storing or accumulating
-     $486D  apply_angle_term_at       ...the same with the source element taken from $7F
-     $0E50  kbd_test_key              OSBYTE 129 on one negative INKEY code
+     $47E5  model_integrate_element  element X += element 14
+     $48A0  add_signed_into_element  element Y += ±(math_hi:math_lo)
+     $4874  apply_angle_term         element x car angle -> element, storing or accumulating
+     $486D  apply_angle_term_at      ...with the source element taken from $7F
+     $0E50  kbd_test_key             OSBYTE 129 on one negative INKEY code
 
-   mul16_signed is the second compression in this tree.  The 6502 spells a 16x16
-   multiply as three 8x8 products accumulated by hand across five scratch cells; what it
-   computes, derived from that accumulation and checked against it, is exactly
+   mul16_signed's three 8x8 products, accumulated across five scratch cells, compute
 
        result = p2 + ((p1 + p3 + $80) >> 8),   p1 = hi*angleLo, p2 = hi*angleHi, p3 = lo*angleHi
 
-   i.e. the true product MINUS its lowest cross term (lo*angleLo, which the routine never
-   forms) plus a half-count of rounding.  Three `MULU.W`s and two adds here.
-   ⚠ The five scratch cells are part of the contract, not workspace: shared_temp_76/77,
-   hypot_min_lo, math_lo and math_hi all keep values the differential compares, so the twin
-   writes what the 6502 left there even where its own arithmetic did not need it. */
+   the true product less its lowest cross term (lo*angleLo, never formed), rounded.
+   ⚠ The five scratch cells are compared by the differential (shared_temp_76/77, hypot_min_lo,
+   math_lo, math_hi), so the twin writes what the 6502 left there. */
 
-/* mul16_signed's two operands sit in the point_delta scratch window with ASYMMETRIC sign
-   conventions (see the routine note): the MULTIPLICAND is a plain two's-complement value,
-   the MULTIPLIER is a car-angle coefficient whose sign is packed in bit 0 of its low byte. */
+/* mul16_signed's two operands sit in the point_delta scratch window with asymmetric sign
+   conventions (see the routine note): the multiplicand is a plain two's-complement value,
+   the multiplier is a car-angle coefficient whose sign is packed in bit 0 of its low byte. */
 #define MODEL_TERM     MEM_point_dist_lo   /* point_dist_lo — the destination element index */
 #define MODEL_SRC_SLOT MEM_span_line_cursor   /* span_line_cursor — apply_angle_term_at's source element */
 
-/* $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY
-   ⚠ ASYMMETRIC sign conventions on the two operands.  The MULTIPLICAND (MUL_SRC_HI:LO) is a
-   plain two's-complement value — made positive up front, its sign flipped into MUL_SIGN bit 7.
-   The MULTIPLIER (MUL_TERM_HI:LO) is a car-angle coefficient (heading_sin/heading_cos) whose
-   sign lives in BIT 0 of its LOW byte, which flips MUL_SIGN again.  It keeps the top 16 bits of
-   the three cross products (dropping the lowest, lo*lo), and the tail falls into abs16_math, so
-   the banked sign is applied to the result on the way out.
+/* $0DD7  mul16_signed — the signed 16x16 multiply
+   ⚠ The operands' sign conventions differ.  The multiplicand (MUL_SRC_HI:LO) is two's
+   complement, made positive up front with its sign flipped into MUL_SIGN bit 7.  The multiplier
+   (MUL_TERM_HI:LO) is a car-angle coefficient (heading_sin/heading_cos) whose sign is bit 0 of
+   its low byte, which flips MUL_SIGN again.  The tail falls into abs16_math, which applies the
+   banked sign.
 
-   ⚠ Its exit flags are `BIT MUL_SIGN`'s, not the arithmetic's: N = bit 7, V = bit 6, Z from
-   A AND MUL_SIGN — and then the negate's own flags on the negative path.  C is the last
-   ADC's and survives the BIT.
+   ⚠ The exit flags are `BIT MUL_SIGN`'s: N = bit 7, V = bit 6, Z from A AND MUL_SIGN, then the
+   negate's own flags on the negative path.  C is the last ADC's and survives the BIT.
 
-   NOTE: this is the faithful $0DD7 twin, kept as the validation oracle's counterpart and for
-   any 6502-ABI caller.  apply_angle_term (its only real caller) no longer routes through it —
-   see apply_angle_term_body_core, which folds the same arithmetic into plain 16-bit C.  The three
-   cross products are plain 16-bit multiplies (revs_mulu16); D = 0 on every path that reaches the
-   real caller (docs/static-map.md §Decimal mode), and the fixture pins it. */
+   The faithful twin, for the oracle and any 6502-ABI caller.  apply_angle_term, its only real
+   caller, folds the same arithmetic into plain C (apply_angle_term_body_core).  D = 0 on every
+   path to it (docs/static-map.md §Decimal mode); the fixture pins it. */
 
-/* $4753  scale16_by_y — |x| * Y >> 8, SIGN RESTORED
+/* $4753  scale16_by_y — |x| * Y >> 8, sign restored
    The model's scale operation: take the caller's 16-bit value in (A : math_lo), scale it by
    the unsigned byte in Y, and give it its sign back.
 
-   ⚠ PHP/PLP, and both halves matter.  The sign is the CALLER's N — the same contract abs16_math
+   ⚠ PHP/PLP, and both halves matter.  The sign is the caller's N — the same contract abs16_math
    has — so it has to survive the multiply, and the 6502 parks it on the stack.  The push leaves
    a byte in the stack page that the differential compares, so the pair is reproduced rather
    than replaced by a saved C variable. */
 
-/* $4765  mul16_by_1_5 — x + x/2, ARITHMETIC
-   (A : math_lo) = (math_hi : math_lo) * 1.5, with the halving SIGNED — the 6502 seeds the
+/* $4765  mul16_by_1_5 — x + x/2, arithmetic
+   (A : math_lo) = (math_hi : math_lo) * 1.5, with the halving signed — the 6502 seeds the
    rotate's carry from the value's own bit 7 instead of clearing it, which is a one-instruction
    arithmetic shift right.  ⚠ PHA/PLA, so there is a stack residue here too. */
 Wide16Exit mul16_by_1_5_core(uint16_t x)
 {
-    /* The halving is SIGNED, so x/2 is an arithmetic shift right of the whole 16-bit value —
+    /* The halving is signed, so x/2 is an arithmetic shift right of the whole 16-bit value —
        exactly what the 6502's "seed the rotate from bit 7" idiom computes, one word op here. */
     uint16_t half = (uint16_t)((int16_t)x >> 1);
     uint16_t sum  = (uint16_t)(x + half);
 
     /* $476C PHA parks x/2's high byte; the V replay below just uses `hiHalf` directly.
-       The residue write is GONE under THE RESULTS RULE: it stored the byte at $0100+S purely
+       The residue write is gone under the results rule: it stored the byte at $0100+S purely
        so the differential matched.  Reader audit — the matching $4777 PLA pops it inside this
        same routine, it is below SP at the exit, and `tools/det_compare.py` exempts $01B8..$01FF. */
     uint8_t hiHalf = (uint8_t)(half >> 8);
@@ -10866,13 +10661,13 @@ Wide16Exit mul16_by_1_5_core(uint16_t x)
 
     Wide16Exit e;
     e.value = sum;
-    /* The exit flags are the HIGH-byte ADC's ($4776), replayed from its own two operands. */
+    /* The exit flags are the high-byte ADC's ($4776), replayed from its own two operands. */
     e.c = (uint8_t)(((uint32_t)x + half) > 0xFFFFu);
     e.v = (uint8_t)(((~(hiHalf ^ hiIn) & (hiHalf ^ hiOut)) >> 7) & 1u);
     return e;
 }
 
-/* $47E5  model_integrate_element — ELEMENT X += ELEMENT 14
+/* $47E5  model_integrate_element — element X += element 14
    One 16-bit add over the state vector.  Element 14 is the per-frame delta the sub-models
    above have been accumulating into, so this is the model's integration step; the two
    rotations ($47A5/$47C5) each end with one. */
@@ -10884,14 +10679,14 @@ void model_integrate_element_core(uint8_t slot)
     model_state_16[slot] = (uint16_t)(model_state_16[slot] + model_state_16[MS_INCREMENT]);
 }
 
-/* $48A0  add_signed_into_element — ELEMENT Y += ±(math_hi : math_lo)
-   ⚠ IT BRANCHES ON THE CALLER'S N, like abs8 and abs16_math: a set N means "subtract this
+/* $48A0  add_signed_into_element — element Y += ±(math_hi : math_lo)
+   ⚠ It branches on the caller's N, like abs8 and abs16_math: a set N means "subtract this
    instead", spelled as a negate followed by the same add.  A twin that tests bit 7 of anything
    it can see is wrong, and a fixture that leaves N correlated with the value cannot tell. */
 /* promoted for revs_native_abi.c */ void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
 {
-    /* The term is math_hi : math_lo.  $48A0 BMI branches on the caller's sign: a SET sign bit
-       (negative) adds it as-is, a CLEAR one negates it first ("subtract this instead").  D = 0 on
+    /* The term is math_hi : math_lo.  $48A0 BMI branches on the caller's sign: a set sign bit
+       (negative) adds it as-is, a clear one negates it first ("subtract this instead").  D = 0 on
        this driving-model path (docs/static-map.md §Decimal mode), so plain 16-bit arithmetic. */
     uint16_t term = (uint16_t)(((uint16_t)math_hi << 8) | math_lo);
     if (!(signByte & 0x80u)) term = (uint16_t)(0u - term);      /* $48A0-$48A5 */
@@ -10899,31 +10694,23 @@ void model_integrate_element_core(uint8_t slot)
     model_state_16[slot] = (uint16_t)(model_state_16[slot] + term);     /* $48A7-$48B5 */
 }
 
-/* $4874 / $486D  apply_angle_term — ONE STATE ELEMENT THROUGH ONE CAR ANGLE
+/* $4874 / $486D  apply_angle_term — one state element through one car angle
    The model's rotation primitive: multiply state element `source` by car angle `angle` and
-   either STORE the product into element `dest` or ADD it there — bit 6 of MUL_SIGN, which
-   the caller sets along with the sign, is what chooses, and the add path is literally
-   add_signed_into_element's tail.
+   store the product into element `dest`, or add it there.  Bit 6 of MUL_SIGN, set by the caller
+   with the sign, chooses; the add path is add_signed_into_element's tail.
 
-   $486D is the same routine entered with the source element in MODEL_SRC_SLOT and A carrying
-   the sign/mode byte, which is what the two four-call rotations ($48B9, $48C1) use so they can
-   step source and destination independently.
+   $486D is the same routine with the source element in MODEL_SRC_SLOT and the sign/mode byte
+   in A, which the two four-call rotations ($48B9, $48C1) use to step source and destination
+   independently.
 
-   apply_angle_term is the ONLY caller of the $0DD7 signed multiply, so the multiply is folded
-   in here as plain 16-bit C rather than going through the mul16_signed twin's 6502 register
-   round-trip.  The one thing that must stay byte-exact is what that multiply COMPUTES, and it is
-   not a full 16x16: it keeps the top 16 bits of only the three HIGH cross products and drops the
-   lowest (srcLo*termLo), rounding with +$0080 — i.e. product = termHi*srcHi + ((termLo*srcHi +
-   termHi*srcLo + $80) >> 8), taken mod 65536.  The operands are signed asymmetrically: the
-   multiplicand (model element) is two's-complement; the multiplier (car angle) is sign-MAGNITUDE
-   with its sign in bit 0 of the low byte — that bit stays in the magnitude, exactly as the 6502
-   multiply used the whole byte.  D = 0 throughout the model path (docs/static-map.md §Decimal
-   mode), so every add here is plain binary. */
-/* The pure-C body: multiply element `source` by car angle `angle` and store or accumulate into
-   element `dest` (= mem[MODEL_TERM]).  Plain 16-bit C on mem[] — touches no cpu state at all.
-   Its exit registers/flags are DEAD in the real program (its only callers are the driving-model
-   rotations, whose own exit registers are overwritten the instant apply_driving_model returns to
-   them), so the twin does not reconstruct them and every fixture below verifies the RESULT. */
+   The $0DD7 multiply is folded in as plain 16-bit C.  What must stay exact is what it
+   computes, which is not a full 16x16: product = termHi*srcHi + ((termLo*srcHi + termHi*srcLo
+   + $80) >> 8) mod 65536, dropping srcLo*termLo.  The multiplicand (model element) is two's
+   complement; the multiplier (car angle) is sign-magnitude with its sign in bit 0 of the low
+   byte, and that bit stays in the magnitude, as on the 6502.  D = 0 on the model path. */
+/* The body: plain 16-bit C on mem[], no cpu state.  Its exit registers and flags are dead (the
+   rotations that call it are overwritten as soon as apply_driving_model returns), so the
+   fixtures verify the result. */
 static void apply_angle_term_body_core(uint8_t angle, uint8_t source)
 {
     /* $4876-$4888 — the two operands.  MUL_SIGN was seeded by the caller with the mode byte:
@@ -10978,7 +10765,7 @@ void apply_angle_term_core_oracle(uint8_t dest, uint8_t angle, uint8_t source)
     apply_angle_term_body_core(angle, source);       /* $4871 JMP $4876 */
 }
 
-/* $0E50  kbd_test_key — IS THIS KEY DOWN?
+/* $0E50  kbd_test_key — is this key down?
    OSBYTE 129 with a negative INKEY code in X and $FF in Y: the MOS answers X = $FF when that
    key is being held.  The routine's whole output is the CPX #$FF result — Z set means the key
    IS down (the callers read it as "pressed": throttle key down -> full throttle).  Returns 1
@@ -11008,8 +10795,8 @@ int kbd_test_key_core(uint8_t keyCode)
 {
     /* cpu-free.  The $0E50 routine leaves A/X/Y as the INKEY call did (X = Y = $FF held, $00
        not; A = the OSBYTE number), and on the 6502 that residue leaks out through the
-       driving-control chain as three routines' exit X/Y.  Nothing reads it: those three fixtures were the only
-       consumers and now declare it dropped (see validate_native.c, the INKEY residue), and the
+       driving-control chain as three routines' exit X/Y.  Nothing reads it (validate_native.c,
+       the INKEY residue), and the
        one place the residue is genuinely live in-game — shift_key_commands' envelope redefine —
        calls kbd_test_key_regs and threads it as a local.  A caller that wants the registers asks
        for them by name; this entry answers only the question the flag-testing callers ask. */
@@ -11018,52 +10805,40 @@ int kbd_test_key_core(uint8_t keyCode)
 }
 
 /* The driving model's rotations and integrations
-   apply_driving_model's third group, and the one that says what the model DOES: the layer above
-   the 16-bit arithmetic, where the state vector is treated as vectors and rates, not numbers.
+   apply_driving_model's third group: the state vector treated as vectors and rates.
 
-     $4729 stage_lateral_speed_delta      the two lever arms — rear at x - s now, front at x + 1.5s later
-     $47A5 rotate_velocity_by_steer  the (8, 9) pair turned by the steering angle
-     $47C5 rotate_pair_a_by_steer ...and the (10, 12) pair, with the opposite pair of modes
-     $47F9 derive_axle_loads      elements 10..13 scaled by 1/4, then loads 6 and 7 rebuilt
-     $48C7 rotate_state_pair      THE 2x2 ROTATION — four apply_angle_term_at calls
-     $48B9 rotate_state_0_into_8  ...entered for (source 0, dest 8, mode $C0)
-     $48C1 rotate_state_6_into_3  ...and for (source 6, dest 3, mode $40)
-     $48EF integrate_car_position the camera triple, at 24-bit precision, plus the heading
-     $4937 integrate_state_rates  elements 3/4/5 integrated into 0/1/2, also at 24 bits
+     $4729 stage_lateral_speed_delta  the two lever arms: rear at x - s now, front at x + 1.5s
+     $47A5 rotate_velocity_by_steer   the (8, 9) pair turned by the steering angle
+     $47C5 rotate_pair_a_by_steer     ...and the (10, 12) pair, with the opposite modes
+     $47F9 derive_axle_loads          elements 10..13 scaled by 1/4, then loads 6 and 7 rebuilt
+     $48C7 rotate_state_pair          the 2x2 rotation: four apply_angle_term_at calls
+     $48B9 rotate_state_0_into_8      ...entered for (source 0, dest 8, mode $C0)
+     $48C1 rotate_state_6_into_3      ...and for (source 6, dest 3, mode $40)
+     $48EF integrate_car_position     the camera triple at 24-bit precision, plus the heading
+     $4937 integrate_state_rates      elements 3/4/5 integrated into 0/1/2, also at 24 bits
 
-   Every leaf underneath these is native, so the compression here is structural: two nested `ROR` loops over four state elements become one shift, a hand-unrolled
-   24-bit doubling becomes `wide <<= n`, and the four-call rotation becomes four named calls with
-   visible arguments instead of three registers stepped between them.
-
-   ⚠ $48EF's FIRST ADD HAS NO `CLC` — its carry comes from the `ROL` immediately above it, so
-   the doubling and the add are one 24-bit operation.  A twin that starts the add with a clear
-   carry is wrong exactly half the time, and nothing but a differential would say so.
-   ⚠ THE LOOP EXIT REGISTERS ARE PART OF THE CONTRACT.  Four of these routines end by falling
-   out of a `DEX`/`DEY` loop, so X and Y leave holding the value that failed the test ($FF,
-   $FE) and the differential compares them; the twins set them explicitly where the C loop has
-   no equivalent, with the instruction that wrote them named. */
+   ⚠ $48EF's first add has no `CLC`: its carry comes from the `ROL` above it, so the doubling
+   and the add are one 24-bit operation.
+   ⚠ Four of these end by falling out of a `DEX`/`DEY` loop, so X and Y leave holding the value
+   that failed the test ($FF, $FE); the differential compares them, and the twins set them
+   explicitly, naming the instruction that wrote them. */
 
 #define MODEL_ROT_MODE   (MEM_point_delta_sign + 2u)  /* point_delta_sign[2] — here the rotation's sign/mode byte */
 #define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
 
-/* $4729  stage_lateral_speed_delta — THE TWO LEVER ARMS
-   Scales element 2 (the yaw rate) by $58/$100, SUBTRACTS that from element 8 (the lateral
-   velocity), and parks 1.5x it in car_lateral_speed_delta.  The next sub-models therefore see
-   element 8 at x - s — the REAR axle's lateral velocity, which update_slip_sound(axle 1) turns
-   into rear slip — and apply_driving_model then restores x and adds 1.5s, the FRONT axle's,
-   before the steer rotation and update_slip_sound(axle 0).  Velocity at a wheel = body velocity
-   + yaw rate x lever arm.
-   ⚠ It is NOT a midpoint integration (the former reading of this comment): element 8 is
-   rebuilt from 0/1 every frame by rotate_state_0_into_8, so nothing here accumulates across
-   frames — which is why the frame-rate-independent simulation leaves it alone.
+/* $4729  stage_lateral_speed_delta — the two lever arms
+   Scales element 2 (the yaw rate) by $58/$100, subtracts that from element 8 (the lateral
+   velocity), and parks 1.5x it in car_lateral_speed_delta.  The next sub-models see element 8
+   at x - s, the rear axle's lateral velocity (update_slip_sound(axle 1) turns it into rear
+   slip); apply_driving_model then restores x and adds 1.5s, the front axle's, before the steer
+   rotation and update_slip_sound(axle 0).  Velocity at a wheel = body velocity + yaw rate x
+   lever arm.  Not an integration: rotate_state_0_into_8 rebuilds element 8 every frame, so
+   nothing here accumulates, and the frame-rate-independent simulation leaves it alone.
 
-   WRITTEN AS PLAIN 16-BIT SIGNED C.  The 6502 scaled through scale16_by_y (a PHP/PLP sign
-   dance) and took 1.5x through mul16_by_1_5 (a PHA/PLA one); with D = 0 — the driving model's
-   real precondition (docs/static-map.md §Decimal mode) — both are just model_scale16 and
-   model_mul_1_5 on 16-bit words, so this twin is arithmetic on locals.  Its exit registers,
-   arithmetic scratch ($74-$77) and stack residue ($01FF) are all dead: apply_driving_model's
-   next act is `update_grip_limits`, which opens with `LDA #0`.  The fixture verifies the four
-   output cells (car_lateral_speed and car_lateral_speed_delta) only. */
+   Plain 16-bit signed C: with D = 0 (docs/static-map.md §Decimal mode) the 6502's
+   scale16_by_y and mul16_by_1_5 are model_scale16 and model_mul_1_5.  The exit registers,
+   scratch ($74-$77) and stack residue ($01FF) are dead: the next call, update_grip_limits,
+   opens with `LDA #0`.  The fixture verifies car_lateral_speed and car_lateral_speed_delta. */
 static void stage_lateral_speed_delta_core(void)
 {
     /* $4729-$4736 — scale the heading step (state element 2) by $58/256, keeping its sign. */
@@ -11080,9 +10855,9 @@ static void stage_lateral_speed_delta_core(void)
     lateral_speed_delta_hi = (uint8_t)(delta >> 8);
 }
 
-/* $47A5 / $47C5  the two SMALL-ANGLE ROTATIONS BY THE STEERING ANGLE
+/* $47A5 / $47C5  the two small-angle rotations by the steering angle
    Both are the same three steps over a different pair of elements: element 14 takes one
-   component times the steering angle, the OTHER component accumulates the second product, and
+   component times the steering angle, the other component accumulates the second product, and
    model_integrate_element then advances the first component by element 14 — a rotation in the
    small-angle form, where sin(theta) ~ theta and the cosine term is left as 1.
    ⚠ Not a rotation that builds up frame by frame (the former reading): both pairs are written
@@ -11119,36 +10894,22 @@ void rotate_pair_a_by_steer_core(void)
     model_integrate_element_core(10);
 }
 
-/* $47F9  derive_axle_loads — THE YAW TORQUE AND THE TWO LOADS
-   Three things, in order:
+/* $47F9  derive_axle_loads — the yaw torque and the two loads
+     1. element 5 = (front slip - rear slip) * $4E/$100: the difference of the two axles' damped
+        slip, the rate of element 2 (the heading step).  The car turns because its two axles
+        slide by different amounts.
+     2. elements 10..13 halved twice, arithmetically: a scale of 1/4 on the per-axle forces, not
+        damping, since check_wheel_slip rewrites all four every frame on the ground.  It acts as
+        a decay only while airborne (car_height >= 2 skips check_wheel_slip) and on
+        check_wheel_slip's saturation path, which leaves element 12 + axle stale.
+     3. elements 6 and 7 rebuilt from the damped pairs, each ((1.5 * odd) + even) * $CD/$100,
+        doubled: load 7 from the (12, 13) pair and load 6 from (10, 11), so both mix the axles.
+   Then the high byte of element 7 goes to wheel_load, which update_grip_limits reads.
 
-     1. element 5 = (front slip - rear slip) * $4E/$100 — the DIFFERENCE of the two axles'
-        damped slip, which is the only place a difference of them is taken, and it is the rate of
-        element 2, the heading step.  The car turns here because its two axles slide by different
-        amounts.
-     2. elements 10..13 halved TWICE, arithmetically (>> 1 with the sign preserved) — a SCALE of
-        1/4 on the per-axle forces, NOT damping: check_wheel_slip rewrites all four every frame
-        on the ground.  It only acts as a decay while airborne (car_height >= 2 skips
-        check_wheel_slip, and the loads it feeds are zeroed that frame) and on check_wheel_slip's
-        saturation path, which leaves element 12 + axle stale.
-     3. elements 6 and 7 rebuilt from the damped pairs, each as
-        ((1.5 * odd) + even) * $CD/$100, doubled.  Load 7 comes from the (12, 13) pair and
-        load 6 from the (10, 11) one — front and rear of each, so both loads mix the two axles.
-
-   Finally the high byte of element 7 is copied to wheel_load, which is the one value
-   update_grip_limits reads out of this routine.
-
-   WRITTEN AS PLAIN 16-BIT BINARY C.  The 6502 spelled every step as byte-pair ADC/SBC/ROR
-   chains, but with D = 0 those are just `+`/`-`/arithmetic-`>>` on 16-bit words, so this twin is
-   real arithmetic on local variables — no cpu struct, no flag helpers.  The whole driving model
-   runs with D = 0 (docs/static-map.md §Decimal mode: not one of the eight SED sites is on this
-   path); make determinism-drive is the empirical backstop.
-
-   AND IT LEAVES NOTHING IN THE CPU.  The 6502's exit A/X/C, its zero-page arithmetic scratch
-   ($74-$78) and its stack residue ($01FF) are all dead here: apply_driving_model's next act is
-   `LDA car_height` and both of its arms reload the registers, and apply_drag_terms opens with
-   `LDA`.  The only outputs are the state-vector elements and wheel_load — which is what the
-   fixture verifies, ignoring the register spill (as road_span_advance does). */
+   Plain 16-bit binary C (D = 0 on the whole driving model, docs/static-map.md §Decimal mode).
+   The exit A/X/C, the scratch ($74-$78) and the stack residue ($01FF) are dead:
+   apply_driving_model next does `LDA car_height` and both arms reload the registers, and
+   apply_drag_terms opens with `LDA`.  The fixture verifies the state elements and wheel_load. */
 
 /* scale16_by_y ($4753) and mul16_by_1_5 ($4765) as pure 16-bit math — D = 0 only. */
 static uint16_t model_scale16(uint16_t value, uint8_t scale)
@@ -11175,7 +10936,7 @@ static void derive_axle_loads_core(void)
     uint8_t slot;
 
     /* 1. $47F9-$4812 — element 5 (the heading step's rate) = (front slip - rear slip) * $4E/$100,
-       i.e. the two axles' DIFFERENCE is what turns the car. */
+       i.e. the two axles' difference is what turns the car. */
     model_state_put(5, model_scale16((uint16_t)(model_state_get(MS_SLIP)
                                                 - model_state_get(MS_SLIP + 1u)),
                                      0x4Eu));
@@ -11201,26 +10962,25 @@ static void derive_axle_loads_core(void)
     wheel_load = (uint8_t)(model_state_16[MS_LOAD_LONG] >> 8);
 }
 
-/* $48C7  rotate_state_pair — THE 2x2 ROTATION
+/* $48C7  rotate_state_pair — the 2x2 rotation
    Four apply_angle_term_at calls that turn the (source, source + 1) pair through car angles 1
    and 0 into the (dest, dest + 1) pair:
 
        dest     =  source * angle1  +/- (source + 1) * angle0
        dest + 1 =  (source + 1) * angle1  -/+ source * angle0
 
-   The two entries above it are the arguments: $48B9 rotates elements 0/1 into 8/9 with mode
-   $C0 and $48C1 rotates 6/7 into 3/4 with mode $40 — mode bit 6 makes the second and fourth
-   calls ACCUMULATE onto the first and third, and the `EOR #$80` on the fourth is the sign flip
-   that makes the four products a rotation rather than four independent scalings.
+   $48B9 rotates 0/1 into 8/9 with mode $C0 and $48C1 rotates 6/7 into 3/4 with mode $40.  Mode
+   bit 6 makes the second and fourth calls accumulate onto the first and third, and the
+   `EOR #$80` on the fourth is the sign flip that makes the four products a rotation.
 
-   ⚠ A FOURTH TENANT of $0088, which is point_delta_sign[2] to build_track_geometry, a clip
-   history to the span rasteriser and a surface class to mark_line_surfaces (symbols.csv).
-   Here it is where the mode byte lives across the four calls, because A is needed for it. */
+   ⚠ $0088's fourth tenant (point_delta_sign[2] to build_track_geometry, a clip history to the
+   span rasteriser, a surface class to mark_line_surfaces; symbols.csv): here it holds the mode
+   byte across the four calls. */
 /* promoted for revs_native_abi.c */ void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
 {
     mem[MODEL_SRC_SLOT]  = source;              /* $48C7 */
     mem[MODEL_TERM]      = dest;                /* $48C9 */
-    /* $48CB — the store STAYS (the 6502 left the byte there and the differential compares it),
+    /* $48CB — the store stays (the 6502 left the byte there and the differential compares it),
        but the two reads below are the local: nothing between here and them writes $0088. */
     mem[MODEL_ROT_MODE]  = mode;
 
@@ -11232,24 +10992,24 @@ static void derive_axle_loads_core(void)
     /* $48DC-$48E1 — dest + 1 = (source + 1) * angle 1, stored positive. */
     mem[MODEL_TERM]++;
     apply_angle_term_at_core(0x00u, 1u);
-    /* $48E4-$48EB — dest + 1 += source * angle 0 with the OPPOSITE sign. */
+    /* $48E4-$48EB — dest + 1 += source * angle 0 with the opposite sign. */
     mem[MODEL_SRC_SLOT]--;
     apply_angle_term_at_core((uint8_t)(mode ^ 0x80u), 0u);
-    /* $48E4's DEX leaves X = 0, but the exit registers are DEAD (the only callers, $46A8/$471C in
+    /* $48E4's DEX leaves X = 0, but the exit registers are dead (the only callers, $46A8/$471C in
        apply_driving_model, overwrite A/N/Z and reload X/Y before any read; $48C7 is never JSR'd)
        and every fixture here is result-only — so nothing to replay. */
 }
 
-/* $48EF  integrate_car_position — THE CAMERA, AT 24 BITS
+/* $48EF  integrate_car_position — the camera, AT 24 bits
    Element 1 is added (doubled) into view_origin component 2 and element 0 into component 0,
    each as a 24-bit add through view_origin_frac — the camera moves by fractions of a unit per
    frame, so the remainder has to be carried or a slow car never moves at all.  Then the
    heading advances by element 2.
 
-   ⚠ THE FIRST ADD HAS NO `CLC`: $490D's carry is the one the `ROL shared_temp_76` above it
-   left, i.e. the doubling's own carry out.  The doubling and the add are ONE 24-bit operation.
+   ⚠ The first add HAS no `CLC`: $490D's carry is the one the `ROL shared_temp_76` above it
+   left, i.e. the doubling's own carry out.  The doubling and the add are one 24-bit operation.
    ⚠ The name's second half is a misnomer worth keeping in mind — what $4927 advances is the
-   HEADING, not a position (disasm/symbols.csv). */
+   heading, not a position (disasm/symbols.csv). */
 void integrate_car_position_core(void)
 {
     uint8_t slot;
@@ -11266,7 +11026,7 @@ void integrate_car_position_core(void)
         uint32_t doubled, sum;
 
         /* $4903-$4908 — element[slot] sign-extended to 24 bits and doubled; its three bytes stay
-           live in mem, and the carry OUT of the top bit (ext>>7) feeds bit 0 of the add. */
+           live in mem, and the carry out of the top bit (ext>>7) feeds bit 0 of the add. */
         math_lo        = (uint8_t)(lo << 1);
         math_hi        = (uint8_t)((hi << 1) | (lo >> 7));
         shared_temp_76 = (uint8_t)((ext << 1) | (hi >> 7));
@@ -11294,8 +11054,8 @@ void integrate_car_position_core(void)
                   : model_state_16[MS_HEADING_STEP]));   /* relocated out of mem[$0A/$0B] */
 }
 
-/* $4937  integrate_state_rates — ELEMENTS 3/4/5 ARE THE RATES OF 0/1/2
-   For X = 2, 1, 0: element 3+X is shifted left three places (FIVE for X = 2) into a 24-bit
+/* $4937  integrate_state_rates — elements 3/4/5 are the rates of 0/1/2
+   For X = 2, 1, 0: element 3+X is shifted left three places (five for X = 2) into a 24-bit
    value and added into element X, with the sub-byte remainder carried in model_state_frac.
    So elements 3/4/5 are the rates of 0/1/2 and this is the integrator that applies them — and
    the odd shift on X = 2 is a per-axis scale factor, four times the other two.
@@ -11308,7 +11068,7 @@ void integrate_state_rates_core(void)
     /* All binary 24-bit adds: D = 0 on the driving-model path (docs/static-map.md §Decimal
        mode).  The last pass's (slot 0) A / C / V are the 6502 exit, rebuilt at the shim. */
     for (slot = 2; slot != 0xFFu; slot--) {
-        uint16_t rate  = model_state_16[3 + slot];              /* $493D-$4942 — the RATE word */
+        uint16_t rate  = model_state_16[3 + slot];              /* $493D-$4942 — the rate word */
         uint8_t  lo    = (uint8_t)rate;
         uint8_t  hi    = (uint8_t)(rate >> 8);
         uint8_t  ext   = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $4945-$4947 */
@@ -11324,7 +11084,7 @@ void integrate_state_rates_core(void)
 
         /* $495B-$4971 — add the low 24 bits of the shifted rate into element X (FRAC:LO:HI); the
            shift's own carry out was cleared ($495E CLC), so carry-in is 0. */
-        /* the element is the TOP 16 BITS of a 24-bit quantity whose fraction byte lives in
+        /* the element is the top 16 bits of a 24-bit quantity whose fraction byte lives in
            the separate model_state_frac array — so the wide value is (element << 8) | frac. */
         sum = (((uint32_t)model_state_16[slot] << 8) | mem[MEM_model_state_frac + slot])
             + (wide & 0xFFFFFFu);
@@ -11359,41 +11119,33 @@ void rotate_state_6_into_3(void)
     model_state_marshal_out();
 }
 /* The slip/sound cluster
-   apply_driving_model's fourth group: how the engine decides a wheel is sliding, what it does
-   to the model when it is, and the tyre squeal that comes out of it.  It is the only group
-   in this tree that reaches the MOS, so `make sound` is a second gate for it — what the twins
-   have to preserve is not a number but the SEQUENCE of OS calls.
+   apply_driving_model's fourth group: how the engine decides a wheel is sliding, what that
+   does to the model, and the tyre squeal.  The only group here that reaches the MOS, so
+   `make sound` gates the sequence of OS calls as well.
 
-     $4779 update_slip_sound   the whole decision, run once per axle (X = 1 then 0)
-     $4A91 check_wheel_slip    the magnitude, the limit, and one bit of history
-     $4AF7 clamp_slip_to_grip  ...and what is done to the model once it HAS been slipping
+     $4779 update_slip_sound      the whole decision, once per axle (X = 1 then 0)
+     $4A91 check_wheel_slip       the magnitude, the limit, and one bit of history
+     $4AF7 clamp_slip_to_grip     ...and what is done to the model once it has been slipping
      $4B42 store_slip_clamped_off_throttle
-     $4B47 store_slip_clamped   three entries of one store: clamp-unless-throttle, clamp,
-     $4B51 store_slip_signed    and the re-sign-and-store tail they share
-     $4B61 slip_magnitude      |element Y| << 5, clamped to $7F
-     $4B88 derive_slip_reference  the reference term, and the carry that DECLINES
-     $0B4A sound_queue         an 8-byte MOS SOUND control block, then OSWORD 7
-     $0B47 sound_queue_default ...with the amplitude taken from sound_volume
-     $0B6E sound_osword        the OSWORD tail both sound entries share
-     $0E5A sound_stop_channel  OSBYTE 21 on buffer X|4 — buffers 4..7 ARE the sound channels
+     $4B47 store_slip_clamped     three entries of one store: clamp-unless-throttle, clamp,
+     $4B51 store_slip_signed      and the re-sign-and-store tail they share
+     $4B61 slip_magnitude         |element Y| << 5, clamped to $7F
+     $4B88 derive_slip_reference  the reference term, and the carry that declines
+     $0B4A sound_queue            an 8-byte MOS SOUND control block, then OSWORD 7
+     $0B47 sound_queue_default    ...with the amplitude taken from sound_volume
+     $0B6E sound_osword           the OSWORD tail both sound entries share
+     $0E5A sound_stop_channel     OSBYTE 21 on buffer X|4 (buffers 4..7 are the sound channels)
 
-   What the cluster computes, per axle: negate the accumulator,
-   shift it left five into element 10, and compare a cheap hypotenuse of elements 10 and 12
-   (max + min/2, the same alpha-max-plus-beta-min the road pass uses) against grip_limit.  One
-   bit of the answer is `ROR`ed into slip_flags, so the squeal answers to the last TWO frames
-   rather than to this one — and if the shift SATURATED, that alone counts as a slip whatever
-   the limit says ($4AAE-$4AB2, which is the sign-comparison nobody would guess from the name).
-
-   ⚠ Two readings that are easy to get backwards: $0B46 is a SPARE BYTE where X is parked across
-   the OSWORD, not self-modifying code; and pedal_mode == 1 is the THROTTLE, so
-   derive_slip_reference's `LDY pedal_mode / DEY / BEQ` takes the throttle to the gear-based arm. */
+   ⚠ $0B46 is a spare byte where X is parked across the OSWORD, not self-modifying code; and
+   pedal_mode == 1 is the throttle, so derive_slip_reference's `LDY pedal_mode / DEY / BEQ`
+   takes the throttle to the gear-based arm. */
 
 #define SLIP_MAG_LO      MEM_plot_ptr3_lo  /* plot_ptr3_lo — here slip_magnitude's low byte  */
 #define SLIP_REV_TERM    MEM_engine_torque  /* engine_torque — update_engine_revs' second
                                      rev-derived term */
 
-/* $4B61  slip_magnitude — |ELEMENT Y| << 5, CLAMPED
-   ⚠ THE CLAMP LEAVES STATE BEHIND.  When the high byte goes negative the routine bails out
+/* $4B61  slip_magnitude — |element Y| << 5, clamped
+   ⚠ the clamp leaves state behind.  When the high byte goes negative the routine bails out
    with $7F, and both Y (wherever the loop stopped) and SLIP_MAG_LO (part-shifted) keep the
    values that moment left — so a twin that computes the saturated result in one step and
    tidies up afterwards is wrong, and the differential says so. */
@@ -11410,7 +11162,7 @@ void rotate_state_6_into_3(void)
     if (v & 0x8000u) v = (uint16_t)(0x10000u - v);              /* $4B69-$4B74 — |x| */
 
     /* $4B77-$4B86 — five doublings, or as many as fit before the high byte goes negative.  Only
-       the FINAL SLIP_MAG_LO/HI are observed, so the value shifts in one uint16_t and is stored
+       the final SLIP_MAG_LO/HI are observed, so the value shifts in one uint16_t and is stored
        once: on overflow SLIP_MAG_LO keeps its part-shifted low byte, exactly as the 6502's
        per-iteration ASL of the memory cell leaves it. */
     for (count = 5u; ; count--) {
@@ -11422,7 +11174,7 @@ void rotate_state_6_into_3(void)
     mem[SLIP_MAG_HI] = (v & 0x8000u) ? 0x7Fu : (uint8_t)(v >> 8);  /* $4B81, clamp = $7F */
 }
 
-/* $4B51 / $4B47 / $4B42  the three entries of ONE STORE
+/* $4B51 / $4B47 / $4B42  the three entries of one store
    store_slip_signed re-signs (A : math_lo) on bit 7 of the sign byte and puts it in model_state
    element 10 + slip_out_index.  store_slip_clamped is that with the value first held down to
    slip_magnitude's, and the third entry skips the clamp while the throttle is down — i.e. ON
@@ -11436,7 +11188,7 @@ void store_slip_signed_core(uint8_t valueHi)
 {
     /* The 6502 hands the value over split (A : math_lo) because it has no
        word register, but inside the routine it is one uint16_t — so the negate is a negate, not a
-       negate plus a re-split.  math_lo and math_hi are still written: they are OBSERVED 6502
+       negate plus a re-split.  math_lo and math_hi are still written: they are observed 6502
        output cells, not lanes of a local (math_hi keeps the pre-negate high byte). */
     uint16_t v = (uint16_t)(math_lo | ((unsigned)valueHi << 8));
     if (mem[SLIP_SIGN] & 0x80u) {                   /* $4B51 BIT N — bit 7 means "negative" */
@@ -11452,7 +11204,7 @@ void store_slip_signed_core(uint8_t valueHi)
 
 void store_slip_clamped_core(uint8_t valueHi)
 {
-    /* ⚠ The clamp's predicate is a HIGH-BYTE compare, not a 16-bit one — the 6502 tests A
+    /* ⚠ The clamp's predicate is a high-BYTE compare, not a 16-bit one — the 6502 tests A
        against slip_magnitude's high byte alone and never looks at the low lanes.  Written wide
        the two are different predicates whenever the high bytes are equal, so the compare stays
        a byte compare even though the value it selects is a word
@@ -11474,19 +11226,19 @@ void store_slip_clamped_off_throttle_core(uint8_t valueHi)
     store_slip_clamped_core(valueHi);
 }
 
-/* $4B88  derive_slip_reference — THE REFERENCE TERM, AND THE CARRY
+/* $4B88  derive_slip_reference — the reference term, and the carry
    Sets up everything the store above needs — which element (slip_out_index = X + 2), what sign
-   (SLIP_SIGN), and the value (A : math_lo) — and answers with a CARRY: set means it declined,
+   (SLIP_SIGN), and the value (A : math_lo) — and answers with a carry: set means it declined,
    which is the one bit both its callers branch on.
 
    Two arms, and which is which is the thing to get right: pedal_mode == 1 is the throttle, so
-   `LDY pedal_mode / DEY / BEQ` sends the THROTTLE to the gear-based arm at $4BAF (where only
-   the driven axle, X == 1, is answered at all — the other gets a bare `SEC`), while OFF the
+   `LDY pedal_mode / DEY / BEQ` sends the throttle to the gear-based arm at $4BAF (where only
+   the driven axle, X == 1, is answered at all — the other gets a bare `SEC`), while off the
    throttle the reference is the car's own speed, |element 9| << 5, against grip_limit[X],
    three-quartered for the axle that is not X == 1.  Either way the term is multiplied by
    pedal_amount and, on the throttle, halved. */
 /* derive_slip_reference answers with a small pair: the reference term's high byte (its low byte is
-   left in math_lo, the 6502's own split) and whether it DECLINED — the carry the 6502 returned. */
+   left in math_lo, the 6502's own split) and whether it declined — the carry the 6502 returned. */
 
 SlipRef derive_slip_reference_core(uint8_t axle)
 {
@@ -11501,12 +11253,12 @@ SlipRef derive_slip_reference_core(uint8_t axle)
 
     uint8_t ref;
     if (onThrottle) {                                           /* $4B8E-$4B90 DEY/BEQ */
-        /* ON THE THROTTLE — $4BAF-$4BBA. */
+        /* On the throttle — $4BAF-$4BBA. */
         if (axle != 1u) { SlipRef r = { element, 1 }; return r; } /* $4BB1 → $4BCD: declined */
         mem[SLIP_SIGN] = (uint8_t)(gear_index - 1u);             /* $4BB3-$4BB6 */
         ref = mem[SLIP_REV_TERM];                                /* $4BBA */
     } else {
-        /* OFF THE THROTTLE — $4B93-$4BAC. */
+        /* Off the throttle — $4B93-$4BAC. */
         slip_magnitude_core(9);                                  /* |car_speed| << 5 */
         mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_SPEED) ^ 0x80u);      /* $4B98-$4B9B */
         ref = mem[MEM_grip_limit + axle];                       /* $4B9F */
@@ -11527,23 +11279,20 @@ SlipRef derive_slip_reference_core(uint8_t axle)
     return r;
 }
 
-/* $4A91  check_wheel_slip — IS THIS AXLE SLIDING?
-   ⚠ TWO NON-OBVIOUS THINGS, both of which a plain reading of the name would miss.
+/* $4A91  check_wheel_slip — is this axle sliding?
+   Negate the accumulator, shift it left five into element 10, and compare max + min/2 of
+   elements 10 and 12 (the road pass's cheap hypotenuse) against grip_limit.  ⚠ Equal is not
+   over: `BNE` past the `CLC` means only a strictly greater magnitude sets the bit.  The bit is
+   `ROR`ed into slip_flags, so the squeal answers to the last two frames.
 
-   (a) THE PHP/PLP CARRIES ONE BIT ACROSS THE ARITHMETIC.  `ORA` answers "is the accumulator
-   zero at all", and that answer has to survive a negate and five shifts, so the 6502 parks it
-   on the stack.  The push leaves a byte the differential compares, so the pair is reproduced.
-
-   (b) A SATURATED SHIFT IS A SLIP.  If the shifted high byte has the SAME sign as the original
-   (they should differ — the value was negated first), the shift overflowed, and $4AB2 goes
-   straight to the `ROR` with C already set.  That is the whole of $4AAE-$4AB2 and it is a
-   second, independent slip test hiding inside the first.
-
-   Otherwise: the two magnitudes are combined as max + min/2 — alpha-max-plus-beta-min, the
-   same cheap hypotenuse the road pass uses — and compared against grip_limit.  ⚠ EQUAL is not
-   over: `BNE` past the `CLC` means only a strictly greater magnitude sets the bit. */
-/* The two-bit slip history is two ENGINE frames long (update_slip_sound clamps on either),
-   so it rolls on the slow tick; the steps in between OR their answer into the newest bit, which
+   ⚠ The PHP/PLP carries one bit across the arithmetic: `ORA` answers "is the accumulator zero
+   at all", and that has to survive a negate and five shifts.  The pushed byte is compared by
+   the differential, so the pair is reproduced.
+   ⚠ A saturated shift is a slip: if the shifted high byte has the same sign as the original
+   (it should differ, the value was negated), the shift overflowed and $4AB2 goes straight to
+   the `ROR` with C set ($4AAE-$4AB2). */
+/* The two-bit slip history is two engine frames long (update_slip_sound clamps on either), so
+   it rolls on the slow tick; the steps in between OR their answer into the newest bit, which
    keeps "slipped at any time in the last two frames" true over any step size. */
 static void slip_history_push(uint8_t axle, int over)
 {
@@ -11566,7 +11315,7 @@ static void slip_history_push(uint8_t axle, int over)
     uint8_t  shiftedLo = (uint8_t)shifted;
     ms_set_hi((uint8_t)(MS_SLIP + axle), shiftedHi);
 
-    /* $4AAC-$4AB2 — a SATURATED SHIFT IS A SLIP.  The negate should have flipped the sign, so if
+    /* $4AAC-$4AB2 — a saturated SHIFT is a slip.  The negate should have flipped the sign, so if
        the shifted high byte still agrees in sign with the pre-negate value the shift overflowed;
        that goes straight to the history roll with the over-limit bit already set.  A zero
        accumulator skips the test entirely. */
@@ -11576,7 +11325,7 @@ static void slip_history_push(uint8_t axle, int over)
     }
 
     /* ⚠ the two lanes are stored either side of the saturation bail-out above, so this one
-       cannot be folded into the high store — a slip leaves element 10's low lane STALE. */
+       cannot be folded into the high store — a slip leaves element 10's low lane stale. */
     ms_set_lo((uint8_t)(MS_SLIP + axle), shiftedLo);  /* $4AB4-$4AB6 */
 
     /* $4AB9 — derive_slip_reference sets SLIP_SIGN / SLIP_OUT_INDEX / (hi : math_lo) and answers
@@ -11587,7 +11336,7 @@ static void slip_history_push(uint8_t axle, int over)
     uint8_t ref;
     if (sr.declined) {
         /* $4ABE-$4ACC — it declined, so element 12 is cleared and the reference is element 10's
-           own magnitude.  ⚠ BOTH indices are absolute 12 here, not 12 + axle — and it provably
+           own magnitude.  ⚠ both indices are absolute 12 here, not 12 + axle — and it provably
            makes no difference: this arm needs pedal_mode == 1 AND X != 1, and X is 0 or 1, so X
            is 0 and `+ 12` IS `+ 12 + axle` (the absolute operands are the 6502 saving bytes). */
         model_state_16[MS_SLIP_REF] = 0u;
@@ -11604,13 +11353,13 @@ static void slip_history_push(uint8_t axle, int over)
                                      : ((m10 >> 1) + m12));
     }
 
-    /* $4AED-$4AF3 — over the limit?  EQUAL is not over.  Roll the one-bit answer into the two
+    /* $4AED-$4AF3 — over the limit?  Equal is not over.  Roll the one-bit answer into the two
        frames of slip history. */
     int over = (ref > mem[MEM_grip_limit + axle]);
     slip_history_push(axle, over);
 }
 
-/* $4AF7  clamp_slip_to_grip — WHAT SLIPPING DOES TO THE MODEL
+/* $4AF7  clamp_slip_to_grip — what slipping does to the model
    Run once update_slip_sound has seen slip in either of the last two frames: element 12 + X is
    zeroed, element 10 + X is held at grip_limit_alt[X] (twice, by two different routes — first
    unconditionally through store_slip_clamped, then again against derive_slip_reference's own
@@ -11640,25 +11389,24 @@ static void slip_history_push(uint8_t axle, int over)
     math_lo = 0x00u;
     store_slip_clamped_off_throttle_core(grip);                 /* $4B24/$4B28 */
     if (pedal_mode != 1u) return;                              /* $4B2B-$4B2E BNE — off throttle */
-    /* $4B30-$4B32 — DEAD AS A DECISION, and worth knowing.  Reaching here needs
-       derive_slip_reference to have ACCEPTED (declined 0) with pedal_mode == 1, and its throttle
-       arm only accepts for axle == 1 — so `CPX #0` can never be equal and this branch never
-       taken.  Kept because it is what the 6502 does; a sabotage that deletes it survives the
-       differential, which is the evidence for the claim rather than a gap in the fixture. */
+    /* $4B30-$4B32 — dead as a decision.  Reaching here needs derive_slip_reference to have
+       accepted (declined 0) with pedal_mode == 1, and its throttle arm accepts only for
+       axle == 1, so `CPX #0` is never equal and the branch is never taken.  Kept because the
+       6502 has it; the differential cannot see it. */
     if (axle == 0u) return;
     model_state_16[MS_SLIP + axle] = 0u;                       /* $4B34-$4B39 */
 }
 
 /* $0B6E / $0B4A / $0B47  the MOS SOUND path
    sound_queue fills in one field of one 8-byte MOS SOUND control block and hands the block to
-   OSWORD 7.  The slot the caller names picks the block TWO on from the base (`A << 3` then
-   `+ $10`), Y is the amplitude, and the CHANNEL is read back out of the block's own first byte
+   OSWORD 7.  The slot the caller names picks the block two on from the base (`A << 3` then
+   `+ $10`), Y is the amplitude, and the channel is read back out of the block's own first byte
    so sound_chan_state can be marked busy — the block, not the caller, is what says which
    channel this is.  X is the low byte of the OSWORD block address and `LDY #$0B` its high
    byte, which is why $0B00 is where these blocks have to live.
 
    ⚠ The caller's X is parked in sound_saved_x across the call and restored by sound_osword.
-   That byte is a spare, NOT a self-modified operand — no instruction covers $0B46.
+   That byte is a spare, not a self-modified operand — no instruction covers $0B46.
    ⚠ sound_queue's `ADC #$10` leaves C and V live all the way to the exit: nothing below it
    writes either flag. */
 /* The Y the MOS left after the last sound OSWORD (mos.cpp §THE SOUND BUFFERS): a buffer offset,
@@ -11686,14 +11434,14 @@ uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
     uint8_t blockLow = (uint8_t)((uint8_t)(slot << 3) + 0x10u);
     unsigned block = 0x0B00u + blockLow;
 
-    mem[block + 2] = amplitude;                                 /* $0B54-$0B55 — the AMPLITUDE field */
+    mem[block + 2] = amplitude;                                 /* $0B54-$0B55 — the amplitude field */
 
-    uint8_t chan = (uint8_t)(mem[block] & 3u);                  /* $0B58-$0B5D — the CHANNEL */
+    uint8_t chan = (uint8_t)(mem[block] & 3u);                  /* $0B58-$0B5D — the channel */
     mem[MEM_sound_chan_state + chan] = 0x07u;                       /* $0B5E-$0B60 — the OSWORD 7 marker */
     return sound_osword_core(0x07u, blockLow).y;               /* $0B63 — OSWORD 7 (SOUND) */
 }
 
-/* $0B65  sound_envelope — DEFINE ONE MOS SOUND ENVELOPE
+/* $0B65  sound_envelope — define one MOS SOUND ENVELOPE
    The sibling entry to sound_queue: same OSWORD tail, different reason code.  The caller names
    an envelope by the base of its 14-byte definition block, and $38 is where those blocks sit
    inside the $0B00 page ($0B38 onward, just past the five SOUND control blocks at $0B10-$0B37),
@@ -11703,7 +11451,7 @@ uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
    Taken for the marshalling rather than the milliseconds — it was the last non-oracle holder of
    the sound_osword 6502-ABI shim outside reset_driving_variables, and the volume-step routine
    ($0F2C) reached it through that shim on every volume change.
-   ⚠ The `CLC`/`ADC #$38` is the LAST writer of C and V in the whole routine (mos_call touches no
+   ⚠ The `CLC`/`ADC #$38` is the last writer of C and V in the whole routine (mos_call touches no
    cpu field), so both flags reach the exit and the shim replays them from the operands. */
 MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX)
 {
@@ -11712,11 +11460,11 @@ MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX)
     return sound_osword_core(0x08u, blockLow);                  /* $0B6C — OSWORD 8 (ENVELOPE) */
 }
 
-/* $0E5A  sound_stop_channel — SILENCE ONE CHANNEL
-   Clears sound_chan_state[X] and flushes the MOS buffer X|4, because buffers 4..7 ARE the four
+/* $0E5A  sound_stop_channel — silence one channel
+   Clears sound_chan_state[X] and flushes the MOS buffer X|4, because buffers 4..7 are the four
    sound channels.  Does nothing at all if the channel was already marked idle, which is what
    keeps update_slip_sound from issuing an OSBYTE every frame the car is not sliding.
-   ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to THAT. */
+   ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to that. */
 uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
 {
     /* The caller's A is preserved (PHA/PLA) in the shim, not here — that is exit ABI.  Returns the
@@ -11724,7 +11472,7 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
     if (mem[MEM_sound_chan_state + chan] == 0u)             /* $0E5B-$0E5E — already idle? do nothing */
         return chan;                                    /* X flows through unchanged */
     mem[MEM_sound_chan_state + chan] = 0u;                  /* $0E60-$0E62 */
-    /* MOS ABI: OSBYTE 21 flushes buffer chan|4 (buffers 4..7 ARE the four sound channels); it
+    /* MOS ABI: OSBYTE 21 flushes buffer chan|4 (buffers 4..7 are the four sound channels); it
        preserves X and Y, and the buffer bit is taken back off.  ⚠ Y is a dead input the MOS
        ignores, but the real 6502 hands it whatever was ambient at the call site and the
        differential logs it — so the caller threads that ambient Y in for fidelity (it is NOT
@@ -11734,11 +11482,11 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
     return (uint8_t)(r.x & 0xFBu);                      /* $0E6E-$0E71 */
 }
 
-/* $4779  update_slip_sound — THE TYRE SQUEAL
+/* $4779  update_slip_sound — the tyre squeal
    Called twice per frame, X = 1 then X = 0 — once per axle.  Three outcomes:
 
      car_height >= 2 (not under power)   silence channel 3 and do nothing else
-     slip in either of the last 2 frames  clamp_slip_to_grip, and START the squeal if
+     slip in either of the last 2 frames  clamp_slip_to_grip, and start the squeal if
                                           channel 3 is not already playing
      no slip                              silence channel 3, but only on the frames where
                                           bit 1 of loop_counter is clear — a two-frame
@@ -11750,7 +11498,7 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
 {
     if (car_height < 0x02u) {                       /* $4779-$477D CMP #2 / BCS → the silence arm */
         check_wheel_slip_core(axle);                 /* $477F */
-        if (mem[MEM_slip_flags + axle] & 0xC0u) {    /* $4782-$4787 — slip in the last TWO frames */
+        if (mem[MEM_slip_flags + axle] & 0xC0u) {    /* $4782-$4787 — slip in the last two frames */
             clamp_slip_to_grip_core(axle);
             if (mem[MEM_sound_chan_state + 3] == 0u) {   /* $4798-$479B — already playing? */
                 /* $479D-$47A1 — slot 3, amplitude 1.  The 6502 still holds the axle in X here,
@@ -11764,35 +11512,29 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
     sound_stop_channel_core(3u, ambientY);           /* $478F-$4791 — Y flows through to the OSBYTE 21 */
 }
 
-/* $0E74  engine_sound_update — ONE STEP OF THE ENGINE NOTE
-   Called four times per PAINTED frame from race_main_loop, and each call moves engine_note one
-   unit toward engine_note_target, then re-pitches the engine from it:
+/* $0E74  engine_sound_update — one step of the engine note
+   Called four times per painted frame from race_main_loop; each call moves engine_note one unit
+   toward engine_note_target, then re-pitches the engine from it:
 
        note >= $5C   channel 1 sounds at note-$5C, channel 0 is silenced
-       note <  $5C   channel 1 is queued at amplitude 0 and slot 0 takes the note over instead,
+       note <  $5C   channel 1 is queued at amplitude 0 and slot 0 takes the note instead,
                      pitched at note+$5F (the 6502 spells it (note-$5C)+$BB)
-       note >= $40   channel 2 also sounds, at note-$40 — but only while sound_volume is nonzero
-       note <  $1C   the engine is below its idle floor: silence everything and return
+       note >= $40   channel 2 also sounds, at note-$40, while sound_volume is nonzero
+       note <  $1C   below the idle floor: silence everything and return
 
-   Its first eight instructions are a separate job: if EITHER axle's slip history is negative
-   (slip_flags is two bytes, one per axle) and the User VIA's free-running T2 counter happens to
-   read below $3F, two bits of that counter pick one of four skid pitches and queue slot 3.
-   That is the game's tyre-squeal randomiser, and it is why this routine reads hardware.
+   The first eight instructions are the tyre-squeal randomiser: if either axle's slip history
+   (slip_flags, one byte per axle) is negative and the User VIA's T2 counter reads below $3F,
+   two bits of the counter pick one of four skid pitches and queue slot 3.
 
-   Taken as a twin for the MARSHALLING, not the milliseconds: it was the last transliterated
-   holder of four 6502-ABI sound shims, so each of its four calls a frame drove cpu in and out
-   of sound_queue, sound_queue_default, sound_stop_channel and sound_stop_all.  Now it calls
-   their cores and reconstructs one exit ABI at the end.
-
-   Exit ABI (LIVE — cpu.A reaches mos_irq_a $FC on the Amiga's interrupt seam, so it is a real
-   mem[] byte) and it differs per path:
+   The core calls the sound cores directly and reconstructs one exit ABI at the end.
+   Exit ABI (live: cpu.A reaches mos_irq_a $FC on the Amiga's interrupt seam), per path:
        note already at target -> the CPX's own flags, over whatever the skid block left in A/Y
        note below $1C         -> sound_stop_all's exit (A preserved, X = $FF, N = 1)
        otherwise              -> the last sound_queue's exit (A = 7, Y = $0B, X = sound_saved_x)
-   D = 0 throughout: this is race logic, not one of the eight BCD sites (docs/static-map.md). */
+   D = 0 throughout. */
 
 /* The MOS SOUND control block for one slot is sound_blocks + $10 + slot*8 (sound_queue_core
-   forms the same address); field +4 is the block's PITCH byte, the one this routine writes. */
+   forms the same address); field +4 is the block's pitch byte, the one this routine writes. */
 #define SOUND_BLOCK_PITCH(slot) (0x0B00u /* sound_blocks */ + 0x10u + ((slot) * 8u) + 4u)
 
 SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
@@ -11804,7 +11546,7 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
     unsigned n = (unsigned)(a >> 7), z = (a == 0u), c = entryC, v = entryV;
 
     if (sim_note_budget_on) {
-        /* four calls per ENGINE frame (sim_note_budget_on): none owed, nothing to do */
+        /* four calls per engine frame (sim_note_budget_on): none owed, nothing to do */
         if (sim_note_steps_owed == 0u) {
             SlotExit idle;
             idle.a = a; idle.x = x; idle.y = y;
@@ -11897,73 +11639,31 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
 }
 
 /* The eight sub-models: apply_driving_model's tree, less its plumbing (the multiply, the
-   16-bit arithmetic, the rotations/integrations, the slip/sound cluster).  These talk to the
-   rest of the engine.
+   16-bit arithmetic, the rotations/integrations, the slip/sound cluster).
 
-     $0D01 compute_car_angles     the heading -> the sin/cos pair every rotation resolves
-                                  through: TWO polynomial evaluations of one pi-scaled angle,
-                                  the second on its reflection about pi/2
-     $4610 scale_by_track_gradient  a caller's byte x the track's gradient at position Y
-     $49CE update_engine_revs     the starter poll, the rev model, a four-segment power curve
-                                  and the stall
-     $4BCF update_grip_limits     the two per-axle grip thresholds
-     $4C65 apply_drag_terms       two speed-dependent terms into state elements 6 and 7
+     $0D01 compute_car_angles        the heading -> the sin/cos pair every rotation uses
+     $4610 scale_by_track_gradient   a caller's byte x the track's gradient at position Y
+     $49CE update_engine_revs        the starter poll, the rev model, the power curve, the stall
+     $4BCF update_grip_limits        the two per-axle grip thresholds
+     $4C65 apply_drag_terms          two speed-dependent terms into state elements 6 and 7
      $4DC9 begin_jump
-     $4DCB begin_jump_from_a      the car loses control
-     $44EA update_camera_and_height  the biggest routine in the tree, four jobs in one
+     $4DCB begin_jump_from_a         the car loses control
+     $44EA update_camera_and_height  the camera, the section yaw and the car's height */
 
-   What the group computes:
+/* The car-angle array, out of mem[]
+   The 6502 kept the three entries plane-split, low bytes at $62A0-$62A2 and high bytes at
+   $62A3-$62A5.  Here they are three `uint16_t`, one word per access at all thirteen native
+   sites.
 
-   1. `compute_car_angles` IS A SINE AND A COSINE, one polynomial run twice.  The heading is
-      multiplied by pi ($C9/256 = pi/4, shifted twice); a cubic-ish term ($AB x h^3) is
-      subtracted on the small-angle arm, a quadratic on the large one; the second pass runs on
-      $C900 - h — the reflection that turns sin into cos.  Bit 6 of the heading's high byte
-      picks WHICH element each pass writes, and the two sign bits ORed into bit 0 are bit7(h)
-      and bit7(h) XOR bit6(h): the quadrant in two instructions.
-   2. ⚠ Five bytes of dead code at $0D21-$0D25: `BCC $0D27` at $0D1D and `BCS $0D4F` at $0D1F
-      are together unconditional, so the low-byte tie-break under them can never run.
-      Reproduced anyway (costs nothing); noted so nobody re-derives it.
-   3. ⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY — the coast arm's `ADC #7` at $49A6 is
-      reached through six instructions that write no carry, so it adds 7 + the C that
-      `update_grip_limits` returns — and that is always 0, the closing `ROR` of its last mul8.
-   4. `update_grip_limits` GIVES THE TWO AXLES OPPOSITE SIGNS of the load term: $4C52's
-      `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, which hold
-      -(load) and +(load) from $4BE1-$4BE8.  One `,X` is the whole front/rear split.
-   5. THE CHANGED-SURFACE ARM READS THE PICTURE.  `surface_change_0` ($713D) and
-      `surface_change_1` ($7205) are FRAME-BUFFER bytes: both on display line 149 (inside the
-      track band) at MODE 5 pixels 28..31 and 128..131, symmetric about the 160-pixel centre,
-      rewritten every frame by the view rasteriser in the $7B00 page ($7F70 / $7E75).  So the
-      grip model asks what colour the road is under the car's left and right; $FF means the
-      probe is over a solid area.  MEASURED over 600 Silverstone reference frames, wheel held
-      over: $FF in at least one on 27 frames (`grip_disturbance` non-zero on exactly those), in
-      BOTH on 24, so `grip_limit_base_alt_tbl` is reached; `begin_jump` needs a further gate,
-      `section_jump_history` bit 7.  The FIXTURE forces the arm (randomised memory reaches $FF
-      in both bytes once in 65536); the PORT reaches it unaided — `make determinism-drive` hits
-      both cells on 22 of its 300 frames — so no new gate is owed.
-   6. ⚠ Two things here cannot be sabotaged, both properties of the code rather than fixture
-      holes (docs/validation-harness.md §FIFTEENTH):
-        * the `AND #$FE` in BOTH of `compute_car_angles`' arms is defensive — the value comes
-          from an `ASL` in one and `0 - (an ASL result)` in the other, so bit 0 is already 0.
-          Checked on both arms, which is what separates it from a coverage hole;
-        * `update_engine_revs`' power curve is CONTINUOUS at all three breakpoints ($BA, $B6,
-          $A2), so moving one changes nothing.  Sabotage a segment's OFFSET or SLOPE instead. */
+   ⚠ Sign-magnitude, not two's complement: bit 0 of the low byte is the sign and the magnitude
+   sits above it.  compute_car_angles builds each element as `(magnitude << 1) | sign` and
+   mul16_signed reads bit 0 as its multiplier's sign.  No reader may treat one of these words
+   as a signed quantity: magnitude is `w >> 1`, sign is `w & 1`.
 
-/* THE CAR-ANGLE ARRAY, relocated out of mem[]
-   The three-entry array the 6502 kept PLANE-SPLIT — low bytes at $62A0-$62A2, high bytes at
-   $62A3-$62A5 — so element i cost two strided byte accesses to read and two to write.  Here it
-   is three `uint16_t`, and every one of its thirteen native sites reads or writes one word.
-
-   ⚠ SIGN-MAGNITUDE PACKING, NOT two's complement.  Bit 0 of the low byte is the SIGN and bit 7
-   is the value's own lowest bit: compute_car_angles builds each element as `(magnitude << 1) |
-   sign` (its ASL/ROL pair) and mul16_signed reads bit 0 as its MULTIPLIER's sign.  The packing IS
-   exactly a 16-bit word, which is why (B) applies at all — but NO reader may treat one of these
-   words as a plain signed quantity.  Magnitude is `w >> 1`, sign is `w & 1`.
-
-   THE INVARIANT AT THE 6502-ABI BOUNDARY: mem[$62A0-$62A5] and car_angle_16[] agree at every
-   shim.  A shim whose core READS the array marshals in; one whose core WRITES it marshals out
-   (and marshals in first, because no writer owns all three elements — compute_car_angles owns
-   the sin/cos pair, the steering path owns element 2).  That also means an unknown
-   transliterated writer of these cells is still picked up: the next shim re-reads mem[]. */
+   At the 6502-ABI boundary mem[$62A0-$62A5] and car_angle_16[] agree at every shim.  A shim
+   whose core reads the array marshals in; one whose core writes it marshals in and out, since
+   no writer owns all three elements (compute_car_angles owns the sin/cos pair, the steering
+   path element 2).  So a transliterated writer is still picked up by the next shim. */
 uint16_t car_angle_16[3];
 
 void car_angle_marshal_in(void)
@@ -11981,21 +11681,23 @@ void car_angle_marshal_out(void)
     }
 }
 
-/* $0D01  compute_car_angles — THE SIN/COS PAIR
-   Takes the player's heading in A (high) and X (low) and leaves car_angle elements 0 and 1 —
-   the pair every `apply_angle_term` in the tree multiplies a state element by.  One angle
-   evaluation, run twice: first on h = heading x pi, then on its reflection $C900 - h, with bit
-   6 of the heading's high byte choosing which element gets which.  The tail ORs the quadrant's
-   two sign bits into bit 0 of each low byte, which is where the sign lives for this pair.
+/* $0D01  compute_car_angles — the sin/cos pair
+   Takes the heading in A (high) and X (low) and leaves car_angle elements 0 and 1, the pair
+   every apply_angle_term multiplies by.  One polynomial, run twice: the heading is multiplied
+   by pi ($C9/256 = pi/4, shifted twice), a cubic term ($AB x h^3) is subtracted on the
+   small-angle arm and a quadratic on the large one, and the second pass runs on $C900 - h, the
+   reflection that turns sin into cos.  Bit 6 of the heading's high byte picks which element
+   each pass writes; the two sign bits ORed into bit 0 are bit7(h) and bit7(h) XOR bit6(h),
+   the quadrant.
 
-   WRITTEN AS PLAIN 16-BIT C.  Every ADC/SBC/ROR byte-pair chain here is ordinary binary
-   arithmetic with D = 0 (the driving model's precondition — docs/static-map.md §Decimal mode),
-   the three `mul8` steps are `(a * b) >> 8`, and the two loop passes become an explicit
-   two-iteration loop over the reflected angle.  The five dead bytes at $0D21 (group header,
-   item 2) simply do not appear.  The routine leaves only car_angle[0]/[1]; its exit registers
-   and its arithmetic scratch ($42, $74-$79, $7B) are dead — apply_driving_model's next call,
-   rotate_state_0_into_8, opens by reloading X, Y and A — so the fixture verifies the four
-   output bytes only. */
+   The five bytes at $0D21-$0D25 are dead code (`BCC $0D27` at $0D1D and `BCS $0D4F` at $0D1F
+   are together unconditional), so the low-byte tie-break under them does not appear here.  The
+   `AND #$FE` in both arms is defensive: bit 0 is already 0 (an `ASL` in one arm, 0 minus an
+   `ASL` result in the other), so a defect there cannot show.
+
+   Plain 16-bit C (D = 0); the three mul8 steps are `(a * b) >> 8`.  The exit registers and
+   scratch ($42, $74-$79, $7B) are dead (rotate_state_0_into_8, next, reloads X, Y and A), so
+   the fixture verifies the four output bytes. */
 /* promoted for revs_native_abi.c */ void compute_car_angles_core(uint16_t heading)
 {
     /* $0D01-$0D0C — h = heading x pi, as a 16-bit value ($C9/256 x 4 = pi to three figures). */
@@ -12011,7 +11713,7 @@ void car_angle_marshal_out(void)
     for (int pass = 0; pass < 2; pass++) {
         uint16_t angle_w;
         if ((uint8_t)(h >> 8) < 0x7Au) {
-            /* $0D27-$0D4C — the SMALL-ANGLE arm: (h - ($AB/256) h^3) doubled.  Three
+            /* $0D27-$0D4C — the small-angle arm: (h - ($AB/256) h^3) doubled.  Three
                multiplies by h's high byte, the last of them a 16x8 fixed-point step. */
             uint8_t  hh   = (uint8_t)(h >> 8);
             uint16_t cube = (uint16_t)(0xABu * hh);              /* $AB * h_hi */
@@ -12020,8 +11722,8 @@ void car_angle_marshal_out(void)
             uint16_t res = (uint16_t)((h - cube) << 1);          /* the sine, doubled */
             angle_w = (uint16_t)(res & 0xFFFEu);   /* bit 0 belongs to the sign the tail ORs in */
         } else {
-            /* $0D4F-$0D7C — the LARGE-ANGLE arm: d = $C900 - h, then -(2 x d x d_hi >> 8),
-               SATURATED to -2 ($FFFE) when that doubled term is zero (the negate does not
+            /* $0D4F-$0D7C — the large-angle arm: d = $C900 - h, then -(2 x d x d_hi >> 8),
+               saturated to -2 ($FFFE) when that doubled term is zero (the negate does not
                borrow). */
             uint16_t d  = (uint16_t)(0xC900u - h);               /* the reflection */
             uint16_t dd = (uint16_t)(((uint32_t)d * (uint8_t)(d >> 8)) >> 8);
@@ -12041,22 +11743,18 @@ void car_angle_marshal_out(void)
     if (((heading << 1) ^ heading) & 0x8000u) car_angle_16[1] |= 0x0001u;
 }
 
-/* $4610  scale_by_track_gradient — A x THE TRACK'S GRADIENT
+/* $4610  scale_by_track_gradient — A x the track's gradient
    A x |track_dir_1[Y]| / 256, re-signed by track_dir_1[Y] EOR track_direction.  Both of
-   update_camera_and_height's camera terms go through it: the yaw-derived one and the
-   player's own car_section_along, i.e. distance along the section times the local slope — the
-   CLIMB the camera has made since the section's origin.  (This was read as camber while it was
-   still open which of the pair was along and which across; $0164 is the ALONG one, measured
-   2026-09-08 — see the car_section_along row in symbols.csv.)
+   update_camera_and_height's camera terms go through it: the yaw-derived one and the player's
+   car_section_along, i.e. distance along the section times the local slope, the climb since
+   the section's origin ($0164 is the along coordinate; symbols.csv car_section_along).
 
-   WRITTEN AS PLAIN C.  The 6502 carried the EOR's sign across the abs8+multiply on the stack
-   (PHP $4617 / PLP $4621) only because abs8 branches on the CALLER's N; in C the two signs are
-   just two bytes.  |grad| ≤ 0x80 and value ≤ 0xFF, so the product's high byte is ≤ 0x7F — bit 7
-   is always clear — which is why the re-signed high byte's bit 7 IS the exit N in both sign arms
-   (the negative arm sets N from -(high); the positive arm's restored EOR status has N = eor.7 = 0
-   = high.7).  Returns that re-signed high byte; math_lo/math_hi are set as the oracle does.  The
-   full exit flag ABI (N/Z/C/V, with C/V passing through the caller's in the positive arm) is
-   replayed in the shim; the two native callers here consume the returned byte directly. */
+   The 6502 carried the EOR's sign across abs8 and the multiply on the stack (PHP $4617 /
+   PLP $4621) because abs8 branches on the caller's N; here the two signs are two bytes.
+   |grad| ≤ 0x80 and value ≤ 0xFF, so the product's high byte is ≤ 0x7F, and the re-signed
+   high byte's bit 7 is the exit N on both arms.  Returns that byte; math_lo/math_hi are set as
+   the oracle does.  The shim replays the full exit flags (N/Z/C/V, with C/V the caller's on the
+   positive arm); the two native callers use the returned byte. */
 static uint8_t scale_by_track_gradient_core(uint8_t value, uint8_t index)
 {
     uint8_t gradByte = mem[MEM_track_dir_1 + index];                        /* $4612/$4618 */
@@ -12072,10 +11770,10 @@ static uint8_t scale_by_track_gradient_core(uint8_t value, uint8_t index)
     return (eor & 0x80u) ? (uint8_t)(-(int)high) : high;                /* $4622 abs8: re-sign high */
 }
 
-/* $461B — SCALE_BY_TRACK_GRADIENT'S TAIL, an entry of its own.  Three of the five
+/* $461B — scale_by_track_gradient's tail, an entry of its own.  Three of the five
    expansion circuits jump straight here from $57BC after pushing their own sign byte, so the
    entry ABI is A = the value, N = its sign (the $3450 BPL tests N, not bit 7 of A) and
-   math_hi = the multiplier the hook parked in $75.  Returns the product's high byte BEFORE the
+   math_hi = the multiplier the hook parked in $75.  Returns the product's high byte before the
    $4622 re-sign, which the shim applies from the P the caller stacked. */
 uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
 {
@@ -12085,7 +11783,7 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
     return (uint8_t)(p >> 8);
 }
 
-/* $4DC9 / $4DCB  begin_jump — THE CAR LOSES CONTROL
+/* $4DC9 / $4DCB  begin_jump — the car loses control
    Seeds the two decaying counters from a severity (road_speed at the $4DC9 entry), nudges the
    frame's heading increment by $80 and halves it, marks car_height as not-under-power and
    queues sound slot 4 — the same slot check_crash's crash arm queues.  It is the milder
@@ -12094,7 +11792,7 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
 {
     car_vertical_speed = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
     if (sim_h_q16) {
-        /* THE ORIGINAL ARC, NOT THE CONTINUOUS ONE.  The engine subtracts gravity BEFORE it
+        /* The original arc, not the continuous one.  The engine subtracts gravity before it
            moves the car (semi-implicit Euler at 93.6 ms), which is continuous flight launched
            g/2 slower: a severity-$30 jump peaks at 61 and lands after 11 frames, where exact
            physics gives 72 and 12.  Finer steps converge on the exact arc (measured 71 at
@@ -12112,23 +11810,23 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
     /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last thing
        begin_jump does, so its exit ABI IS sound_queue_default's; the caller's X (untouched here) is
        what sound_queue parks in sound_saved_x.  Return the residue the update_camera caller reads:
-       the OSWORD's exit Y and the block ADD's C/V; the begin_jump shims replay the full exit ABI. */
+       the OSWORD's exit Y and the block add's C/V; the begin_jump shims replay the full exit ABI. */
     JumpExit e;
     e.y = sound_queue_core(0x04u, sound_volume, savedX);
     { BlockCV cv = sound_queue_block_cv(0x04u); e.c = cv.c; e.v = cv.v; }
     return e;
 }
 
-/* $4C65  apply_drag_terms — TWO SPEED-DEPENDENT TERMS
+/* $4C65  apply_drag_terms — two speed-dependent terms
    The first sub-model past the off-power gate.  Term one: |lateral_speed_entry_hi| floored at
-   road_speed (and DOUBLED while grip_disturbance is non-zero), squared against the same
+   road_speed (and doubled while grip_disturbance is non-zero), squared against the same
    magnitude, added into state element 6.  Term two: (road_speed x wing_drag_coeff + 8) times
    term one's pre-square magnitude, added into element 7.  Both grow with speed, both take
-   their SIGN from a cell rather than from themselves — element 6's from the accumulator's
+   their sign from a cell rather than from themselves — element 6's from the accumulator's
    entry value, element 7's from car_speed_hi — because add_signed_into_element branches on the
    caller's N.
 
-   ⚠ It reads the accumulator as it was on ENTRY to apply_driving_model, not as this frame's
+   ⚠ It reads the accumulator as it was on entry to apply_driving_model, not as this frame's
    sub-models left it. */
 static void apply_drag_terms_core(void)
 {
@@ -12171,26 +11869,27 @@ static void apply_drag_terms_core(void)
     add_signed_into_element_core(7u, ms_hi(MS_SPEED));
 }
 
-/* $4BCF  update_grip_limits — THE TWO PER-AXLE THRESHOLDS
-   Rebuilt every frame from three things: the load term derive_axle_loads left in
-   wheel_load (only while the BRAKE is down — on the throttle or coasting the term is 0), the
-   road speed through wing_grip_coeff, and the two surface bytes.
+/* $4BCF  update_grip_limits — the two per-axle thresholds
+   Rebuilt every frame from the load term derive_axle_loads left in wheel_load (only while the
+   brake is down; on the throttle or coasting it is 0), the road speed through wing_grip_coeff,
+   and the two surface bytes.
 
-   THE FRONT/REAR SPLIT IS ONE `,X`.  $4BE1-$4BE8 stores the shifted load term in
-   hypot_min_hi and its NEGATIVE in hypot_min_lo, and $4C52's `ADC $78,X` picks between them by
-   axle — so the load shifts grip onto one axle and off the other, which is what weight
-   transfer looks like.
+   The front/rear split is one `,X`: $4BE1-$4BE8 stores the shifted load term in hypot_min_hi
+   and its negative in hypot_min_lo, and $4C52's `ADC $78,X` picks one by axle, so the load
+   moves grip from one axle to the other (weight transfer).
 
-   ⚠ The changed-surface arm ($4C06-$4C21) is dead on this release; see the group header.
-   Kept whole, hardware read included, and the fixture forces it.
+   The changed-surface arm reads the picture.  surface_change_0 ($713D) and surface_change_1
+   ($7205) are frame-buffer bytes on display line 149, at MODE 5 pixels 28..31 and 128..131,
+   rewritten every frame by the view rasteriser ($7F70 / $7E75): the grip model asks what colour
+   the road is under the car's left and right, and $FF means a solid area.  $FF in either byte
+   sets grip_disturbance, and in both swaps in grip_limit_base_alt_tbl; begin_jump also needs
+   section_jump_history bit 7.
 
-   WRITTEN AS PLAIN 8/16-BIT C.  With D = 0 (docs/static-map.md §Decimal mode) the byte-pair
-   arithmetic is ordinary binary: the load-term shift is an arithmetic `>> 3`, `mul8` is
-   `(a * b) >> 8`, and abs8 is a sign test on car_speed_hi.  The load term lives in two locals
-   rather than in hypot_min_lo/hi, and the surface-AND in one rather than shared_temp_77 — all
-   of which are dead scratch here (update_engine_revs, the next call, opens with `LDA
-   engine_running`).  The outputs are grip_disturbance, grip_limit[0..1] and grip_limit_alt[0..1]
-   plus whatever begin_jump writes; the fixture verifies those. */
+   Plain 8/16-bit C (D = 0): the load-term shift is an arithmetic `>> 3`, mul8 is
+   `(a * b) >> 8`, abs8 a sign test on car_speed_hi.  The load term and the surface AND live in
+   locals, not hypot_min_lo/hi and shared_temp_77, which are dead here (update_engine_revs,
+   next, opens with `LDA engine_running`).  The outputs, which the fixture verifies, are
+   grip_disturbance, grip_limit[0..1], grip_limit_alt[0..1] and whatever begin_jump writes. */
 void update_grip_limits_core(void)
 {
     int axle;
@@ -12208,17 +11907,14 @@ void update_grip_limits_core(void)
     loadForAxle[0] = (uint8_t)(-(int)load);               /* axle 0 gets -(load)... */
     loadForAxle[1] = (uint8_t)load;                       /* ...axle 1 gets +(load) */
 
-    /* $4BEE-$4C24 — has the surface changed?  $FF in EITHER surface byte opens the (dead-on-
-       this-release) disturbance arm; $FF in BOTH also swaps in the alternate grip base below.
-       The begin_jump test reads grip_disturbance as it was BEFORE this frame's write. */
+    /* $4BEE-$4C24 — has the surface changed?  $FF in either surface byte opens the disturbance
+       arm; $FF in both also swaps in the alternate grip base below.  The begin_jump test reads
+       grip_disturbance as it was before this frame's write. */
 #ifdef REVS_SURFACE_PROBE_CHECK
-    /* THE PUBLISH'S ORACLE (`make SURFPROBE=1`, host).  The renderer's published probe must
-       equal the frame-buffer byte the model would have read — the whole claim of the change, and
-       an in-process, same-frame, same-data comparison of the two.  It runs on the host under
-       `make determinism-drive`, whose 300 driving frames reach the $FF arm on 22 of them.
-       ⚠ Its scope: it proves the VALUE agrees while the sweep still writes `mem[]`.  It cannot
-       prove anything once those stores are gone — by then there is nothing to compare against,
-       which is exactly why the agreement has to be established FIRST. */
+    /* The published probe's oracle (`make SURFPROBE=1`, host): the renderer's published probe
+       must equal the frame-buffer byte the model would have read, same frame, same data
+       (`make determinism-drive` reaches the $FF arm).  It proves the value only while the sweep
+       still writes mem[]. */
     {
         extern int printf(const char*, ...);
         static unsigned long checks = 0, bad = 0;
@@ -12229,7 +11925,7 @@ void update_grip_limits_core(void)
                        checks, g_surfaceProbe[0], g_surfaceProbe[1],
                        (unsigned)surface_change_0, (unsigned)surface_change_1);
         }
-        if ((checks % 20u) == 0u)   /* ⚠ a PASS must PRINT: a silent oracle is indistinguishable from one that never ran */
+        if ((checks % 20u) == 0u)   /* ⚠ a PASS must print: a silent oracle is indistinguishable from one that never ran */
             printf("SURFPROBE: %lu checks, %lu mismatch\n", checks, bad);
     }
 #endif
@@ -12237,7 +11933,7 @@ void update_grip_limits_core(void)
     uint8_t oldDisturb  = grip_disturbance;
     uint8_t newDisturb  = 0u;
     if ((SURFACE_BYTE_0 == 0xFFu || SURFACE_BYTE_1 == 0xFFu) && !sim_tick_step && oldDisturb != 0u) {
-        /* The grass bump is a fresh random value each ENGINE frame, so it is held across the
+        /* The grass bump is a fresh random value each engine frame, so it is held across the
            steps between slow ticks — drawn every step it would average the bumps away.  The
            entry edge (old == 0, which can launch a jump) is still taken on any step. */
         newDisturb = oldDisturb;
@@ -12261,7 +11957,7 @@ void update_grip_limits_core(void)
         if (ms_hi(MS_SPEED) & 0x80u)                      /* abs8: sign from car_speed's high byte */
             term = (uint8_t)(-(int)term);
 
-        uint8_t base = (surfaceBoth == 0xFFu)             /* $4C4A — BOTH surface bytes $FF */
+        uint8_t base = (surfaceBoth == 0xFFu)             /* $4C4A — both surface bytes $FF */
                        ? mem[MEM_grip_limit_base_alt_tbl + axle]
                        : (uint8_t)(term + mem[MEM_grip_limit_base_tbl + axle]);
         uint8_t limit = (uint8_t)(base + loadForAxle[axle]);
@@ -12272,38 +11968,42 @@ void update_grip_limits_core(void)
     /* $4C46 — each axle iteration reloads Y from the ANDed surface bytes (0xFF in the both-$FF arm,
        which is the same value), and mul8 preserves it, so the loop's last pass (axle 0) leaves
        Y = surfaceBoth as the routine's exit Y.  That Y survives update_engine_revs and is what
-       update_slip_sound's OSBYTE 21 logs — the one escaping register.  It is NOT part of this
+       update_slip_sound's OSBYTE 21 logs — the one escaping register.  It is not part of this
        result-only fixture, so it is reconstructed by the caller that consumes it (the shim, and
        apply_driving_model_core at the update_slip_sound seam) rather than written here. */
 }
 
-/* $49CE  update_engine_revs — THE ENGINE
-   Four things in one routine, and which one runs is decided in the first eight bytes:
+/* $49CE  update_engine_revs — the engine
+   Four jobs; the first eight bytes decide which runs:
 
-     the STARTER POLL ($4978) with the engine stopped — the T key, and a 1-in-8 chance a frame
-       from the User VIA timer (1-in-32 after a crash: check_crash raises starter_random_mask);
-     the COAST ARM ($499F) whenever the car is not under power, in the pits, or the gears were
-       shifted this frame — revs creep up by 7 toward pedal_amount on the throttle, or fall by
-       $0C to an idle floor of $28, plus 0..7 of timer jitter;
-     the REV MODEL ($49DF) — road speed scaled by gear_rev_ratio_tbl, x2 or x4 depending on
-       whether the first doubling overflowed (the PHP at $49E8 is what remembers that), with
-       the gear-change rev drop layered on top through engine_revs_prev;
-     the TAIL ($4A48) — a FOUR-SEGMENT piecewise power curve in the clamped revs, times
-       gear_torque_tbl, into engine_torque; and engine_note_target = revs + $19.
+     the starter poll ($4978), engine stopped: the T key, and a 1-in-8 chance a frame from the
+       User VIA timer (1-in-32 after a crash: check_crash raises starter_random_mask);
+     the coast arm ($499F), when the car is not under power, in the pits, or changed gear this
+       frame: revs creep up by 7 toward pedal_amount on the throttle, or fall by $0C to an idle
+       floor of $28, plus 0..7 of timer jitter;
+     the rev model ($49DF): road speed scaled by gear_rev_ratio_tbl, x2 or x4 depending on
+       whether the first doubling overflowed (remembered by the PHP at $49E8), with the
+       gear-change rev drop layered on through engine_revs_prev;
+     the tail ($4A48): a four-segment power curve in the clamped revs, times gear_torque_tbl,
+       into engine_torque; and engine_note_target = revs + $19.
 
-   ⚠ THE STALL: below 3 revs the routine INCs engine_running from $FF to 0 and jumps into the
-   coast arm's tail, so the next frame takes the starter poll instead.
-   ⚠ `ADC #7` at $49A6 adds the CALLER'S CARRY — see the group header, item 3.
-   ⚠ $4A37 stores the UNCLAMPED revs and clamps only the copy the power curve reads, so
-   engine_revs can exceed $AA even though the curve never sees more than that. */
+   ⚠ The stall: below 3 revs the routine INCs engine_running from $FF to 0 and jumps into the
+   coast arm's tail, so the next frame takes the starter poll.
+   ⚠ The coast arm's `ADC #7` ($49A6) adds the caller's carry: six instructions with no carry
+   write lead to it, so it adds 7 + update_grip_limits' exit C, which is always 0 (the closing
+   `ROR` of its last mul8).
+   ⚠ $4A37 stores the unclamped revs and clamps only the copy the power curve reads, so
+   engine_revs can exceed $AA.
+   The power curve is continuous at its three breakpoints ($BA, $B6, $A2), so moving one alone
+   changes nothing; a defect in a segment's offset or slope does show. */
 
-/* $4A87-$4A90 — the tail EVERY arm reaches, with A carrying the torque to store.
+/* $4A87-$4A90 — the tail every arm reaches, with A carrying the torque to store.
    ⚠ The off-power arms jump to $4A87, not to $4A7F: they store a zero torque and never touch
    math_lo/math_hi at all.  Getting that boundary wrong is a twin that zeroes the arithmetic
    window on seven paths out of eight, which is exactly what the differential said. */
 static AddFlags engine_note_only(uint8_t torque)
 {
-    /* $4A89-$4A8E — engine_revs + $19.  This is the RTS tail on every arm, so the ADD's
+    /* $4A89-$4A8E — engine_revs + $19.  This is the RTS tail on every arm, so the add's
        N/V/Z/C are the routine's exit flags and A is its exit value: return them (D=0). */
     unsigned sum = (unsigned)engine_revs + 0x19u;
     uint8_t a;
@@ -12338,24 +12038,24 @@ static void engine_revs_from(uint8_t base)
     uint8_t jitter = (uint8_t)(bus_read(USRVIA_T2CL) & 0x07u);       /* $49BD-$49C1 */
     uint8_t a      = (uint8_t)(jitter + base);                      /* $49C3 — ADC (D=0) */
     math_lo = base;                                                 /* $49BB */
-    /* The ADD's exit A/flags are ALWAYS overwritten by a following engine_note_only (every arm
+    /* The add's exit A/flags are always overwritten by a following engine_note_only (every arm
        that reaches this later reruns that tail), so only the two rev cells escape. */
     engine_revs      = a;                                           /* $49C5 */
     engine_revs_prev = a;                                           /* $49C7 */
 }
 
-/* $499F-$49B9 — the COAST ARM: revs creep up by 7 toward pedal_amount on the throttle, or fall
-   by $0C to an idle floor of $28.  ⚠ `ADC #7` adds the CALLER'S CARRY — nothing between the
-   entry and it writes C.  See the group header, item 3. */
+/* $499F-$49B9 — the coast arm: revs creep up by 7 toward pedal_amount on the throttle, or fall
+   by $0C to an idle floor of $28.  ⚠ `ADC #7` adds the caller's carry: nothing between the
+   entry and it writes C (update_engine_revs, above). */
 static uint8_t engine_coast_arm(uint8_t carryIn)
 {
     uint8_t a = engine_revs;                                        /* $499F */
     uint8_t x = (uint8_t)(pedal_mode - 1);       /* $49A1-$49A3 — LDX pedal_mode; DEX (X escapes) */
     if (sim_h_q16) {
-        /* x h (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  Both arms are RATES
+        /* x h (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  Both arms are rates
            per engine frame: the creep adds 7 + carry, and the fall subtracts 12 from wherever
            the creep left it and adds the jitter back — so a failed creep nets 7 + c - 12 + J.
-           The floor is a LEVEL (0x28 + J every frame), so it needs no h. */
+           The floor is a level (0x28 + J every frame), so it needs no h. */
         const int16_t creep = (int16_t)(x == 0 ? 7 + (carryIn ? 1 : 0) : 0);
         uint16_t rem = s_revsRem;
         uint8_t up = (uint8_t)(a + sim_scale(creep, 0u, &rem));
@@ -12376,7 +12076,7 @@ static uint8_t engine_coast_arm(uint8_t carryIn)
         return x;
     }
     if (x == 0) {                                /* $49A4 — pedal_mode == 1: on the throttle */
-        a = (uint8_t)(a + 0x07u + (carryIn ? 1u : 0u));  /* $49A6 — ADC adds the CALLER'S carry (D=0) */
+        a = (uint8_t)(a + 0x07u + (carryIn ? 1u : 0u));  /* $49A6 — ADC adds the caller's carry (D=0) */
         if (a < pedal_amount && a < 0x8Cu) {     /* $49A8-$49AE — creeping up, still in range */
             engine_revs      = a;                /* $49C5 — an arm that reaches engine_note_only next,
                                                     so the CMP flags here are dead */
@@ -12400,7 +12100,7 @@ static void engine_catches(void)
                                                        starter poll replays that as its exit X */
 }
 
-/* $4978-$499B — the STARTER POLL, which is where the whole routine goes while the engine is
+/* $4978-$499B — the starter poll, which is where the whole routine goes while the engine is
    stopped.  The T key alone is not enough: without it a car in gear and rolling push-starts,
    and with it the engine catches only on a frame the User VIA timer allows
    (1-in-8 normally, 1-in-32 after a crash — check_crash raises starter_random_mask). */
@@ -12426,7 +12126,7 @@ static EngineRegs engine_starter_poll(void)
         return r;
     }
     if (!sim_tick_step) {
-        /* The starter's luck is drawn once per ENGINE frame — the slow tick — so the chance
+        /* The starter's luck is drawn once per engine frame — the slow tick — so the chance
            of catching per real second is the original's (1-in-8, or 1-in-32 after a crash).
            On the steps between, the engine keeps cranking where it was. */
         r.x = kr.x; r.y = kr.y;
@@ -12481,7 +12181,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
 
     /* $49DF-$4A00 — the rev model.  A 16-bit (road_speed:frac) is shifted left once, then again
        only if it stayed non-negative; the PHP at $49E8 remembers that "stayed non-negative", and
-       the guarded shift is applied ONCE MORE after the gear ratio — so the scaling is x2 or x4. */
+       the guarded shift is applied once more after the gear ratio — so the scaling is x2 or x4. */
     gear = gear_index;                                             /* $49EF LDX gear_index — exit X */
     {
         uint16_t v = (uint16_t)((((uint16_t)road_speed << 8) | road_speed_frac) << 1); /* $49E5-$49E7 */
@@ -12492,7 +12192,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
         /* $49F2-$49F5 — that high byte x the gear's rev ratio (D=0, multiply flags dead). */
         p = (uint16_t)revs_mulu16(mem[MEM_gear_rev_ratio_tbl + gear], math_hi);
         w = (uint16_t)(p << 1);                                     /* $49F8-$49FA */
-        if (!stayedPos) w = (uint16_t)(w << 1);                     /* $49FC BPL — the OPPOSITE guard:
+        if (!stayedPos) w = (uint16_t)(w << 1);                     /* $49FC BPL — the opposite guard:
                                                     the two guarded shifts straddle the multiply,
                                                     exactly one fires (the PLP restores $49E8's N) */
         math_lo = (uint8_t)w;
@@ -12530,20 +12230,20 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
         if (disarm) { e.y = 0x00u; gear_change_rev_drop = 0x00u; } /* $4A26-$4A28 */
     }
 
-    /* $4A37-$4A45 — the revs land, then the CURVE'S input is clamped and the stall tested.
-       ⚠ engine_revs itself keeps the UNCLAMPED value: only the copy the curve reads is held to $AA. */
-    engine_revs = a;                                               /* $4A37 — the UNCLAMPED value */
+    /* $4A37-$4A45 — the revs land, then the curve's input is clamped and the stall tested.
+       ⚠ engine_revs itself keeps the unclamped value: only the copy the curve reads is held to $AA. */
+    engine_revs = a;                                               /* $4A37 — the unclamped value */
     if (a >= 0xAAu) a = 0xAAu;                                     /* $4A39-$4A3B — the curve's input clamps */
     e.x = gear;                                                    /* $4A3D — exit X = gear_index */
     if (a < 0x03u) {                                              /* $4A3F-$4A41 */
-        inc_mem(MEM_engine_running);                               /* $4A43 — $FF -> 0: STALL */
+        inc_mem(MEM_engine_running);                               /* $4A43 — $FF -> 0: Stall */
         e.tail = engine_note_only(0x00u);                         /* $4A45 JMP $49C9 */
         return e;
     }
 
     /* $4A48-$4A7D — the power curve: four straight segments in (revs - $42), breaking at
        $11, $15 and $1A above it, each one a shift and an add.  The result carries on to
-       engine_torque_and_note, which reloads the flags — so only the VALUE matters (D=0). */
+       engine_torque_and_note, which reloads the flags — so only the value matters (D=0). */
     {
         uint8_t x = (uint8_t)(a - 0x42u);                         /* $4A48-$4A49 */
         if (x & 0x80u) segment0 = 1;                              /* $4A4B BMI — below $42 */
@@ -12569,27 +12269,26 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
     return e;
 }
 
-/* $44EA  update_camera_and_height — THE LAST SUB-MODEL
+/* $44EA  update_camera_and_height — the last sub-model
    294 bytes and four jobs, in this order:
 
-     (a) with car_height non-zero it does nothing but DEC jump_pitch_shake twice and jump to (c);
-     (b) camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power, -1 braking, and
+     (a) with car_height non-zero, only DEC jump_pitch_shake twice and jump to (c);
+     (b) camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power, -1 braking,
          settling toward 0 in neutral or coasting;
-     (c) THE SECTION YAW.  A cheap atan2 over the section's own direction vector — the
-         smaller-magnitude component scaled by 0.375 and folded through three saved flags —
-         minus car_heading_hi, giving section_yaw and its folded magnitude view_yaw_offset;
-         then the frame's view_pitch_offset as a first-order low pass over the yaw term,
-         grip_disturbance, camera_pitch_bias and jump_pitch_shake, and view_pitch_delta from it;
-     (d) DRIVE_STATE ITSELF, from car_vertical_speed stepped -4 a frame with a saturating jump to
-         $C8; and finally the camera, which is the section's own coordinate 1 plus a
-         gradient-scaled car_section_along plus $AC (nominal eye height), and car_speed_scaled.
+     (c) the section yaw: a cheap atan2 over the section's direction vector (the smaller
+         component scaled by 0.375 and folded through three saved flags) minus car_heading_hi,
+         giving section_yaw and its folded magnitude view_yaw_offset; then view_pitch_offset as
+         a first-order low pass over the yaw term, grip_disturbance, camera_pitch_bias and
+         jump_pitch_shake, and view_pitch_delta from it;
+     (d) drive_state, from car_vertical_speed stepped -4 a frame with a saturating jump to $C8;
+         then the camera: the section's coordinate 1 plus a gradient-scaled car_section_along
+         plus $AC (eye height), and car_speed_scaled.
 
-   ⚠ THE THREE PHPs at $453C/$4540/$4546 ARE PULLED IN REVERSE, and two of the three exist
-   only to steer an abs8 that branches on the caller's N.  The pushed bytes are part of the
-   differential; so are $45E5/$45E9's, which carry two carries past an intervening add.
+   ⚠ The three PHPs at $453C/$4540/$4546 are pulled in reverse, and two exist only to steer an
+   abs8 that branches on the caller's N.  The pushed bytes are compared by the differential, as
+   are $45E5/$45E9's, which carry two carries past an intervening add.
    ⚠ SMC $45CB: every expansion circuit replaces the first `ASL A / ROL shared_temp_77` pair
-   with a JSR into its own hook, so on those circuits the camera's high byte is built by the
-   circuit's code instead. */
+   with a JSR into its own hook, which then builds the camera's high byte. */
 CameraExit update_camera_and_height_core(void)
 {
     CameraExit e = {{0,0,0,0,0},0,0};
@@ -12611,7 +12310,7 @@ CameraExit update_camera_and_height_core(void)
         /* $44F9-$452A — camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power,
            -1 braking, and settling toward 0 in neutral or coasting.  Every register here is
            dead by the yaw: merge below (A/X/Y are all reloaded), so it is plain byte math. */
-        /* A ±1-A-FRAME COUNTER, so it steps on the slow tick only (the engine's frame). */
+        /* A ±1-a-frame counter, so it steps on the slow tick only (the engine's frame). */
         if (sim_tick_step) {
             uint8_t bias = camera_pitch_bias;               /* $44FB */
             int up = 0, down = 0, settle = 0;
@@ -12647,7 +12346,7 @@ CameraExit update_camera_and_height_core(void)
 
     /* $452D-$4568 — the section yaw.  A cheap atan2 over the section's direction vector: the
        smaller-magnitude ground-plane component, scaled by 0.375 and folded through three saved
-       signs, minus car_heading_hi.  The three 6502 PHPs each carry ONE flag past the scaling —
+       signs, minus car_heading_hi.  The three 6502 PHPs each carry one flag past the scaling —
        here they are plain C: n1 the octant's sign, n2 component 2's sign, c3 "near the diagonal".
        Every intermediate flag is dead (the folds below overwrite them), so the scaling is binary. */
     dirIndex = mem[MEM_section_dir_index + car_section_cursor];  /* $452D-$452F — Y stays dirIndex to $457F */
@@ -12706,14 +12405,14 @@ CameraExit update_camera_and_height_core(void)
         view_pitch_delta  = (uint8_t)(a - shared_temp_76);  /* $4596-$4599 */
     }
 
-    /* $459B-$45C9 — car_height.  car_vertical_speed steps -4 a frame and SATURATES to $C8, and the
-       ADD's own result is kept: through a spin car_height is the RUNNING SUM of that decaying
-       countdown, not a three-value enum.  [MEASURED 2026-09-09, reference loop, --hold-steer=right]
-       one spin ran car_height $10 $1B $22 $25 $24 $1F $16 $09 against car_vertical_speed $0F $0B $07
-       $03 $FF $FB $F7 $F3 — every step exactly countdown + previous — and landed on 1 when
+    /* $459B-$45C9 — car_height.  car_vertical_speed steps -4 a frame and saturates to $C8, and
+       the add's own result is kept: through a spin car_height is the running sum of that
+       decaying countdown, not a three-value enum.  On the reference loop (--hold-steer=right)
+       one spin ran car_height $10 $1B $22 $25 $24 $1F $16 $09 against car_vertical_speed $0F
+       $0B $07 $03 $FF $FB $F7 $F3 (each step countdown + previous) and landed on 1 when
        |countdown| >= 5 sent it back through begin_jump_from_a.  So 1 is the frame a spin (re)starts,
        and it is the one spin value below apply_driving_model's >= 2 off-power gate.
-       ⚠ The $45CB SMC dispatch just past this block RETURNS on an unrecognised opcode, and on
+       ⚠ The $45CB SMC dispatch just past this block returns on an unrecognised opcode, and on
        that exit (a real, compared path — 1 fixture case in 10 randomises the SMC bytes) the
        routine's live A/X/Y/N/Z/C/V are exactly what this block leaves.  So the block builds a
        provisional exit `preSmc`: A = driveNew, X = car_section_cursor (untouched to $45D3),
@@ -12724,7 +12423,7 @@ CameraExit update_camera_and_height_core(void)
     uint8_t driveNew, cArm, vArm;
     {
         /* x h: gravity is -4 a frame and the height moves by the vertical speed a frame, so a
-           step takes h of each (sim_scale).  Only the two OPERANDS change — the landing, the
+           step takes h of each (sim_scale).  Only the two operands change — the landing, the
            rebound at |v| >= 5, the wrap guard to -56 and the $7F arm all read the same flags. */
         uint8_t gravity = sim_h_q16 ? (uint8_t)sim_scale(4, 0u, &s_vspeedRem) : 0x04u;
         uint8_t sub  = (uint8_t)(car_vertical_speed - gravity);   /* $459F-$45A3 SBC (D=0) */
@@ -12742,7 +12441,7 @@ CameraExit update_camera_and_height_core(void)
         vAdd = (uint8_t)((((~(rise ^ car_height)) & (rise ^ r)) >> 7) & 1u);
         nAdd = (uint8_t)((r >> 7) & 1u);
         zAdd = (uint8_t)(r == 0);
-        /* ⚠ $45B1's `BPL` keeps the sum; a NEGATIVE sum falls THROUGH to the countdown arm,
+        /* ⚠ $45B1's `BPL` keeps the sum; a negative sum falls through to the countdown arm,
            so it is reached two ways, not one. */
         if (zAdd || (!vAdd && nAdd)) {                  /* $45AD BEQ, or $45B1 BPL not taken */
             uint8_t absSpin;                            /* $45B3-$45B5 LDA/abs8 |car_vertical_speed| */
@@ -12761,7 +12460,7 @@ CameraExit update_camera_and_height_core(void)
             if (absSpin >= 0x05u) {                     /* $45B7 CMP #5 → C=1 */
                 JumpExit se = begin_jump_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
                 yScale = se.y;                          /* the spin's sound OSWORD left this in the MOS's Y */
-                cArm = se.c; vArm = se.v;               /* begin_jump's exit C/V (the block ADD's, LDA #1 leaves them) */
+                cArm = se.c; vArm = se.v;               /* begin_jump's exit C/V (the block add's, LDA #1 leaves them) */
                 driveNew = 0x01u;                        /* $45BD */
             } else {                                     /* $45B7 CMP #5 → C=0 */
                 driveNew = 0x00u;                        /* $45C3 */
@@ -12770,7 +12469,7 @@ CameraExit update_camera_and_height_core(void)
             }
         } else if (vAdd) {
             driveNew = 0x7Fu;                            /* $45AF BVS → $45C7 */
-            cArm = cAdd; vArm = vAdd;                     /* C/V from the ADD survive LDA #$7F */
+            cArm = cAdd; vArm = vAdd;                     /* C/V from the add survive LDA #$7F */
         } else {
             driveNew = r;                                /* keep the sum */
             cArm = cAdd; vArm = vAdd;
@@ -12828,7 +12527,7 @@ CameraExit update_camera_and_height_core(void)
        car_section_along, and $AC of nominal eye height, as one 16-bit add with two carries saved
        past the term in between. */
     uint8_t playerCar = player_car;                    /* $45D3 — exit X */
-    /* ⚠ yScale IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_jump_from_a,
+    /* ⚠ yScale IS NOT dirIndex any more on one path.  The spin arm above reaches begin_jump_from_a,
        which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
@@ -12839,7 +12538,7 @@ CameraExit update_camera_and_height_core(void)
         uint8_t scaledLow = scaled;                    /* the gradient-scaled car_section_along low byte */
         /* $45E1-$45FB — the 6502 adds three terms into the low byte, saves each carry with a
            PHP and folds all three into the high byte, whose own carry-outs the PLPs discard.
-           That is ONE truncating 16-bit add of four values, and it is exactly what this is:
+           That is one truncating 16-bit add of four values, and it is exactly what this is:
            the section's height, the gradient-scaled car state, the nominal eye height $AC and
            the term parked in shared_temp_77:shared_temp_76.  (D=0 on this path —
            static-map.md §Decimal mode.) */
@@ -12875,7 +12574,7 @@ CameraExit update_camera_and_height_core(void)
 /* $4610's ABI as a value, because a typed hook twin has no `cpu` to put it in: A in and out, Y
    the gradient index, and C/V both read and written (the positive arm passes them through).
    Replay the $4610 exit ABI.  Positive arm ($4622 abs8 not taken): flags are the restored
-   EOR status — N = 0, Z = (eor == 0), C/V PASS THROUGH the caller's (the EOR touches neither,
+   EOR status — N = 0, Z = (eor == 0), C/V PASS through the caller's (the EOR touches neither,
    the PHP/PLP carried them intact).  Negative arm: flags from abs8 negating the high byte —
    N/Z from -(high), C = (high == 0) = Z, V = 0 (high ≤ 0x7F is never $80). */
 void scale_by_track_gradient_regs(HookRegs *r)
@@ -12914,49 +12613,16 @@ void apply_drag_terms(void)
 }
 
 /* The road sign, and the object slot writer underneath it
-   Six functions, 252 bytes of 6502:
 
-     $4CA4 build_road_sign       the body's 14th call — one sign into object slot $17
+     $4CA4 build_road_sign       the body's 14th call: one sign into object slot $17
      $4D21 build_sign_origin     one component of the sign's own view origin
-     $2A76 write_object_slot     THE object-slot writer, shared with the car projector
+     $2A76 write_object_slot     the object-slot writer, shared with the car projector
      $2AA6 reject_object_slot    ...and its reject arm, which marks the slot empty
      $2AAD store_object_flags    the one store both arms end on
      $2AB3 note_object_contact   "is this object close enough to be a collision candidate?"
 
-   What the group computes:
-
-   1. A ROAD SIGN IS PROJECTED FROM ITS OWN VIEWPOINT, NOT THE CAMERA'S.  view_origin has a
-      stride of six because there are two origins, and build_sign_origin is the only writer of
-      the second: for each of the three components it takes the sign's own signed offset byte,
-      scales it up (x64 for the two ground-plane components, x16 for the height) and SUBTRACTS
-      it from the camera's component.  bearing_to_section and project_point then run with Y = 6,
-      and every other caller in the engine uses Y = 0 — which is what the two entry points of
-      each of those routines are FOR.
-   2. THE SIGN TABLES ARE FOUR ROWS OF SIXTEEN, and they sit in the gaps of the two track
-      pages.  sign_offset_0/_1/_2 are $53D0/$53F0/$53E0 — the tail of track_segment_hi, past
-      the last segment record — and sign_shape_segment is $59EA, which lands exactly between
-      segment_data and segment_count_x8.  Silverstone's own bytes prove the layout: the sixteen
-      $59EA entries are ASCENDING segment indices ($03 $10 $19 $2C … $B8) once the low three
-      bits are masked off, and sign_offset_1 is $08 in nine of sixteen entries — the signs are
-      all at about the same height.
-   3. ⚠ ALL FIVE OF THOSE LOADS ARE PER-CIRCUIT SMC ($4CC0 $4CC8 $4CD0 $4CD6 $4CE0, one
-      extent each in `make track-smc`).  The opcode stays `LDA abs,X`; each circuit's
-      ModifyGameCode rewrites the two operand bytes, so the twin reads the table base out of
-      mem[] every time and cannot bake $53D0 in.  What it CAN do is hoist the hardware-window
-      test to the base instead of paying it per byte — the transliteration routes all five
-      through bus_read.
-   4. THE SIGN ADVANCES BY WALKING OFF THE SIDE OF THE VIEW.  The sign to show is the high
-      nibble of the player's own segment record, and $4CB2 compares it with the one shown last
-      frame: on a match the number is INCREMENTED (`ADC #0` with the CMP's carry, then masked to
-      a nibble), so an unchanged segment shows the NEXT sign.  Which one sticks is decided at
-      the other end of the routine — sign_last_index is only updated once the sign's bearing is
-      more than $40 away from where the car is pointing, i.e. once it has left the view.
-
    ⚠ object_width is $2000 / point_dist (object_width_for); the 6502 shifted project_point's
-   reciprocal mantissa by `proj_width_shift - $0A` places, the sign of that difference the
-   direction.
-
-   No hardware writes anywhere in the group: signs live entirely in RAM. */
+   reciprocal mantissa by `proj_width_shift - $0A` places.  RAM only. */
 
 #define VIEW_ORIGIN_STRIDE   0x06u     /* view_origin_lo/_hi: origin 0 = camera, 6 = the sign */
 #define SIGN_SLOT            0x17u     /* the object slot every sign is built into */
@@ -12964,7 +12630,7 @@ void apply_drag_terms(void)
 
 /* One of the five per-circuit table loads.  The opcode is `LDA abs,X` on every circuit
    (`make track-smc`: `sig:0,BD@1,2`), so only the base varies — and the hardware-window test
-   goes on the BASE, once, instead of on every byte the way bus_read does.  Sets *trapped when
+   goes on the base, once, instead of on every byte the way bus_read does.  Sets *trapped when
    the byte at the site is not that opcode at all, which is the same hard trap the
    transliteration takes, and the caller must then return without touching A. */
 static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
@@ -12980,24 +12646,26 @@ static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
     return seam_read((unsigned)(uint16_t)(base + index), pointer_is_ram(base));
 }
 
-/* $4D21  build_sign_origin — ONE COMPONENT OF THE SIGN'S VIEWPOINT
+/* $4D21  build_sign_origin — one component of the sign's viewpoint
    view_origin[6 + c] = view_origin[c] - (signed `offset` << (8 - shift)).
 
-   The 6502 spells that as a 24-bit logical shift: the sign extension in shared_temp_76, the
-   value in A and a zero low byte in math_lo, shifted right `shift` times by LSR/ROR/ROR.  For
-   any shift under 9 — and the three call sites pass 2, 4 and 2 — the middle and low bytes are
-   exactly the signed 16-bit `offset x 256` shifted arithmetically, which is what the routine is
-   computing; the top byte only supplies the sign bits.  THE TWIN DOES IT IN ONE SHIFT, which
-   is this group's only algorithmic compression.
+   A road sign is projected from its own viewpoint: view_origin has a stride of six because
+   there are two origins, and this routine is the only writer of the second.
+   bearing_to_section and project_point then run with Y = 6.
 
-   ⚠ `shift` ARRIVING AS 0 MEANS 256, not "no shift": the DEY is at the BOTTOM of the loop.
-   Reproduced (the result is then 0) rather than special-cased away.
+   The 6502 spells it as a 24-bit logical shift (the sign extension in shared_temp_76, the value
+   in A, a zero low byte in math_lo) shifted right `shift` times.  For any shift under 9 (the
+   call sites pass 2, 4 and 2) that is the signed 16-bit `offset x 256` shifted arithmetically,
+   one shift here.
 
-   The component index is shared_temp_77, which the caller seeds and this routine DECs — so
-   three calls walk components 2, 1, 0.  math_lo, math_hi and shared_temp_76 are left as
-   scratch, and the second subtract's flags are the routine's exit flags. */
+   ⚠ `shift` = 0 means 256, not "no shift": the DEY is at the bottom of the loop.  Reproduced
+   (the result is then 0).
 
-/* EXIT ABI: NONE.  Its one native caller (build_road_sign_core) reads no exit, and the oracle
+   The component index is shared_temp_77, which the caller seeds and this routine DECs, so three
+   calls walk components 2, 1, 0.  math_lo, math_hi and shared_temp_76 are left as scratch, and
+   the second subtract's flags are the exit flags. */
+
+/* Exit ABI: NONE.  Its one native caller (build_road_sign_core) reads no exit, and the oracle
    that reaches the shim (build_road_sign__t6502) reloads A and Y at once and needs only X, which
    this routine never touches, so the 6502's exit A/Y/N/Z/V/C are working notes.
    The scratch cells keep the values the 6502 leaves. */
@@ -13020,14 +12688,14 @@ void build_sign_origin_core(uint8_t offset, uint8_t shift)
         (uint16_t)(view_origin_16[component] - (uint16_t)staged);
 }
 
-/* $2AB3  note_object_contact — IS THIS OBJECT A COLLISION CANDIDATE?
+/* $2AB3  note_object_contact — is this object a collision candidate?
    Runs point_distance_hypot for the point just transformed and, if the distance fits in a byte
-   AND is at or under the caller's threshold in Y, records the object as THE frame's contact
+   AND is at or under the caller's threshold in Y, records the object as the frame's contact
    candidate: contact_pending goes non-zero, contact_distance takes the distance and
    contact_slot the slot number.  process_car_contact is the consumer — it clears the flag,
    scales the impact as ($25 - contact_distance) x 2 and takes the car from contact_slot.
 
-   ONE CANDIDATE PER FRAME, LAST WRITER WINS, and the threshold is the caller's business:
+   One candidate per frame, last writer wins, and the threshold is the caller's business:
    the car projector enters at $2AB1 with a fixed $25, while build_road_sign picks $25 or $50 on
    how far off-heading the sign is.  ⚠ contact_pending is DECremented, not set — so a frame in
    which two objects qualify leaves it at $FE, and process_car_contact's test is `non-zero`.
@@ -13047,23 +12715,23 @@ void note_object_contact_core(uint8_t threshold, uint8_t slot)
     contact_slot     = slot;                              /* $2AC6-$2AC8 LDA shared_counter_42 */
 }
 
-/* $2A76  write_object_slot — THE PROJECTION'S RESULT INTO AN OBJECT SLOT
+/* $2A76  write_object_slot — the projection's result into an object slot
    $2AA6  reject_object_slot
    $2AAD  store_object_flags
    Entered straight off project_point with the projected scan line in A and its carry in C, and
    the slot number in shared_counter_42.  Three fields land: object_line (the line, less one),
    object_width (the apparent width, rescaled) and the low nibble of car_flags_shape (the
-   shape).  Bit 7 of car_flags_shape is the SLOT-EMPTY mark, and the reject arm is the only
+   shape).  Bit 7 of car_flags_shape is the slot-empty mark, and the reject arm is the only
    thing that sets it — draw_track_object reads exactly that bit to skip a slot.
 
-   THE WIDTH IS $2000 / point_dist.  On the 6502 it was an EXPONENT CORRECTION: project_point
+   The width is $2000 / point_dist.  On the 6502 it was an exponent correction: project_point
    left a mantissa in proj_width and its normalising shift count in proj_width_shift, and this
-   shifted the mantissa by proj_width_shift - $0A places, LEFT when positive and RIGHT when
+   shifted the mantissa by proj_width_shift - $0A places, left when positive and right when
    negative — which is the same quotient at 8-bit precision.  One DIVU of the true operands here
    (object_width_for), except at distances of 32 and under, where the 6502's left shift pushed
    the mantissa's top bit out of the byte and the old computation is kept bit for bit.
 
-   ⚠ Two rejects, and they are NOT the same test: C set out of project_point (the point is
+   ⚠ Two rejects, and they are not the same test: C set out of project_point (the point is
    behind the near clip) rejects, and so does a projected line of 0, because the `SBC #1` then
    goes negative.  Everything else is drawn. */
 /* The slot-writer chain's exit ABI.  The reject fixtures compare A/X/Y + N/Z/V/C, so the core
@@ -13104,12 +12772,12 @@ void write_object_slot_core(uint8_t projectedLine, uint8_t entryC, uint8_t slot)
     /* $2A82-$2A99 — the apparent width, $2000 / point_dist (object_width_for — the true ratio,
        user decision).  The 6502 shifted project_point's reciprocal mantissa by its exponent less
        $0A, one place per pass of an `LSR / INX` or `ASL / DEX` loop.
-       THE LOOP'S EXIT X, C AND V ARE GONE WITH IT, AND THEY ARE ARGUED DEAD, NOT DROPPED: they
+       The loop's exit X, C and V are gone with it, and they are argued dead, NOT DROPPED: they
        are the only parts of this exit that depended on the exponent.  X — every caller reloads
        it at once ($4D20 RTS → $1728 `LDX #$17`; $29F9/$2A3D/$2A48/$2A4D `LDX`).  C and V — the
        phase-15 note in race_main_loop_core carries the audit for build_road_sign's path, and
        project_object_slot's shims declare them dead for the car path.  So the shim passes the
-       ENTRY X/V/C through, and the fixture compares A/Y/N/Z — the slot, the shape nibble, the
+       entry X/V/C through, and the fixture compares A/Y/N/Z — the slot, the shape nibble, the
        ORA's flags — which is what the callers can see. */
     width = object_width_for((uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo));
     mem[MEM_object_width + slot] = (uint8_t)width;           /* $2A99 */
@@ -13118,19 +12786,31 @@ void write_object_slot_core(uint8_t projectedLine, uint8_t entryC, uint8_t slot)
     store_object_flags_core(slot, (uint8_t)((mem[MEM_car_flags_shape + slot] & 0x70u) | plot_shape));   /* $2AA3 JMP */
 }
 
-/* $4CA4  build_road_sign — ONE SIGN INTO OBJECT SLOT $17
-   The body's 14th call, and the body's 15th (draw_track_object) draws what it leaves.  In
-   order: pick the sign, build its viewpoint, take its shape and its anchor segment, bear and
-   project it from that viewpoint, and write the slot. */
+/* $4CA4  build_road_sign — one sign into object slot $17
+   The body's 14th call; the 15th (draw_track_object) draws what it leaves.  In order: pick the
+   sign, build its viewpoint, take its shape and anchor segment, bear and project it from that
+   viewpoint, and write the slot.
+
+   The sign tables are four rows of sixteen in the gaps of the two track pages: sign_offset_0/
+   _1/_2 at $53D0/$53F0/$53E0 (past track_segment_hi's last record) and sign_shape_segment at
+   $59EA (between segment_data and segment_count_x8).  On Silverstone the sixteen $59EA entries
+   are ascending segment indices once the low three bits are masked off.
+   ⚠ All five table loads are per-circuit SMC ($4CC0 $4CC8 $4CD0 $4CD6 $4CE0; `make
+   track-smc`): each circuit's ModifyGameCode rewrites the operand bytes of an `LDA abs,X`, so
+   the base is read from mem[] every time (sign_table_byte).
+
+   The sign advances by leaving the view: the sign to show is the high nibble of the player's
+   segment record, and when it matches the one shown last frame the number is incremented, so
+   an unchanged segment shows the next sign.  sign_last_index is updated only once the sign's
+   bearing is more than $40 from the car's heading. */
 static void build_road_sign_core(void)
 {
     int     trapped = 0;
     uint8_t signIndex, tableByte, threshold;
 
     /* $4CA4-$4CBB — which sign.  The player's segment record carries it in its high nibble;
-       an unchanged segment shows the NEXT sign (see the group header, item 4).  A and X both
-       carry the index out of this block (LDA/…/TAX), which is the state a table-load trap
-       reports. */
+       an unchanged segment shows the next sign.  A and X both carry the index out of this
+       block (LDA/…/TAX), which is the state a table-load trap reports. */
     {
         uint8_t seg    = mem[MEM_car_segment + player_car];
         uint8_t nibble = (uint8_t)(mem[MEM_track_segment_hi + seg] >> 4);
@@ -13141,7 +12821,7 @@ static void build_road_sign_core(void)
     }
 
     /* $4CBC-$4CD5 — the sign's own view origin, components 2, 1, 0.  shared_temp_77 is the
-       component cursor build_sign_origin walks down, so the ORDER of these three carries the
+       component cursor build_sign_origin walks down, so the order of these three carries the
        meaning, and the shifts differ: x64 across the ground plane, x16 up.  (The 6502 kept the
        shift in Y so a table-load trap could report it; the shift is now an explicit argument and
        a trap records only mem[], which build_road_sign is compared on.) */
@@ -13162,7 +12842,7 @@ static void build_road_sign_core(void)
     if (trapped) return;
     plot_shape = (uint8_t)((tableByte & 0x07u) + 0x07u);   /* carry-in 0; flags dead */
 
-    /* $4CE0-$4CEA — ...and the SEGMENT it is anchored to, in the same byte's top five bits (a
+    /* $4CE0-$4CEA — ...and the segment it is anchored to, in the same byte's top five bits (a
        multiple of 8, which is what a segment index is), into a scratch live section. */
     tableByte = sign_table_byte(MEM_smc_sign_segment_tbl, signIndex, &trapped);
     if (trapped) return;
@@ -13170,12 +12850,12 @@ static void build_road_sign_core(void)
     uint8_t scratchX = SIGN_SCRATCH_SECTION;             /* X carries the section index to the slot write */
     load_section_triple_core(scratchX, segByte);
 
-    /* $4CEB-$4CF9 — the bearing, FROM THE SIGN'S OWN ORIGIN, into slot $17. */
+    /* $4CEB-$4CF9 — the bearing, from the sign's own origin, into slot $17. */
     bearing_to_section_core(scratchX, VIEW_ORIGIN_STRIDE);
     object_bearing_word_set(SIGN_SLOT, bearing_v);
 
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
-       and THAT is what commits the sign number for the next frame.  abs8 here branches on bit 7
+       and that is what commits the sign number for the next frame.  abs8 here branches on bit 7
        of (bearing_hi - car_heading_hi) — the caller's N equals bit 7 — and $80 negates to $80. */
     uint8_t off    = (uint8_t)((uint8_t)(bearing_v >> 8) - (uint8_t)(car_heading_v >> 8));
     uint8_t absOff = (off & 0x80u) ? (uint8_t)(-off) : off;
@@ -13201,81 +12881,45 @@ static void build_road_sign_core(void)
 }
 
 /* The 6502-ABI shims. */
-/* ⚠ hypot_max IN *AND* OUT.  The core produces the relocated magnitude only on the path that
+/* ⚠ hypot_max IN *AND* out.  The core produces the relocated magnitude only on the path that
    gets as far as the bearing — an SMC trap at either sign-table site returns before it — so the
    marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
    holding exactly what they held on entry, which is what the 6502 left there. */
 void build_road_sign(void)      { car_heading_marshal_in();  view_origin_marshal_in();
                                   build_road_sign_native(); }
-/* The frame driver's entry, one level below the two wipe-only INs (car_heading, view_origin —
-   the arrays are authoritative in production: docs/wide-value-cleanup.md, Marshalling contracts).  The three multi-tenant zero-page pairs keep their IN, and every OUT stays. */
+/* The frame driver's entry, without the two wipe-only INs (car_heading, view_origin: the arrays
+   are authoritative in production; docs/wide-value-cleanup.md, Marshalling contracts).  The
+   three multi-tenant zero-page pairs keep their IN, and every out stays. */
 void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
                                   build_road_sign_core();
                                   hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
                                   view_origin_marshal_out(); }
 
 /* The object plotter's shape side
-   draw_track_object does nothing but decide WHERE an object goes; these three are
-   what draws it, and together they are a small vector-shape rasteriser:
+   draw_track_object decides where an object goes; these three draw it, a small vector-shape
+   rasteriser:
 
      $1FB4 plot_object           the driver: colours, the width's scale, the shape's tables
-     $202A scale_shape_vectors   the shape's vertex offsets, scaled to this object's WIDTH
-     $209A plot_shape_edges      ...walked as EDGES, each one a filled vertical span
+     $202A scale_shape_vectors   the shape's vertex offsets, scaled to this object's width
+     $209A plot_shape_edges      ...walked as edges, each one a filled vertical span
 
-   What the group computes:
+   An object is a vector shape, not a sprite: each of the ten shapes is a run of
+   shape_vector_tbl bytes and a run of five parallel shape_edge_* columns, drawn at whatever size
+   the perspective divide asked for.  No object bitmap exists in the binary.
 
-   1. **AN OBJECT IS A VECTOR SHAPE, NOT A SPRITE.**  There are ten of them (indices 0..9, plus
-      a two-part case below), each a run of `shape_vector_tbl` bytes and a run of five parallel
-      `shape_edge_*` columns.  Nothing in the binary holds an object BITMAP: every car, sign and
-      marker is drawn from these two lists at whatever size the perspective divide asked for.
-   2. **A VERTEX BYTE IS A SUM OF POWERS OF TWO OF THE OBJECT'S WIDTH.**  `scale_shape_vectors`
-      fills `shape_scale_tbl[2..7]` with the width halved five times, and then each vector byte
-      picks entries out of it: a byte under $80 is one entry, a byte over $80 is TWO (bits 0-2
-      and bits 3-5) plus a third half-width when bit 6 is set.  So the shape is stored as
-      FRACTIONS of its own size and there is no multiply anywhere in the pass.
-   3. **`shape_vertex` IS SIXTEEN ENTRIES THAT LOOK LIKE EIGHT.**  The routine writes the scaled
-      value at index 0..7 and its NEGATION at index 8..15 — `$5EF8` and `$5F00` are one array,
-      which is why nothing in the engine appears to read `$5F00`.  The edge columns then index
-      0..15, i.e. they name a vertex offset AND its sign in one byte.
-   4. ⚠ **THE PASS REJECTS ITSELF WHEN A VERTEX WOULD NOT FIT IN SEVEN BITS** ($2085's
-      `EOR #$FF / BPL`), and plot_object's `BCS` right after the call is what abandons the whole
-      object.  An object too close to the camera is simply not drawn.
-   5. **SHAPE 9 IS DRAWN TWICE, AND THE SECOND PASS USES THE UNCLAMPED INDEX.**  $1FFC clamps
-      the shape to 9, but the loop at $2027 re-enters BELOW the clamp with the raw `plot_shape`
-      in X — so a shape of $0A draws shape 9 and then shape $0A, gated on `track_direction`
-      being positive.  `shape_vector_start` has eleven entries for exactly that reason.
-
-   6. ⚠ **SHAPE 9 IS A MARKER, NOT A SHAPE — and `plot_shape` = 9 HANGS THE 6502.**  Item 5's
-      loop re-enters below the clamp, so a shape of exactly 9 writes 9 into
-      `object_shape_clamped` on every pass and $2021's `CMP #$09` never stops agreeing:
-      with `track_direction` positive the routine never returns.  It is unreachable in the game
-      — cars take shapes 0/1/2/4 ($2A32/$2A3B/$2A46/$29F6), corner markers 6 ($1B6F), and a
-      sign's `(size & 7) + 7` misses 9 on every circuit (Silverstone's sixteen give 7/8/10/11/12)
-      — so 9 means "the stand-in has been drawn", never a shape.  [MEASURED] the twin and the
-      transliteration hang identically on it.
-   7. ⚠ **THE SHAPE TABLES LIVE IN THE UNUSED TAILS OF THE VIEW SOURCE BLOCKS.**  $3550, $35D0,
-      $3650, $36D0 and $3750 are offset $50 inside blocks 10..14 of the forty $80-spaced blocks
-      at $3000, and `dash_block_starts` says a block's data always ENDS at offset $4F — so each
-      column has exactly 48 table entries and index 48 is the next block's data, which
-      plot_view_src_line paints over — a real constraint on the walk, and why the fixture has to
-      bound the tables.
-
-   ⚠ ONE PER-CIRCUIT SMC SITE, $1FE9: Silverstone reads `horizon_extent` into X and an
-   expansion circuit plants `LDX #imm` in its place (`make track-smc`).  Both arms are kept.
-   ⚠ AND ONE SIDE EFFECT WORTH NAMING: $1FC3 writes $F0 into `surface_colours[2]` — the ROAD's
-   own colour table — after copying it, so the copy and the original differ from here on.
-   draw_corner_markers does the same thing at $1B26 and $1B76.
-
-   ⚠ The whole pass is a second tenant of the point_delta window ($0080-$008F).  The `OBJ_*`
-   defines below are the pass's own names for those cells.
+   ⚠ The shape tables live in the unused tails of the view source blocks: $3550, $35D0, $3650,
+   $36D0 and $3750 are offset $50 inside blocks 10..14 at $3000, and a block's data always ends
+   at offset $4F (dash_block_starts).  So each column has exactly 48 entries; index 48 is the
+   next block's data, which plot_view_src_line paints over, and the fixture bounds the tables.
+   ⚠ The pass is a second tenant of the point_delta window ($0080-$008F); the OBJ_* defines
+   below name its cells.
 
    Exit ABI: none, across the whole object-plotter tree.  draw_track_object's three native
    callers (race_main_loop's phase 15, draw_corner_markers, move_and_draw_cars -> draw_car_field)
-   drop its exit, and every other caller of the tree is a validation oracle, so the registers and
-   flags the 6502 leaves are working notes, not results (docs/validation-harness.md §THE RESULTS
-   RULE).  Two exits survive because an oracle branches on them through the native shim:
+   drop its exit, and every other caller is a validation oracle (docs/validation-harness.md §THE
+   results rule).  Two exits survive because an oracle branches on them through the native shim:
    scale_shape_vectors' carry (plot_object__t6502's `BCS`) and draw_track_object's closing
-   `LDX saved_slot_index` (draw_car_field__t6502's ring walk); the shims rebuild both.  The
+   `LDX saved_slot_index` (draw_car_field__t6502's ring walk); the shims rebuild both, and the
    fixtures compare mem[] plus exactly those. */
 
 /* The object pass's own names for the point_delta window it borrows. */
@@ -13284,13 +12928,20 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
 #define OBJ_EDGE_X          MEM_point_delta_hi   /* point_delta_hi[0] — the edge's x, into the plotter */
 #define OBJ_EDGE_STYLE      MEM_shared_temp_84   /* point_delta_hi[1] — ...and its style byte */
 
-/* $202A  scale_shape_vectors — THE SHAPE AT THIS OBJECT'S SIZE
-   Fills shape_vertex[0..7] with the shape's vertex offsets scaled to proj_width, and
-   [8..15] with their negations.  Returns with C SET when one of them would not fit in seven
-   bits, which is plot_object's signal to abandon the object.
+/* $202A  scale_shape_vectors — the shape at this object's size
+   Fills shape_vertex[0..7] with the shape's vertex offsets scaled to proj_width, and [8..15]
+   with their negations: $5EF8 and $5F00 are one array, so the edge columns' indices 0..15 name
+   a vertex offset and its sign in one byte.
 
-   ⚠ proj_width_shift's extra halving is `LSR / DEX / BNE` and the closing `ADC #0` ROUNDS off
-   the last bit shifted out — so the twin keeps the carry, not just the value. */
+   Each vertex is a sum of powers of two of the width.  shape_scale_tbl[2..7] is the width
+   halved five times, and each vector byte picks entries from it: a byte under $80 is one entry,
+   a byte over $80 two (bits 0-2 and bits 3-5) plus a half-width when bit 6 is set.  The shape is
+   stored as fractions of its own size, with no multiply.
+
+   ⚠ Returns with C set when a vertex would not fit in seven bits ($2085's `EOR #$FF / BPL`),
+   and plot_object's `BCS` then abandons the object: one too close to the camera is not drawn.
+   ⚠ proj_width_shift's extra halving is `LSR / DEX / BNE` and the closing `ADC #0` rounds off
+   the last bit shifted out, so the carry is kept, not just the value. */
 /* Returns 1 when a vertex needs eight bits (plot_object then abandons the object), 0 when every
    vertex fitted.  What stays is every mem[] byte the 6502 leaves: the scale table, the vertices,
    the output cursor in shared_temp_77 and a two-term vector's math_lo/math_hi. */
@@ -13319,7 +12970,7 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
         unsigned a;
 
         if (vec & 0x80u) {
-            /* $204E-$2071 — a TWO-TERM vector: scale[bits 0-2] + scale[bits 3-5], and a third
+            /* $204E-$2071 — a two-term vector: scale[bits 0-2] + scale[bits 3-5], and a third
                half-width when bit 6 is set.  math_lo/math_hi are left as the 6502 leaves them. */
             uint8_t lo = scale[vec & 0x07u];
             math_lo = lo;
@@ -13330,7 +12981,7 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
             a = scale[vec];                              /* $2072 — one term */
         }
 
-        /* $2076-$207F — plot_object's extra halving, ROUNDED: the closing `ADC #0` adds back
+        /* $2076-$207F — plot_object's extra halving, rounded: the closing `ADC #0` adds back
            the last bit shifted out. */
         if (shift) a = (a >> shift) + ((a >> (shift - 1u)) & 1u);
 
@@ -13344,7 +12995,7 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
     }
 }
 
-/* $209A  plot_shape_edges — THE SHAPE'S EDGES, AS FILLED SPANS
+/* $209A  plot_shape_edges — the shape's edges, as filled spans
    Walks the shape's edge list from shape_edge_start.  Each edge is a vertical span: two vertex
    offsets give its two scan lines (clamped below at $4F and above at object_line_ceiling, i.e.
    the horizon), two more give the x offsets at its ends, and the style byte carries both the
@@ -13352,10 +13003,10 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
 
      Y = 1   open the span — it derives and remembers this end's column
      Y = 2   close it
-     Y = 0   the closing arm at $2117, which takes its endpoints from the NEXT edge
+     Y = 0   the closing arm at $2117, which takes its endpoints from the next edge
 
-   THE STYLE BYTE'S TOP TWO BITS ARE THE WALK'S CONTROL FLOW, and they mean different things
-   on the two paths.  On a REJECTED edge (either scan line off the top, or the top line at or
+   The style byte's top two bits are the walk's control flow, and they mean different things
+   on the two paths.  On a rejected edge (either scan line off the top, or the top line at or
    past the bottom) bit 7 says "keep skipping" and bit 6 says "the shape ends here".  On a drawn
    edge bit 7 sends it to the closing arm and bit 6, tested after the close, ends the shape. */
 /* Exit ABI is the full register+flag set (SlotExit): both callers (its own fixture, and
@@ -13371,7 +13022,7 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
         span_defer_pending = 0x00;
         shared_temp_8c     = 0x00;
 
-        /* $20A7-$20D4 — the span's BOTTOM line, clamped to $4F, and its TOP, floored at the
+        /* $20A7-$20D4 — the span's bottom line, clamped to $4F, and its top, floored at the
            ceiling.  Either line off the top (bit 7 of the bottom), or no height, rejects it. */
         int rejected = 1;
         uint8_t bottom = (uint8_t)(mem[MEM_shape_vertex + mem[MEM_shape_edge_line_0 + y]] + plot_line);
@@ -13407,7 +13058,7 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
         for (;;) {
             /* $20F1 BIT obj_edge_style — bit 7 sends it to the closing arm. */
             if (mem[OBJ_EDGE_STYLE] & 0x80u) {
-                /* $2117-$2142 — THE CLOSING ARM.  The span is closed against the NEXT edge's
+                /* $2117-$2142 — the closing arm.  The span is closed against the next edge's
                    columns, which is why this arm reads shape_edge_x_1 as a style and
                    shape_edge_line_0 as an x offset. */
                 y = (uint8_t)(span_saved_index + 1u);
@@ -13434,7 +13085,7 @@ void build_road_sign_native(void) { hypot_max_marshal_in();  hypot_min_marshal_i
 }
 
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_SHAPE_ASM)
-/* THE AMIGA SCALES IN 68000 ASSEMBLY — src/platform/amiga/shape_m68k.s, whose banner has the
+/* The Amiga scales in 68000 assembly — src/platform/amiga/shape_m68k.s, whose banner has the
    shape.  scale_shape_vectors_core stays the reference: the host runs it, `make SHAPEASM=0` is the
    control, and `make SHAPECHECK=1` runs both on the same 64 KB every call. */
 int scale_shape_m68k(void);
@@ -13442,10 +13093,10 @@ int scale_shape_m68k(void);
 #define scale_shape_vectors_run() scale_shape_m68k()
 #else
 volatile unsigned long g_shapeChecks       = 0;
-volatile unsigned long g_shapeMismatch     = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_shapeMismatch     = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_shapeMismatchAt   = 0;   /* first differing address; $10000 the return value */
 volatile unsigned long g_shapeFuzzCases    = 0;
-volatile unsigned long g_shapeFuzzMismatch = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_shapeFuzzMismatch = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_shapeFuzzAbandon  = 0;   /* fuzz cases that abandoned — must be non-zero */
 static uint8_t s_shapeBefore[65536] __attribute__((aligned(4))), s_shapeAfterC[65536] __attribute__((aligned(4)));
 static uint8_t s_shapeFuzzSave[65536] __attribute__((aligned(4)));
@@ -13464,7 +13115,7 @@ static int shape_compare(volatile unsigned long* bad)
         if (!*bad) g_shapeMismatchAt = 0x10000u;
         (*bad)++;
     } else {
-        /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+        /* ENDIAN-OK: an equality test a longword at a time (see emit_width_compare). */
         const uint32_t* a = (const uint32_t*)(const void*)mem;
         const uint32_t* c = (const uint32_t*)(const void*)s_shapeAfterC;
         for (i = 0; i < 65536u / 4u; i++)
@@ -13479,7 +13130,7 @@ static int shape_compare(volatile unsigned long* bad)
     return rA;
 }
 
-/* THE FUZZER, once, before the first real call.  The game holds the shift at 0 or 2 and its
+/* The fuzzer, once, before the first real call.  The game holds the shift at 0 or 2 and its
    vector bytes at $03..$07 or two-term encodings, so each case randomises every input the routine
    reads — the width, a shift up to 15, both cursors, the vector bytes (one-term indices past the
    table's eight entries included) and the scale table's two static entries.  mem[] is restored. */
@@ -13523,23 +13174,38 @@ static int scale_shape_vectors_run(void)
 #define scale_shape_vectors_run() scale_shape_vectors_core()
 #endif
 
-/* $1FB4  plot_object — THE OBJECT PLOTTER
-   Entered with the object's SLOT in X and its four-cell argument block already set by
-   draw_track_object: plot_x, plot_line, proj_width and plot_shape. */
-/* Exit ABI: none — see scale_shape_vectors_core. */
+/* $1FB4  plot_object — the object plotter
+   Entered with the object's slot in X and its argument block set by draw_track_object:
+   plot_x, plot_line, proj_width and plot_shape.
+
+   Shape 9 is drawn twice, the second time with the unclamped index: $1FFC clamps the shape to
+   9, but the loop at $2027 re-enters below the clamp with the raw plot_shape, so a shape of $0A
+   draws shape 9 and then $0A, gated on track_direction being positive.  shape_vector_start has
+   eleven entries for that reason.
+   ⚠ A plot_shape of exactly 9 hangs the 6502: it writes 9 into object_shape_clamped on every
+   pass and $2021's `CMP #$09` keeps agreeing.  The game never passes it (cars take shapes
+   0/1/2/4, corner markers 6, signs `(size & 7) + 7`, which misses 9 on every circuit); the twin
+   and the transliteration hang identically on it.
+
+   ⚠ Per-circuit SMC at $1FE9: Silverstone reads horizon_extent into X and an expansion
+   circuit plants `LDX #imm` instead (`make track-smc`).  Both arms are kept.
+   ⚠ $1FC3 writes $F0 into surface_colours[2], the road's own colour table, after copying it,
+   so the copy and the original differ from here on (draw_corner_markers does the same at $1B26
+   and $1B76). */
+/* Exit ABI: none (the shape side's banner, above scale_shape_vectors). */
 void plot_object_core(uint8_t slot)
 {
     int     i;
 
-    /* $1FB4-$1FC5 — this object's four MODE 5 colour patterns, taken from the ROAD's own
-       surface colours; the source's entry 2 is then forced to $F0 (see the group header).
+    /* $1FB4-$1FC5 — this object's four MODE 5 colour patterns, taken from the road's own
+       surface colours; the source's entry 2 is then forced to $F0 (see the banner).
        ⚠ The DEX/BPL's final X ($FF) is dead — $1FE0's `LDX #0` rewrites it before any read. */
     math_lo = slot;
     for (i = 3; i >= 0; i--)
         mem[MEM_colour_pattern_tbl + i] = mem[MEM_surface_colours + i];
     mem[MEM_surface_colours + 2] = 0xF0u;
 
-    /* $1FC6-$1FDD — pattern 1 is the object's OWN colour: a car takes it from its slot number,
+    /* $1FC6-$1FDD — pattern 1 is the object's own colour: a car takes it from its slot number,
        slots $14..$16 from the car behind's position in the order, and the road sign ($17)
        keeps the road's.  ⚠ The `LDA $38FC,X` here is fused into its store: A and its flags
        are dead, because $1FDE's `LDX #0` rewrites N and Z and $1FE2 rewrites A. */
@@ -13575,8 +13241,8 @@ void plot_object_core(uint8_t slot)
     /* $1FFA-$2000 — the shape, clamped to 9. */
     uint8_t shapeIdx = (plot_shape >= 0x0Au) ? 0x09u : plot_shape;
 
-    /* $2002-$2028 — and draw it.  The loop re-enters HERE, below the clamp, so a shape over
-       9 draws shape 9 and then its own (unclamped) index (group header, item 5). */
+    /* $2002-$2028 — and draw it.  The loop re-enters here, below the clamp, so a shape over
+       9 draws shape 9 and then its own unclamped index. */
     for (;;) {
         object_shape_clamped   = shapeIdx;
         mem[OBJ_VECTOR_CURSOR]  = mem[MEM_shape_vector_start + shapeIdx];
@@ -13598,60 +13264,22 @@ void plot_object_core(uint8_t slot)
            is negative; any other shape is done. */
         if (object_shape_clamped != 0x09u) return;
         if (track_direction & 0x80u) return;
-        shapeIdx = plot_shape;                         /* re-enter with the UNCLAMPED index */
+        shapeIdx = plot_shape;                         /* re-enter with the unclamped index */
     }
 }
 
 /* The object plotter's line side, the rest of draw_track_object's tree
-     $1C1C plot_view_src_line   THE line plotter: one edge of a shape into the view source
-     $1E38 fill_object_gap      ...and the columns BETWEEN two edges, filled solid
+     $1C1C plot_view_src_line   the line plotter: one edge of a shape into the view source
+     $1E38 fill_object_gap      ...and the columns between two edges, filled solid
 
-   plot_shape_edges calls these three times per edge; they are the only part of the
-   object pipeline that touches the frame buffer's source blocks.
+   plot_shape_edges calls these three times per edge; they are the only part of the object
+   pipeline that touches the view source blocks.  A shape edge is drawn as a column, not a line:
+   each call paints one column of the view source (plot_ptr = $3000 + column x $80, walking DEY
+   from span_line_cursor to the run's top), and fill_object_gap fills every column between two
+   edges with a single byte.  The slope lives in the endpoints' columns; there is no Bresenham.
 
-   What the group computes:
-
-   1. **A SHAPE EDGE IS DRAWN AS A COLUMN, NOT AS A LINE.**  Each call paints ONE column of the
-      view source — `plot_ptr` is `$3000 + column x $80` and the walk is `DEY` from
-      span_line_cursor down to the run's top — and the "line" between two edges is made by
-      fill_object_gap filling every column in between with a single byte.  There is no Bresenham
-      in the object plotter at all: the slope lives in the two endpoints' columns and the gap
-      fill closes the difference.
-   2. **THE THREE MODES ARE AN OPEN/CLOSE PAIR WITH A DEFERRED BYTE BETWEEN THEM.**  Mode 1
-      derives its own endpoint from shared_temp_7e, composes the column's byte, and — when the
-      two endpoints land in the SAME column — stows the byte's keep-mask in shared_temp_8c,
-      arms span_defer_pending and returns without painting.  Mode 2 then ORs
-      pixel_after_mask_tbl into that mask, so the two ends of a one-column span are merged into
-      one write instead of fighting over it.  Mode 0 is the closing arm's, and consumes the same
-      pair from the other side.
-   3. **THE COLOUR IS PER-PIXEL, AND THE MODE 5 BYTE IS ASSEMBLED FROM THREE MASK TABLES.**
-      pixel_keep_others_tbl clears the one pixel being written, colour_pattern_and_tbl keeps the
-      byte's other pixels and colour_pattern_keep_tbl selects what this pixel contributes.  The
-      pixel index is the low two bits of the endpoint's x — i.e. the sub-byte part of the
-      coordinate IS the pixel number, with no shifting.
-   4. ⚠ **AN UNTOUCHED SOURCE BYTE IS FILLED FROM THE ROAD, NOT LEFT ALONE.**  $1D5D calls
-      surface_colour_at for any cell reading $00, so an object drawn over unpainted road paints
-      the road's own surface colour first and then its own pixel over it.  And $55 is the
-      "written but empty" sentinel both ways: a cell holding $55 is treated as blank, and a
-      composed byte of 0 is stored AS $55 so the next pass does not mistake it for untouched.
-   5. ⚠ **`$1D86` IS `CLC / SBC`, NOT `SEC / SBC`** — the gap width is
-      `column - previous column - 1`, one less than it looks.  A width of 0 or negative skips the
-      gap fill entirely, which is what makes a one-column edge cost one write.
-   6. ⚠ **fill_object_gap WALKS TWO COLUMNS AT A TIME, BACKWARDS.**  Its `DEX / DEX` steps the
-      count by two and `DEC plot_ptr_hi` steps the pointer by $100 — which is exactly two of the
-      $80-spaced blocks — so each iteration writes a PAIR through plot_ptr and plot_ptr2, and an
-      odd width finishes with the single-column tail at $1E98.  The pointer is biased by
-      `$7F - span_line_cursor` so that a Y of $7F is the run's bottom line; every write therefore
-      lands inside `[span_top_line, span_line_cursor]` and never in the block's tail — which is
-      the only reason the shape tables that live in those tails survive (see the shape side, item 7).
-
-   $1C1E's `LDX` is not observable: it reads PVS_COLOUR only to store it in PVS_COLOUR_P, and X
-   and its N/Z are dead three instructions later, so writing the byte without going through X
-   changes nothing.
-
-   No hardware writes: the whole pass is RAM.
-   ⚠ Like the shape side, this is a second tenant of the point_delta window; the `PVS_*` defines
-   name the cells for this pass. */
+   RAM only.  ⚠ Like the shape side, a second tenant of the point_delta window; the PVS_*
+   defines name the cells for this pass. */
 
 #define VIEW_SRC_PAGE       0x30u     /* the forty $80-spaced source blocks start at $3000 */
 #define SRC_CELL_BLANK      0x55u     /* the "written but empty" sentinel */
@@ -13659,16 +13287,16 @@ void plot_object_core(uint8_t slot)
 #define PVS_MODE      MEM_hypot_max_hi   /* hypot_max_hi   — the entry mode, 0, 1 or 2 */
 #define PVS_BYTE      MEM_hypot_max_lo   /* hypot_max_lo   — the composed MODE 5 byte */
 #define PVS_KEEP      MEM_point_dist_hi   /* point_dist_hi  — ...and the mask that keeps the rest of a cell */
-#define PVS_PREV_COL  MEM_point_dist_lo   /* point_dist_lo  — the column the PREVIOUS call painted */
+#define PVS_PREV_COL  MEM_point_dist_lo   /* point_dist_lo  — the column the previous call painted */
 #define PVS_COLOUR    MEM_hypot_min_hi   /* hypot_min_hi   — this call's colour byte */
 #define PVS_COLOUR_P  MEM_hypot_min_lo   /* hypot_min_lo   — ...and the previous call's */
 #define PVS_HALF      MEM_math_lo   /* math_lo        — bit 0: is the column past the screen's middle */
-#define PVS_OTHER_COL MEM_projected_line   /* projected_line — the OTHER endpoint's column */
+#define PVS_OTHER_COL MEM_projected_line   /* projected_line — the other endpoint's column */
 #define PVS_OTHER_X   MEM_plot_ptr3_hi   /* plot_ptr3_hi   — ...and its x, at 6.2 fixed point */
 #define PVS_GAP_COL   MEM_math_hi   /* math_hi        — fill_object_gap's own column cursor */
 #define PVS_GAP_FLOOR MEM_point_delta_sign   /* point_delta_sign[0] — ...and its safe write cursor */
 
-/* Halve a signed 6.2 coordinate the way $1C42/$1C66 do: arithmetically, and ROUNDED TOWARD ZERO.
+/* Halve a signed 6.2 coordinate the way $1C42/$1C66 do: arithmetically, and rounded toward zero.
    Both 6502 arms — `SEC / ROR / ADC #0` negative, `LSR A` positive — are one signed divide, C
    rounding exactly as the ADC does; verified identical over all 256 inputs.  D=0 on the object
    path (static-map §Decimal mode).  Value only: the caller (derive_endpoint) overwrites A and
@@ -13689,17 +13317,22 @@ static void derive_endpoint(uint8_t halved, uint16_t xCell, uint16_t colCell)
     mem[colCell] = (uint8_t)(px >> 2);
 }
 
-/* $1E38  fill_object_gap — THE COLUMNS BETWEEN TWO EDGES
-   Fills `width` columns to the LEFT of the column in EDGE_COLUMN with one byte — the previous
-   call's colour, or the blank sentinel if that was 0 — over the run's own line range.  See the
-   group header, item 6, for the pair walk and the pointer bias. */
+/* $1E38  fill_object_gap — the columns between two edges
+   Fills `width` columns to the left of the column in EDGE_COLUMN with one byte (the previous
+   call's colour, or the blank sentinel if that was 0) over the run's own line range.
+   It walks two columns at a time, backwards: `DEX / DEX` steps the count by two and
+   `DEC plot_ptr_hi` the pointer by $100, two $80-spaced blocks, so each iteration writes a pair
+   through plot_ptr and plot_ptr2, and an odd width finishes with the one-column tail at $1E98.
+   The pointer is biased by `$7F - span_line_cursor` so that Y = $7F is the run's bottom line;
+   every write lands inside [span_top_line, span_line_cursor] and never in a block's tail, which
+   is where the shape tables live. */
 void fill_object_gap(void);   /* the shim — plot_view_src_line's close_gap arm calls it below */
 
-/* Exit ABI: none — see scale_shape_vectors_core.
-   THE PAIR WALK RUNS ON LOCALS.  Its stores land at block + [top + 1 .. span_line_cursor] of a
+/* Exit ABI: none (the shape side's banner, above scale_shape_vectors).
+   The pair walk runs on locals.  Its stores land at block + [top + 1 .. span_line_cursor] of a
    $3000-page source block, so they can never reach the zero-page cells that drive it (the column
    cursor, the bias, the floor, the fill byte, the pointers); those are read once and written back
-   once, with the values the 6502 leaves.  ⚠ object_gap_top_tbl is NOT hoisted: it sits at $3F4F,
+   once, with the values the 6502 leaves.  ⚠ object_gap_top_tbl is not hoisted: it sits at $3F4F,
    which is offset $4F of block $1E, so a run reaching line $4F of that column rewrites entry 0. */
 void fill_object_gap_core(uint8_t width)
 {
@@ -13717,7 +13350,7 @@ void fill_object_gap_core(uint8_t width)
     const uint8_t  topLine   = span_top_line;
     const uint8_t  bias      = (uint8_t)(0x7Fu - cursor);
     const uint8_t  floorLine = (uint8_t)(bias + topLine + (cursor <= 0x7Fu ? 1u : 0u));
-    mem[PVS_HALF]      = bias;                    /* ⚠ math_lo, reused: here the BIAS */
+    mem[PVS_HALF]      = bias;                    /* ⚠ math_lo, reused: here the bias */
     mem[PVS_GAP_FLOOR] = floorLine;
 
     /* $1E4B-$1E66 — the two write pointers, one source block apart, both biased down by `bias`.
@@ -13733,14 +13366,14 @@ void fill_object_gap_core(uint8_t width)
         ptr2 = (uint16_t)(ptr - 0x80u);
     }
 
-    /* $1E6D-$1E9D — one pass per column PAIR, walking the cursor back two columns at a time. */
+    /* $1E6D-$1E9D — one pass per column pair, walking the cursor back two columns at a time. */
     uint8_t remaining = width;
     for (;;) {
         uint8_t top = mem[MEM_object_gap_top_tbl + gapCol];
         uint8_t line;
         int     write = 1;
 
-        gapCol = (uint8_t)(gapCol - 2u);                 /* ⚠ back TWO columns */
+        gapCol = (uint8_t)(gapCol - 2u);                 /* ⚠ back two columns */
         if (top >= topLine) {
             line = (uint8_t)(top + bias + 1u);           /* this column's own top, rebased */
             if (line & 0x80u) {                          /* $1E7D — off the run entirely */
@@ -13752,7 +13385,7 @@ void fill_object_gap_core(uint8_t width)
         }
 
         if (write) {
-            /* $1E86-$1E9D — down to the foot of the run: a PAIR of columns while two are left,
+            /* $1E86-$1E9D — down to the foot of the run: a pair of columns while two are left,
                the single tail when only one is. */
             const int ram = pointer_is_ram(ptr), ram2 = pointer_is_ram(ptr2);
             if (remaining < 2u) {
@@ -13800,7 +13433,7 @@ static void slot_prev_col(void)
 }
 
 /* $1D25-$1D33 — both endpoints in one column?  Shared by mode 1 and by mode 0's deferred-merge
-   arm.  Returns 1 when the column DEFERS (the routine returns); 0 to fall on into the
+   arm.  Returns 1 when the column defers (the routine returns); 0 to fall on into the
    read-modify-write fill.  The deferral remembers the compare's carry (1) in bit 7. */
 static int slot_defer_if_same_column(uint8_t acc, uint8_t edgeCol)
 {
@@ -13812,18 +13445,34 @@ static int slot_defer_if_same_column(uint8_t acc, uint8_t edgeCol)
     return 1;
 }
 
-/* $1C1C  plot_view_src_line — ONE COLUMN OF ONE SHAPE EDGE
-   `mode` arrives in Y (0, 1 or 2 — see the group header, item 2) and the colour selector in A.
-   Exit ABI: none — see scale_shape_vectors_core.
-   BOTH FILLS RUN ON LOCALS.  The pointer is $3000 + column x $80 with the column under $28
-   and the lines at or under span_line_cursor (<= $4F), so a fill's stores stay inside rows
-   $00..$4F of the $3000..$43FF source blocks: they cannot reach the zero-page cells that drive
-   the loop (the pointer, the stop line, the column, the keep mask and the byte), nor any table
-   surface_colour_at reads — so each is read once, not per cell.  (The old "not hoisted" note was
-   column_gap_walk's, whose run really can cover $0082/$0085; this one cannot.)
-   THE AMIGA RUNS IT IN 68000 ASSEMBLY (src/platform/amiga/object_m68k.s, `make OBJASM=0` the
-   control): this body is then plot_view_src_line_c, the reference `make OBJCHECK=1` compares the
-   asm against call for call — see the dispatcher after it. */
+/* $1C1C  plot_view_src_line — one column of one shape edge
+   `mode` arrives in Y and the colour selector in A.  The three modes are an open/close pair
+   with a deferred byte between them.  Mode 1 derives its endpoint from shared_temp_7e, composes
+   the column's byte and, when both endpoints land in the same column, stows the byte's keep
+   mask in shared_temp_8c, arms span_defer_pending and returns without painting; mode 2 then ORs
+   pixel_after_mask_tbl into that mask, so the two ends of a one-column span merge into one
+   write.  Mode 0 is the closing arm's, and consumes the same pair from the other side.
+
+   The colour is per pixel: pixel_keep_others_tbl clears the pixel being written,
+   colour_pattern_and_tbl keeps the byte's other pixels and colour_pattern_keep_tbl selects this
+   pixel's contribution.  The pixel index is the low two bits of the endpoint's x.
+   ⚠ An untouched source byte is filled from the road first: $1D5D calls surface_colour_at for
+   any cell reading $00, then the object's pixel goes over it.  $55 is the "written but empty"
+   sentinel both ways: a cell holding $55 is blank, and a composed 0 is stored as $55.
+   ⚠ $1D86 is `CLC / SBC`, so the gap width is `column - previous column - 1`; a width of 0 or
+   less skips the gap fill, and a one-column edge costs one write.
+   $1C1E's `LDX` is not observable (X and its N/Z are dead three instructions later), so
+   PVS_COLOUR_P is written without going through X.
+
+   Exit ABI: none (the shape side's banner, above scale_shape_vectors).
+   Both fills run on locals.  The pointer is $3000 + column x $80 with the column under $28 and
+   the lines at or under span_line_cursor (<= $4F), so a fill's stores stay inside rows $00..$4F
+   of the source blocks: they cannot reach the zero-page cells that drive the loop (the pointer,
+   the stop line, the column, the keep mask and the byte), nor any table surface_colour_at
+   reads, so each is read once.
+   On the Amiga it runs in 68000 assembly (src/platform/amiga/object_m68k.s; `make OBJASM=0` is
+   the control): this body is then plot_view_src_line_c, the reference `make OBJCHECK=1`
+   compares the asm against call for call (see the dispatcher after it). */
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_OBJ_ASM)
 #define REVS_OBJ_ASM_ON 1
 static void plot_view_src_line_c(uint8_t mode, uint8_t colourSelect)
@@ -13834,18 +13483,18 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     unsigned pixel;
     uint8_t  edgeCol, blockStart, acc;
 
-    /* $1C1C-$1C3D — the entry state.  The colour this call chooses becomes the NEXT call's
+    /* $1C1C-$1C3D — the entry state.  The colour this call chooses becomes the next call's
        "previous", which is how a span's two ends agree on a byte. */
     mem[PVS_MODE]     = mode;
     mem[PVS_COLOUR_P] = mem[PVS_COLOUR];                             /* $1C1E-$1C21 */
     mem[PVS_COLOUR]   = mem[MEM_colour_pattern_tbl + (colourSelect & 0x03u)];
     mem[PVS_PREV_COL] = mem[EDGE_COLUMN];
     shared_temp_76    = mem[MEM_colour_pattern_tbl + ((mem[OBJ_EDGE_STYLE] & 0x0Cu) >> 2)];
-    plot_ptr_lo       = 0x00u;   /* ⚠ the LANE only, deliberately: nothing reads plot_ptr_v
+    plot_ptr_lo       = 0x00u;   /* ⚠ the lane only, deliberately: nothing reads plot_ptr_v
                                     between here and the whole-word store at $1C7B below, so the
                                     mirror is left to that one (cf. the mirror rule at the top) */
 
-    /* $1C3E-$1C7A — the endpoints.  Mode 1 derives its OWN from shared_temp_7e and then the
+    /* $1C3E-$1C7A — the endpoints.  Mode 1 derives its own from shared_temp_7e and then the
        other; mode 0 takes the saved pair and re-derives the other over it; mode 2 takes the
        saved pair and derives nothing. */
     if (mode == 1) {
@@ -13929,7 +13578,7 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                 return;
             }
             acc = acc ? acc : SRC_CELL_BLANK;                /* $1D0A */
-            /* $1DE5-$1DEE — the PLAIN fill: no read, no surface colour, just the byte. */
+            /* $1DE5-$1DEE — the plain fill: no read, no surface colour, just the byte. */
             {
                 const unsigned base = plot_ptr_v;
                 const int      ram  = pointer_is_ram(base);
@@ -13955,7 +13604,7 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                         | shared_temp_76);
     }
 
-    /* $1D44-$1D6E — the READ-MODIFY-WRITE fill, which is the one that consults the road.  A
+    /* $1D44-$1D6E — the read-modify-write fill, which is the one that consults the road.  A
        cell reading $55 takes the byte (or stays $55); an untouched $00 cell first takes the
        surface's own colour; either way the kept pixels merge with the byte and a 0 result is
        stored as $55. */
@@ -13994,7 +13643,7 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 }
 
 #ifdef REVS_OBJ_ASM_ON
-/* THE ASM'S TWO C CALLEES are the C's own: fill_object_gap_core (rare), and the gap walk
+/* The asm's two C callees are the C's own: fill_object_gap_core (rare), and the gap walk
    bracketed by the EDGE_COLUMN bump exactly as the tail above brackets it. */
 void pvs_line_m68k(unsigned mode, unsigned colourSelect);
 void pvs_asm_gap_walk(unsigned mode, unsigned blockStart)
@@ -14014,10 +13663,10 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
    (amiga/obj_check.gdb).  A mismatch address above $FFFF names a pointer word: $10000 plot_ptr_v,
    $10001 plot_ptr2_v.  ⚠ A correctness arm: three 64 KB copies a call, so its phase rows are void. */
 volatile unsigned long g_objChecks        = 0;
-volatile unsigned long g_objMismatch      = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_objMismatch      = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_objMismatchAt    = 0;
 volatile unsigned long g_objFuzzCases     = 0;
-volatile unsigned long g_objFuzzMismatch  = 0;   /* ⚠ MUST BE 0 */
+volatile unsigned long g_objFuzzMismatch  = 0;   /* ⚠ Must be 0 */
 volatile unsigned long g_objFuzzMismatchAt = 0;
 volatile unsigned long g_objModes[3]      = { 0, 0, 0 };   /* the game's calls, per mode */
 volatile unsigned long g_objFuzzPainted   = 0;   /* fuzz cases that changed a source cell — must be non-zero */
@@ -14042,7 +13691,7 @@ static void obj_compare(uint8_t mode, uint8_t sel, volatile unsigned long* bad,
         (*bad)++;
         return;
     }
-    {   /* ENDIAN-OK: an EQUALITY test a longword at a time (see emit_width_compare). */
+    {   /* ENDIAN-OK: an equality test a longword at a time (see emit_width_compare). */
         const uint32_t* a = (const uint32_t*)(const void*)mem;
         const uint32_t* c = (const uint32_t*)(const void*)s_objAfterC;
         for (i = 0; i < 65536u / 4u; i++)
@@ -14056,7 +13705,7 @@ static void obj_compare(uint8_t mode, uint8_t sel, volatile unsigned long* bad,
     }
 }
 
-/* THE FUZZER, once, before the first real call.  A few objects a frame reach few of the arms
+/* The fuzzer, once, before the first real call.  A few objects a frame reach few of the arms
    (the same-column deferral, the classifier's six exits, a column off the viewport, a run with
    no height), so each case randomises every input the routine and its two C callees read — the
    source blocks (mostly empty, some $55), the block starts, the pixel and pattern tables, the
@@ -14092,9 +13741,8 @@ static void obj_fuzz(void)
             mem[MEM_view_line_surface + i] = (uint8_t)(w >> 16);
         }
         for (i = 0; i < 0x80u; i++) mem[MEM_edge_style + i] = (uint8_t)OBJ_RND();
-        /* ⚠ A quarter of every colour and mask entry is ZERO: a composed byte of 0 (stored as $55)
-           needs zero colours or masks, and uniform bytes almost never give one — sabotage 3 (the 0
-           stored as 0) survived the fuzzer until this, caught only by the game. */
+        /* ⚠ A quarter of every colour and mask entry is zero: a composed byte of 0 (stored as
+           $55) needs zero colours or masks, which uniform random bytes almost never give. */
 #define OBJ_RND_Z() ((OBJ_RND() & 3u) == 0 ? 0u : OBJ_RND())
         for (i = 0; i < 4u; i++) {
             mem[MEM_surface_colours + i]       = (uint8_t)OBJ_RND_Z();
@@ -14157,52 +13805,21 @@ void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 #endif /* REVS_OBJ_ASM_ON */
 
 /* The driving controls
-   Seventeen functions, ~700 bytes: everything `read_driving_controls` reaches.  One cluster, not
-   seventeen, because the chain is spliced by TAIL JUMPS across four regions —
+   Seventeen functions, ~700 bytes: everything read_driving_controls reaches.  One pass with
+   eight entry points, spliced by tail jumps across four regions:
 
      $1579 read_driving_controls → $1EE9 steer_assist_dispatch → $15F4 steer_demand_from_slip
         → $160D steer_demand_store → $1EFA steer_apply_with_assist → $1F08 apply_steering_assist
         → $1612 apply_steer_demand → $162D clamp_and_store_steer_angle → the throttle and gears
 
-   — so what the listing splits into eight is ONE pass with eight entry points.  Under it:
-   $1F9B limit_steer_demand, $63C5 poll_steering_assist, $503F adc_read, and the text path
-   $42D0 draw_gear_indicator → $508C vdu_char_wide / $5092 vdu_char_def → $509D vdu_char_emit
-   → $50FA mode5_addr_for_cell → $50FC mode5_addr.
+   Under it: $1F9B limit_steer_demand, $63C5 poll_steering_assist, $503F adc_read, and the text
+   path $42D0 draw_gear_indicator → $508C vdu_char_wide / $5092 vdu_char_def → $509D
+   vdu_char_emit → $50FA mode5_addr_for_cell → $50FC mode5_addr.
 
-   What the group computes:
-
-   1. **The joystick's steering is SQUARED.**  $1591-$1593 stores the centred reading in math_hi
-      and calls `mul8` with the same value still in A: demand = reading x reading.
-   2. **Computer Assisted Steering is TWO assists, chosen by how hard you ask.**  Demand < 5 →
-      `steer_demand_from_slip` (cancels the car's own slip: model_state element $0A, quartered,
-      never more than the lock already applied).  Bigger → `apply_steering_assist`, which reads a
-      track edge ahead and steers toward it — edge_x slot $32 or $0A, picked on the demand's sign.
-   3. **The assist's gain falls with speed and is capped by the corner.**  `($3C - road_speed)*2
-      + $20`, floored at $20; the live section's curvature (`section_flags & $7F`, clamped 2..7,
-      shifted up four) caps it.  Weakest through a tight corner.
-   4. ⚠ **`poll_steering_assist` preserves A across itself (PHA…PLA) and both callers depend on
-      it** — the `CMP #5` at $1EF3 compares the CALLER'S demand, not the assist setting.
-   5. **The assist lamp is four screen bytes written by that same routine** — $77DB/$77DC/$77E3/
-      $77E4 take `steering_assist_flag` shifted right 0..3: dark at 0, four lit pixels at $80.
-      Reading the setting and drawing it are one call.
-   6. **The gear digit is one character drawn twice.**  `draw_gear_indicator` calls
-      `vdu_char_wide` with shared_temp_77 = $22 then $FF — left four pixels, then right four,
-      `vdu_char_column` INCing itself between.  A MODE 5 byte is four 2-bit pixels, so an
-      8-pixel MOS character needs two.  This is where the dashboard's double-width text comes from.
-   7. ⚠ **`char_row_addr_lo`'s entries 8..15 ARE `pixel_keep_others_tbl`** — the tables overlap
-      at $3FE8, so `mode5_addr` may only be asked for character rows 0..7 and 16..31.
-      [INFERRED] deliberate: it records which rows the text path owns.
-
-   ⚠ **$1593 is a per-circuit SMC site and it is the squaring itself** — Silverstone's
-   `JSR mul8` is what an expansion circuit's hook replaces, so the twin dispatches on the operands
-   instead of baking the call.  [MEASURED] a randomised pre-state traps 255 times in 256.
-
-   ⚠ Four MOS calls here, each able to clobber A, X and Y with no hint in the listing: OSBYTE $80
-   in `adc_read` and in the joystick gear-change poll, OSWORD 10 in `vdu_char_emit`, OSWRCH in
-   `vdu_char_def`'s text arm.
-
-   ⚠ The steering chain is a SECOND TENANT of math_lo/math_hi/shared_temp_76 — the `STEER_*`
-   defines below are its own names for them. */
+   ⚠ Four MOS calls here can clobber A, X and Y: OSBYTE $80 in adc_read and in the joystick
+   gear-change poll, OSWORD 10 in vdu_char_emit, OSWRCH in vdu_char_def's text arm.
+   ⚠ The steering chain is a second tenant of math_lo/math_hi/shared_temp_76; the STEER_*
+   defines below name its cells. */
 #define STEER_SIGN     MEM_math_lo   /* math_lo        — the demand's sign byte; bit 0 = negative */
 #define STEER_DEMAND   MEM_math_hi   /* math_hi        — ...and its magnitude */
 #define STEER_KEYS     MEM_shared_temp_76   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
@@ -14217,10 +13834,12 @@ uint8_t vdu_char_emit_core(void);                  /* returns the block char lef
 void adc_read(void);   /* the 6502-ABI shim; the two driver callers below still enter it that way */
 void draw_gear_indicator(void);   /* likewise: read_pedals_and_gears_core enters it via the shim */
 
-/* $50FC  mode5_addr — THE SCREEN ADDRESS OF A CHARACTER CELL
+/* $50FC  mode5_addr — the screen address of a character cell
    plot_ptr = char_row_addr[Y >> 3] + A x 2, and Y comes back as the scan line within that
-   character row.  $50FA is the entry that multiplies a character COLUMN by four first, so the
-   pair together computes `column x 8` — one MODE 5 cell. */
+   character row.  $50FA is the entry that multiplies a character column by four first, so the
+   pair computes `column x 8`, one MODE 5 cell.
+   ⚠ char_row_addr_lo's entries 8..15 are pixel_keep_others_tbl (the tables overlap at $3FE8),
+   so mode5_addr may only be asked for character rows 0..7 and 16..31. */
 Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y)
 {
     /* $50FC-$5118 — plot_ptr = char_row_base + (quarterOffset x 2).  The 6502 does it as
@@ -14248,23 +13867,23 @@ Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y)
 
 Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y)
 {
-    /* $50FA — a character COLUMN is four quarter-cells wide (ASL A / ASL A), then mode5_addr. */
+    /* $50FA — a character column is four quarter-cells wide (ASL A / ASL A), then mode5_addr. */
     return mode5_addr_core((uint8_t)(column << 2), y);
 }
 
-/* $509D  vdu_char_emit — ONE CHARACTER INTO THE DASHBOARD
+/* $509D  vdu_char_emit — one character into the dashboard
    $508C  vdu_char_wide
    $5092  vdu_char_def
-   OSWORD 10 hands back the character's 8x8 bitmap; shared_temp_77 then says which HALF of it
+   OSWORD 10 hands back the character's 8x8 bitmap; shared_temp_77 then says which half of it
    this cell carries ($00 = no expansion, bit 7 clear = the left four pixels, set = the right
-   four shifted up), and the eight bytes go into the screen BOTTOM-UP. */
+   four shifted up), and the eight bytes go into the screen bottom-up. */
 uint8_t vdu_char_wide_core(uint8_t ch)
 {
     mem[MEM_vdu_char_block] = ch;                          /* $508C — shared_temp_77 is the caller's */
     return vdu_char_emit_core();                       /* the block byte comes back live */
 }
 
-/* $5092 vdu_char_def — the OSWRCH-path branch and its BIT flags live in the SHIM (they are
+/* $5092 vdu_char_def — the OSWRCH-path branch and its BIT flags live in the shim (they are
    6502-ABI reconstruction, not computation); the core is only the bitmap-emit arm. */
 uint8_t vdu_char_def_core(uint8_t ch)
 {
@@ -14277,7 +13896,7 @@ uint8_t vdu_char_emit_core(void)
 {
     /* $50A1-$50A9 — OSWORD 10 fills the 8-row bitmap into the block at $62C3.
        MOS ABI — documented cpu exception: OSWORD wants the parameter-block pointer in X/Y and
-       the reason code in A, and clobbers X/Y.  The routine's $509D/$50EF PUSH/PULL of the
+       the reason code in A, and clobbers X/Y.  The routine's $509D/$50EF push/pull of the
        caller's X/Y is reconstructed by each shim (and the i=5 fixture ignores the two stack
        residue bytes the transliterated oracle leaves at $01FE/$01FF). */
     mos_osword(0x0Au, 0xC3u, 0x62u);   /* param block at $62C3, reason code 10 */
@@ -14294,7 +13913,7 @@ uint8_t vdu_char_emit_core(void)
         }
     }
 
-    /* $50C6-$50EA — blit the eight rows BOTTOM-UP; stepping off the top of a character row
+    /* $50C6-$50EA — blit the eight rows bottom-up; stepping off the top of a character row
        backs plot_ptr up one MODE-5 character row ($0140 bytes) and resets the line to 7. */
     Mode5Addr m = mode5_addr_for_cell_core(mem[MEM_vdu_char_column], mem[MEM_vdu_char_row]);  /* column, row */
     uint8_t line = m.line;
@@ -14316,12 +13935,12 @@ uint8_t vdu_char_emit_core(void)
                point inlined in many places.  The mem[] store above stays, so owning the rows
                needs no reader gate. */
             REVS_PLOT_BYTE(dst, byte);
-            /* ⚠ UNPROVEN BY CONSTRUCTION, and it cannot be proven here.  Dropping this line
+            /* ⚠ Unproven by construction, and it cannot be proven here.  Dropping this line
                passes every case, because the cluster's fixture pins char_row_addr to $5800+ —
-               not for convenience but because a page-$00/$01 base breaks the TRANSLITERATED
-               ORACLE, whose blit then overwrites the X/Y it pushed at $01FF/$01FE.  So the one
+               not for convenience but because a page-$00/$01 base breaks the transliterated
+               oracle, whose blit then overwrites the X/Y it pushed at $01FF/$01FE.  So the one
                plant that would exercise the guard is the one plant that invalidates the
-               reference.  Kept anyway: the table is DATA, and a per-circuit hook patching it is
+               reference.  Kept anyway: the table is data, and a per-circuit hook patching it is
                exactly the class a Silverstone run cannot rule out. */
             plot_store_resync(dst, byte);
             line = (uint8_t)(line - 1);
@@ -14340,7 +13959,7 @@ uint8_t vdu_char_emit_core(void)
 }
 
 /* ---- shared by every native text printer (the cluster header is at $3250, further down) ----
-   $0078's OTHER TENANCY: hypot_min_lo to the ground-plane maths, the digit FIELD MASK to the
+   $0078's other tenancy: hypot_min_lo to the ground-plane maths, the digit field mask to the
    number printers.  The arithmetic-window addresses carry one global symbol each, so the
    second tenancy is a file-local name. */
 #define print_field_mask   hypot_min_lo
@@ -14381,7 +14000,7 @@ static void field_mask_set(uint8_t mask)
     hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | mask);
 }
 
-/* LSR $78 — the field mask the other way, one position BACK (the lap-value column printer's
+/* LSR $78 — the field mask the other way, one position back (the lap-value column printer's
    blank-minutes arm), returning the new mask so a caller can branch on the 6502's Z.  The
    shifted-out bit lands in C on the 6502 and is dead at the one site. */
 static uint8_t field_mask_lsr(void)
@@ -14391,13 +14010,13 @@ static uint8_t field_mask_lsr(void)
     return print_field_mask;
 }
 
-/* $3D50  print_spaces — `count` SPACES THROUGH THE VDU CHAR PATH
+/* $3D50  print_spaces — `count` spaces through the VDU char path
    Each space goes through the same dispatch vdu_char_def uses: OSWRCH when
    text_out_via_mos bit 7 is set (X/Y ambient), otherwise the bitmap emitter.
-   The 6502 counts down and tests AFTER the decrement, so a count of 0 prints
-   256 — a do-while.  The loop counter was math_lo ($74); it is a local now, with the
-   cell's exit value (0) still written.  Exit A = the space byte ($20); the caller's exit N/Z come from the final
-   DEC to zero (N=0, Z=1) — three callers branch on that Z. */
+   The 6502 counts down and tests after the decrement, so a count of 0 prints
+   256 — a do-while.  The loop counter is a local, with math_lo's ($74) exit value (0) still
+   written.  Exit A = the space byte ($20); the exit N/Z come from the final DEC to zero
+   (N=0, Z=1), and three callers branch on that Z. */
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 {
     uint8_t c = count;
@@ -14409,22 +14028,19 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
     return 0x20u;                               /* both paths return the character in A */
 }
 
-/* $4D7E  text_script_interp — RUN A TEXT SCRIPT
-   A script is a byte string, pointed to by (text_script_ptr_lo[X],
-   text_script_ptr_hi[X]) for script index X, terminated by $FF.  Each byte:
+/* $4D7E  text_script_interp — run a text script
+   A script is a byte string, pointed to by (text_script_ptr_lo[X], text_script_ptr_hi[X]) for
+   script index X, terminated by $FF.  Each byte:
        $00..$9F  a character  -> vdu_char_def
        $A0..$C7  N spaces     -> print_spaces  (N = byte-$A0)
        $C8..$FE  a command    -> recurse into sub-script (byte-$C8), except
                                  $FE (== $C8+$36) which runs select_text_variant
        $FF       end of script -> return
-   The command operand (byte-$C8) was math_lo ($74); a C local now, with the cell's
-   exit value still written.  Recursion is the plain 6502 idiom (TXA/PHA/TYA/PHA around a JSR to
-   self); as C recursion the two mem-stack bytes the 6502 pushes have no twin, so
-   the fixture ignores that residue window (see validate_native.c).
-   ⚠ print_spaces always exits Z=1 (its final DEC math_lo -> 0), so the 6502's
-   "draw the char after the spaces" arm ($4DC1 reached with C set) is dead at
-   runtime — reproduced here as the always-taken skip, and `make validate` is the
-   proof (a real Z=0 exit would diverge into vdu_char_def and fail the diff). */
+   The command operand (byte-$C8) is a local, with math_lo's ($74) exit value still written.
+   The 6502 recurses with TXA/PHA/TYA/PHA around a JSR to itself; as C recursion its two stack
+   bytes have no counterpart, so the fixture ignores that window (validate_native.c).
+   ⚠ print_spaces always exits Z=1 (its final DEC math_lo reaches 0), so the "draw the char
+   after the spaces" arm ($4DC1 with C set) is dead: reproduced as the always-taken skip. */
 void select_text_variant_core(uint8_t variant);   /* mutually recursive */
 #define TEXT_SCRIPT_VARIANT_CMD 0x36u           /* the $FE command -> select_text_variant */
 
@@ -14438,16 +14054,16 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
            ⚠ Reading it once per reload rather than once per byte is only sound because nothing
            the walk calls writes plot_ptr2: vdu_char_def / print_spaces / vdu_char_emit use
            plot_ptr, and the MOS layer touches neither (audited across revs_native.c,
-           src/platform/mos.cpp and src/platform/teletext.*).  The two arms that CAN clobber it —
+           src/platform/mos.cpp and src/platform/teletext.*).  The two arms that can clobber it —
            select_text_variant and the recursion — both `break` to this reload, which rewrites it
            unconditionally. */
         plot_ptr2_v = (uint16_t)(mem[MEM_text_script_ptr_lo + tableIdx]
                                  | ((unsigned)mem[MEM_text_script_ptr_hi + tableIdx] << 8));
         plot_ptr2_marshal_out();
         /* ...and the same audit is what lets the hardware-window test be hoisted here: `y` is a
-           byte, so a script is the 256 bytes above its base — one range check per RELOAD instead
-           of one per character.  ⚠ The else arm is ARGUED, not exercised: the fixture plants every
-           leaf in low RAM, and the pointer tables are DATA a per-circuit hook could repoint, which
+           byte, so a script is the 256 bytes above its base — one range check per reload instead
+           of one per character.  ⚠ The else arm is argued, not exercised: the fixture plants every
+           leaf in low RAM, and the pointer tables are data a per-circuit hook could repoint, which
            is the class a Silverstone run cannot rule out.  So it stays. */
         const unsigned scriptBase  = plot_ptr2_v;
         const int      scriptIsRam = page_is_ram(scriptBase);
@@ -14474,7 +14090,7 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
                 print_spaces_core(count, tableIdx, y);  /* $4DBC — X/Y ambient for the MOS arm */
                 /* $4DBF BEQ — always taken (see the Z-always-set note above) */
             } else {                             /* $4DC1 plain character */
-                /* vdu_char_def's OSWRCH arm lives in its SHIM, not its core, so dispatch here the
+                /* vdu_char_def's OSWRCH arm lives in its shim, not its core, so dispatch here the
                    way the shim does: OSWRCH when text_out_via_mos bit 7 is set (X/Y ambient),
                    otherwise the bitmap emitter.  X = tableIdx, Y = y (the 6502's ambient regs). */
                 if (text_out_via_mos & 0x80u)
@@ -14487,28 +14103,22 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
     }
 }
 
-/* $6571  menu_wait_key — THE FRONT-END MENU SELECTOR
-   The front-end chain ($63E0) calls this five times to read one menu answer.
-   It renders/polls in a loop until one of menu_key_tbl[0..count] ($39E0, the
-   negative-INKEY codes for SPACE/1/2/3) is held, then highlights the chosen row
-   and returns the confirmed selection in X.  `count` arrives in X and is stored
-   in math_hi ($75) — this is the LAST shipping reader of math_hi in the
-   wide-value cleanup.
-     • A non-zero index selects that row: it is remembered in hypot_min_lo, and on
-       the FIRST pick the menu text (script $1E) is shown once (shared_temp_77 goes
-       0 -> $1E, the "already shown" latch).  The chosen row is then re-highlighted
-       ($81) among the others ($84) and the loop redraws.
-     • Index 0 (SPACE) CONFIRMS, but only once something has been shown
-       (shared_temp_77 != 0); it writes $98 to $7FC5 and returns hypot_min_lo - 1.
-   ⚠ math_hi is READ back (`LDY math_hi` at the scan top, `CPY math_hi` in the
-   highlight loop) AFTER child calls (abort_if_quit_keys, text_script_interp), so the twin
-   reads/writes the cell directly and never caches `count` — the #159-CRUX-safe
-   form (a child that overwrote $75 would then be honoured identically by both
-   models).  Exit X is live (every caller reads it); the shim rebuilds A/N/Z.
-   ⚠ abort_if_quit_keys ($3261) dispatches on abort_state (mem[$1C]): with bit 7
-   CLEAR, and the abort keys held, it does TXS + re-enter front_end_menus (the
-   SHIFT+abort longjmp), so any run of this routine — real or fixture — is only
-   well-defined with $1C bit 7 SET (the normal in-menu state). */
+/* $6571  menu_wait_key — the front-end menu selector
+   The front-end chain ($63E0) calls this five times to read one menu answer.  It renders and
+   polls until one of menu_key_tbl[0..count] ($39E0, the negative-INKEY codes for SPACE/1/2/3)
+   is held, then highlights the chosen row and returns the confirmed selection in X.  `count`
+   arrives in X and is stored in math_hi ($75).
+     • A non-zero index selects that row: it is remembered in hypot_min_lo, and on the first
+       pick the menu text (script $1E) is shown once (shared_temp_77 goes 0 -> $1E, the "already
+       shown" latch).  The chosen row is re-highlighted ($81) among the others ($84).
+     • Index 0 (SPACE) confirms, once something has been shown (shared_temp_77 != 0): it writes
+       $98 to $7FC5 and returns hypot_min_lo - 1.
+   ⚠ math_hi is read back (`LDY math_hi` at the scan top, `CPY math_hi` in the highlight loop)
+   after child calls (abort_if_quit_keys, text_script_interp), so the cell is used directly and
+   `count` is never cached.  Exit X is live (every caller reads it); the shim rebuilds A/N/Z.
+   ⚠ abort_if_quit_keys ($3261) dispatches on abort_state (mem[$1C]): with bit 7 clear and the
+   abort keys held it does TXS and re-enters front_end_menus (the SHIFT+abort longjmp), so a run
+   of this routine is well-defined only with $1C bit 7 set (the normal in-menu state). */
 
 uint8_t menu_wait_key_core(uint8_t count)
 {
@@ -14521,7 +14131,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         platform_poll_events();
         abort_if_quit_keys_core();                 /* $6577 — the SHIFT+abort poll (a longjmp on a hit) */
 
-        /* $657a..$658b — scan menu_key_tbl DOWN from `count` for the first held key */
+        /* $657a..$658b — scan menu_key_tbl down from `count` for the first held key */
         uint8_t idx = math_hi;                     /* $657a LDY math_hi */
         int matched = 0;
         for (;;) {
@@ -14558,31 +14168,25 @@ uint8_t menu_wait_key_core(uint8_t count)
     }
 }
 
-/* $7B4A  draw_starting_lights — WALK THE LIGHT SEQUENCE, PAINT THE COLUMN
-   Lives in the $7B00 overlay.  Does nothing outside the race proper (session_is_race
-   positive) or once the lights are dark (state 0).  Otherwise it advances
-   start_light_state through its sequence and lays a light column straight into
-   view_src_blocks column 37 (the screen's right edge): ten rows of $F0, then the
+/* $7B4A  draw_starting_lights — walk the light sequence, paint the column
+   In the $7B00 overlay.  Does nothing outside the race proper (session_is_race positive) or
+   once the lights are dark (state 0).  Otherwise it advances start_light_state and lays a light
+   column into view_src_blocks column 37 (the screen's right edge): ten rows of $F0, then the
    arm's pattern into the middle six, XORing a second value between rows.
-     • state $80  — top of the sequence: force $F0 ("all lit") until the engine
-                    catches (engine_running bit 7), else hold; pattern $80.
-     • state $A0  — hold 64 frames (loop_counter AND $3F); when it lapses, release
-                    to $28 with the green pattern $F2/$05, otherwise pattern $A5/$77.
-     • otherwise  — step the state down by one; a still-negative result keeps the
-                    amber pattern ($80 at/above $C0, else $A5/$77); a positive result
-                    uses the green pattern $F2/$05.
-   The XOR value lived in math_lo ($74) across the fill loop; a local now, with the
-   cell's exit value still written.
-   Returns the painted pattern (the byte the 6502 PHA'd), or -1 on the early exits
-   so the shim can reproduce that push's stack residue; exit regs/flags are dead at
-   the sole (native) caller, race_main_loop.
-   TWO HALVES, because they run at DIFFERENT RATES once the simulation is decoupled from
-   painting (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  Walking the sequence is
-   elapsed time — a 64-frame dwell, one state per frame — so it belongs to the slow tick.
-   Painting the column is a view SOURCE write, and the sweep consumes sources destructively,
-   so it has to happen on every painted frame whether or not a tick fell inside it.  The
-   paint repeats the last walked arm; draw_starting_lights_core is the two in their 6502
-   order, which is what the fixture and the oracle path run. */
+     • state $80: top of the sequence; force $F0 ("all lit") until the engine catches
+       (engine_running bit 7), else hold; pattern $80.
+     • state $A0: hold 64 frames (loop_counter AND $3F); when it lapses, release to $28 with the
+       green pattern $F2/$05, otherwise pattern $A5/$77.
+     • otherwise: step the state down by one; a still-negative result keeps the amber pattern
+       ($80 at/above $C0, else $A5/$77); a positive one uses the green pattern $F2/$05.
+   The XOR value is a local, with math_lo's ($74) exit value still written.
+   Returns the painted pattern (the byte the 6502 PHA'd), or -1 on the early exits so the shim
+   can reproduce the push's stack residue; the exit is dead at race_main_loop.
+   Two halves, because they run at different rates once the simulation is decoupled from
+   painting (docs/faithfulness-seam.md §THE FRAME-RATE-INDEPENDENT SIMULATION).  Walking the
+   sequence is elapsed time, so it runs on the slow tick.  Painting the column is a view source
+   write, which the sweep consumes, so it runs on every painted frame, repeating the last walked
+   arm.  draw_starting_lights_core runs the two in their 6502 order (the fixture and oracle). */
 static uint8_t s_lightPattern, s_lightEor;
 static int     s_lightLit;                          /* the last walk reached the paint */
 
@@ -14660,26 +14264,21 @@ int draw_starting_lights_core(void)
     return starting_lights_paint_core();
 }
 
-/* $4F23 / $4F39  irq1v_release + enter_mos_text_mode — THE END OF A RACE
-   The last thing every race does, and it undoes exactly what claimed the raster.  IRQ1V goes
-   back to whoever owned it before irq1v_band_schedule took it, and the User VIA's T1 interrupt
-   — the band timer that drove the five-band palette split — is disabled, so no further band
-   interrupt can arrive.  Then all four sound channels stop, and character output is handed back
-   to the MOS VDU driver for MODE 7, which is all enter_mos_text_mode does (plus text script $2E,
-   the page that greets you on the way out).
+/* $4F23 / $4F39  irq1v_release + enter_mos_text_mode — the end of a race
+   Undoes what claimed the raster.  IRQ1V goes back to its owner before irq1v_band_schedule, and
+   the User VIA's T1 interrupt (the band timer) is disabled.  Then all four sound channels stop,
+   and character output goes back to the MOS VDU driver for MODE 7, which is all
+   enter_mos_text_mode does (plus text script $2E, the page shown on the way out).
 
-   ⚠ The two vector-page writes MUST stay bus_write.  They are plain RAM, but the platform has
-   to be TOLD when the game releases IRQ1V: the backend's IRQ1V shim gates itself on
-   mem[$0204]/mem[$0205] still holding $4E5C (src/platform/bbc_hw.cpp), and the transpiler routes
-   the OS vector page for the same reason.
-   The SEI/CLI pair brackets the vector update so a band interrupt cannot land between the two
-   bytes on the 6502.  It is not modelled: interrupt delivery is never gated on `cpu.I`
-   (bbc_hw.cpp writes it at the IRQ entry and never reads it).  The backend makes the update
-   atomic: the host calls the ISR from a controlled point, and on the Amiga the vector pair is
-   plain RAM the VERTB handler reads once per field.
+   ⚠ The two vector-page writes must stay bus_write: the backend's IRQ1V shim gates itself on
+   mem[$0204]/mem[$0205] still holding $4E5C (src/platform/bbc_hw.cpp), and the transpiler
+   routes the OS vector page for the same reason.
+   The SEI/CLI pair around the vector update is not modelled: interrupt delivery is never gated
+   on `cpu.I`.  The host calls the ISR from a controlled point, and on the Amiga the VERTB
+   handler reads the vector pair once per field, so the update is atomic anyway.
 
-   Result-only: the exit is dead at every caller.  Both do `JSR irq1v_release` / `RTS` — $17BF in
-   the transliterated race body, and race_main_loop_core's very last statement. */
+   Result-only: both callers do `JSR irq1v_release` / `RTS` ($17BF in the transliterated race
+   body, and race_main_loop_core's last statement). */
 void enter_mos_text_mode_core(void)
 {
     text_out_via_mos = 0x80u;              /* $4F39-$4F3B — negative: characters go to the MOS */
@@ -14695,30 +14294,20 @@ void irq1v_release_core(uint8_t ambientY)
     enter_mos_text_mode_core();                    /* $4F39 — fall-through, not a call */
 }
 
-/* $4F44  update_horizon_band — MOVE THE HORIZON WITH THE HILLS
+/* $4F44  update_horizon_band — move the horizon with the hills
+   The body's 21st call.  Band 1 is the sky, so its duration is where the sky/track split sits.
+   The routine takes $3C - horizon_extent, clamps it (floor $F5 on the negative side; a
+   per-circuit SMC compare and clamp on the positive side), then stores band 1's duration as
 
-   The body's 21st call.  Band 1 is the sky; its duration is where the sky/track
-   split sits, and moving that split IS "moving the horizon".  The routine takes
-   $3C - horizon_extent, clamps it (floor $F5 on the negative side; a per-circuit
-   SMC compare+clamp on the positive side), then forms band 1's 16-bit duration as
+        0x04D8 + (clamp << 6)          with clamp sign-extended into bits 15..14
 
-        0x04D8 + (clamp << 6)          with clamp SIGN-EXTENDED into bits 15..14
+   in band1_duration_lo/hi.  The 6502 builds the shift as PHP/PLP-threaded RORs across
+   math_hi:A; here it is one 16-bit shift, the saved carry a sign extension (+0xC000).  math_hi
+   keeps its 6502 exit value, the high byte of the sign-extended clamp<<6.
 
-   and stores it in band1_duration_lo/hi.
-
-   Wide-value cleanup: the 6502 built  clamp << 6 + sign-extend  as a PHP/PLP-
-   threaded pair of RORs across the byte lanes math_hi:A — the archetypal byte-lane
-   carry idiom.  As a wide value it is one expression: (clamp << 6) is a 16-bit
-   left shift, and the saved carry c0 rotated into the top is just a sign extension
-   (c0 => +0xC000).  math_hi keeps its 6502 exit value — the high byte of the sign-
-   extended clamp<<6 — so the cell stays byte-pinned until math_hi ($75) is finally
-   relocated to a wide value; nothing here reads it back except the high-byte add,
-   which the wide `r` already accounts for.
-
-   Returns 0 on the completed path, with the 16-bit duration in *r_out and the
-   6502 math_hi exit value in *mathhi_out; returns -1 if a per-circuit SMC site is
-   unrecognised (it has already been reported).  Result-only: exit A/X/Y/flags are
-   dead at both callers (the race body flows straight to the 22nd call). */
+   Returns 0 with the duration in *r_out and math_hi's exit value in *mathhi_out, or -1 if a
+   per-circuit SMC site is unrecognised (already reported).  Result-only: the exit is dead at
+   both callers. */
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
 {
     uint8_t a = (uint8_t)(0x3Cu - horizon_extent);   /* $4F44 SEC; SBC horizon_extent */
@@ -14747,21 +14336,24 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
     return 0;
 }
 
-/* $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH */
+/* $42D0  draw_gear_indicator — the gear, double width
+   One character drawn twice: vdu_char_wide with shared_temp_77 = $22 then $FF, the left four
+   pixels then the right four, vdu_char_column INCing itself between.  A MODE 5 byte is four
+   pixels, so an 8-pixel MOS character needs two. */
 uint8_t draw_gear_indicator_core(void)
 {
     vdu_char_column   = 0x22u;                             /* $42D0 — column $22 */
-    shared_temp_77 = 0x22u;                             /* bit 7 clear: the LEFT four pixels */
+    shared_temp_77 = 0x22u;                             /* bit 7 clear: the left four pixels */
     vdu_char_row   = 0xD7u;                             /* scan line $D7 = character row 26 */
     uint8_t glyph  = mem[MEM_gear_char_tbl + gear_index];  /* $42DC/$42DE — the gear's glyph */
     uint8_t block  = vdu_char_wide_core(glyph);        /* left half; returns the block byte */
-    shared_temp_77 = 0xFFu;                            /* $42E4 bit 7 set: the RIGHT four pixels */
-    /* ⚠ the RIGHT half re-emits the block byte the first emit left ($62C3, live), NOT the glyph. */
+    shared_temp_77 = 0xFFu;                            /* $42E4 bit 7 set: the right four pixels */
+    /* ⚠ the right half re-emits the block byte the first emit left ($62C3, live), not the glyph. */
     return vdu_char_wide_core(block);                  /* exit A/N/Z come from this second emit */
 }
 
-/* $503F  adc_read — ONE ANALOGUE AXIS, CENTRED
-   OSBYTE $80 (ADVAL) with the channel in X.  Returns the DISTANCE from centre in A, the
+/* $503F  adc_read — one analogue axis, centred
+   OSBYTE $80 (ADVAL) with the channel in X.  Returns the distance from centre in A, the
    direction in X (1 positive, 0 negative) and C set when that distance is at least $0A — the
    dead zone both callers test. */
 AdcRead adc_read_core(uint8_t channel)
@@ -14788,9 +14380,12 @@ AdcRead adc_read_core(uint8_t channel)
     return r;
 }
 
-/* $63C5  poll_steering_assist — THE LAMP AND THE SETTING
-   See the group header, items 4 and 5: A is preserved, X comes back as the flag (with its Z)
-   and C as bit 7 of track_direction. */
+/* $63C5  poll_steering_assist — the lamp and the setting
+   The assist lamp is four screen bytes ($77DB/$77DC/$77E3/$77E4) taking steering_assist_flag
+   shifted right 0..3: dark at 0, four lit pixels at $80.
+   ⚠ A is preserved (PHA…PLA) and both callers depend on it: the `CMP #5` at $1EF3 compares the
+   caller's demand, not the assist setting.  X comes back as the flag (with its Z) and C as
+   bit 7 of track_direction. */
 void poll_steering_assist_core(void)
 {
     /* $63C5-$63D7 — light the four assist lamps from the flag.  A is the caller's (the 6502 saves
@@ -14803,7 +14398,7 @@ void poll_steering_assist_core(void)
     mem[MEM_assist_lamp_0] = (uint8_t)(flag >> 3);         /* $77DB */
 }
 
-/* $1F9B  limit_steer_demand — NEVER MORE LOCK THAN THE DRIVER ASKED FOR */
+/* $1F9B  limit_steer_demand — never more lock than the driver asked for */
 uint8_t limit_steer_demand_core(uint8_t a, int carryIn)
 {
     /* $1F9B — when the computed demand overshot the driver's own lock (carry in), pin it back to
@@ -14815,7 +14410,9 @@ uint8_t limit_steer_demand_core(uint8_t a, int carryIn)
     return (uint8_t)(ang >> 8);
 }
 
-/* $15F4  steer_demand_from_slip — CANCEL THE SLIP
+/* $15F4  steer_demand_from_slip — cancel the slip
+   A small demand steers against the car's own slip: model_state element $0A, quartered, and
+   never more lock than the driver asked for (limit_steer_demand).
    $160D  steer_demand_store */
 /* promoted for revs_native_abi.c */ void steer_demand_store_core(uint8_t a)
 {
@@ -14827,7 +14424,7 @@ static void steer_demand_from_slip_core(void)
 {
     /* $15F4-$1600 — take |slip_magnitude| (element $0A) as a 16-bit value, its low nibble-masked
        low byte parked in STEER_SIGN.  D = 0 on the steering path (docs/static-map.md §Decimal
-       mode), so the old abs16_math is a plain two's-complement negate. */
+       mode), so abs16_math is a plain two's-complement negate. */
     /* One uint16_t from the two element-$0A lanes.  The abs and the
        quarter are then a negate and a shift, with no split back into lanes between them; only
        the 6502's own observable intermediates stay bytes (see the STEER_SIGN writes below). */
@@ -14843,7 +14440,7 @@ static void steer_demand_from_slip_core(void)
     }
     /* $1601-$1606 — quarter the 16-bit magnitude (its low byte lives in STEER_SIGN). */
     uint16_t mag = (uint16_t)(slip >> 2);
-    /* x h BEFORE the limiter below, so the clamp to the driver's angle still snaps the wheel
+    /* x h before the limiter below, so the clamp to the driver's angle still snaps the wheel
        exactly to centre (sim_scale_steer; bit 0 is already clear here). */
     if (sim_h_q16) mag = sim_scale_steer(mag);
     uint8_t  a   = (uint8_t)(mag >> 8);
@@ -14853,10 +14450,15 @@ static void steer_demand_from_slip_core(void)
     steer_demand_store_core(a);
 }
 
-/* $1F08  apply_steering_assist — COMPUTER ASSISTED STEERING
-   The group header's items 2 and 3 are what this computes.  Entered two ways: at $1F08 from
-   steer_assist_dispatch, which derives the look-ahead selector from the demand's own direction,
-   and at $1F11 from steer_apply_with_assist, which already has it in A. */
+/* $1F08  apply_steering_assist — Computer Assisted Steering
+   Computer Assisted Steering is two assists, chosen by how hard the driver asks: a demand under
+   5 goes to steer_demand_from_slip (cancel the car's own slip), a bigger one here, which reads
+   a track edge ahead (edge_x slot $32 or $0A, by the demand's sign) and steers toward it.  The
+   gain falls with speed, `($3C - road_speed) * 2 + $20` floored at $20, and the live section's
+   curvature (`section_flags & $7F`, clamped 2..7, shifted up four) caps it, so it is weakest
+   through a tight corner.
+   Entered at $1F08 from steer_assist_dispatch, which derives the look-ahead selector from the
+   demand's direction, and at $1F11 from steer_apply_with_assist, which has it in A. */
 static void apply_steering_assist_noinit_core(uint8_t selector);
 
 static void apply_steering_assist_core(void)
@@ -14868,7 +14470,7 @@ static void apply_steering_assist_core(void)
 /* `selector` arrives in A on the 6502 (2 or 3); only "== 2" is tested.  Pure C throughout — the
    whole steering path runs with D = 0 (docs/static-map.md §Decimal mode), so every 6502 math
    helper on it (abs16_math, mul8_accum, neg16_math_noinit) is plain binary
-   16-bit arithmetic.  The scratch cells $74-$77 are written to the SAME final values the
+   16-bit arithmetic.  The scratch cells $74-$77 are written to the same final values the
    transliterated oracle leaves, so make validate's full-mem[] diff still holds. */
 static void apply_steering_assist_noinit_core(uint8_t selector)
 {
@@ -14877,7 +14479,7 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
 
     /* $1F19-$1F2E — |steering angle| as a 16-bit value (sign in bit 0 of the low byte).
        One uint16_t, so the negate is a negate and not a negate followed
-       by a split back into lanes.  ⚠ The sign lives in bit 0 of the LOW byte (sign-magnitude
+       by a split back into lanes.  ⚠ The sign lives in bit 0 of the low byte (sign-magnitude
        packing — see steer_angle_lo in symbols.csv), which is why the test is `ang & 1` and not
        a bit-15 test.  The array is relocated, so this is one word read, not two lanes. */
     uint16_t ang = car_angle_16[CAR_ANGLE_STEER];
@@ -14900,7 +14502,7 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
     mem[STEER_SIGN] = (uint8_t)absDiff;                /* math_lo — |edge diff| low */
     mem[STEER_KEYS] = (uint8_t)(absDiff >> 8);         /* $1F4C — |edge diff| high (unused past here) */
 
-    /* $1F4E-$1F77 — the GAIN: falls with road_speed, floored at zero, doubled, +$20, then capped
+    /* $1F4E-$1F77 — the gain: falls with road_speed, floored at zero, doubled, +$20, then capped
        by the live section's curvature. */
     uint8_t sec    = car_section_cursor;               /* $1F4E LDY $22 */
     uint8_t diff3c = (uint8_t)(0x3Cu - road_speed);    /* $1F50-$1F53 */
@@ -14914,7 +14516,7 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
     if (curve >= gainVal) gainVal = curve;             /* $1F73-$1F77 cap the gain */
     mem[STEER_DEMAND] = gainVal;
 
-    /* $1F79 — (|edge diff| × gain) >> 8, a 16×8 fixed-point step (the old mul8_accum: keep the top
+    /* $1F79 — (|edge diff| × gain) >> 8, a 16×8 fixed-point step (mul8_accum's: keep the top
        16 bits of the 24-bit product).  Its low sub-product's high byte is the residue the routine
        leaves in shared_temp_77. */
     shared_temp_77 = (uint8_t)(revs_mulu16((uint8_t)absDiff, gainVal) >> 8);   /* mul8_accum's $0DC2 */
@@ -14936,8 +14538,8 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
     apply_steer_demand_core((uint8_t)car_angle_16[CAR_ANGLE_STEER]);   /* $1F95 */
 }
 
-/* $1EE9  steer_assist_dispatch  — the JOYSTICK path's fork
-   $1EFA  steer_apply_with_assist  — the KEYBOARD path's */
+/* $1EE9  steer_assist_dispatch  — the joystick path's fork
+   $1EFA  steer_apply_with_assist  — the keyboard path's */
 /* promoted for revs_native_abi.c */ void steer_assist_dispatch_core(uint8_t demand)
 {
     poll_steering_assist_core();                       /* $1EE9 — lamps; A (= demand) survives it */
@@ -14959,7 +14561,7 @@ static void steer_apply_with_assist_core(void)
 
 /* $1612  apply_steer_demand
    $162D  clamp_and_store_steer_angle
-   ⚠ $162D falls straight into the THROTTLE and GEAR halves of read_driving_controls, so both of
+   ⚠ $162D falls straight into the throttle and gear halves of read_driving_controls, so both of
    these end by running that code — the listing's split at $1612 is an artefact of $1F95 and
    $1EEE jumping into the middle of one routine. */
 static void read_pedals_and_gears_core(void);
@@ -14988,12 +14590,12 @@ static void read_pedals_and_gears_core(void);
     /* $162D CMP #$91 — the lock stop.  Its carry is not published: nothing on the
        keyboard-and-no-input path through read_pedals_and_gears_core writes C again, so on the 6502 it
        leaks out through that routine's no_key exit and is the whole chain's exit C.
-       ⚠ NO GAME CALLER READS IT.  The cluster has exactly one native entry — race_main_loop_core's
+       ⚠ No game caller reads it.  The cluster has exactly one native entry — race_main_loop_core's
        read_driving_controls_frame() — and the very next thing the frame driver runs,
        apply_driving_model, opens LDA/LDX and writes its own flags before any branch.  Inside the
-       cluster nothing reads C either; it was compared only by four fixtures (steer_demand_store,
-       steer_demand_from_slip, steer_assist_dispatch, steer_apply_with_assist), which now drop it
-       for the reason stated there.  So the lock stop is a clamp, not a flag producer. */
+       cluster nothing reads C either, and the four fixtures (steer_demand_store,
+       steer_demand_from_slip, steer_assist_dispatch, steer_apply_with_assist) drop it.  So the
+       lock stop is a clamp, not a flag producer. */
     if (a >= 0x91u) a = 0x91u;
     car_angle_16[CAR_ANGLE_STEER] = (uint16_t)(((uint16_t)a << 8) | mem[STEER_SIGN]);
     read_pedals_and_gears_core();                           /* $162D falls into the pedals/gears tail */
@@ -15001,7 +14603,7 @@ static void read_pedals_and_gears_core(void);
 
 /* $163B-$16DB — the rest of read_driving_controls, reached only by falling out of the steering.
    Not a 6502 routine of its own; kept as a function so the two entries above can share it. */
-/* $163B-$1677 — THROTTLE and BRAKE.  Returns 1 with *mode / *amount set when the driver is
+/* $163B-$1677 — throttle and brake.  Returns 1 with *mode / *amount set when the driver is
    asking for something, 0 when nobody is driving (the caller then supplies the self-drive
    demand).
    On the 6502 the dead-zone and in-range tests here leave their carry on the joystick path,
@@ -15026,8 +14628,8 @@ static int read_pedal_demand(uint8_t *mode, uint8_t *amount)
         /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the sum:
            (mag<<1) + (mag>>1) + bit7(mag).  bit7(mag) is provably 0 here (adc_read folds both
            sides of centre to a magnitude in 0..$7F), so the ASL never carries; the term is kept
-           as the faithful idiom.  Only this add's OWN carry is read (the in-range test just
-           below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D). */
+           as the faithful idiom.  Only this add's own carry is read (the in-range test just
+           below) — and the doubled sum can exceed $FF (mag=$7F → $13D). */
         unsigned sum = (unsigned)(uint8_t)(mag << 1) + half + (mag >> 7);
         if (sum <= 0xFFu) {                             /* $1652 — the sum didn't overflow */
             uint8_t hi = ((uint8_t)sum >= 0xFAu);       /* $1654 CMP #$FA — over the top of range */
@@ -15057,8 +14659,8 @@ static void read_pedals_and_gears_core(void)
     pedal_mode   = mode;                               /* $1681 */
     pedal_amount = amount;
 
-    /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch.
-       $1685's `BIT $05F5` is read for its SIGN only (bit 7, the joystick flag).  The V it also
+    /* $1685-$16DB — the gears.  One shift per key press, latched in gear_key_latch.
+       $1685's `BIT $05F5` is read for its sign only (bit 7, the joystick flag).  The V it also
        sets — bit 6 of OPTION_FLAGS — is 6502 residue that leaks out on the no-key and latch-held
        returns and is dead at every caller (see the header above), so it is not reproduced. */
     enum GearRequest { GEAR_NONE, GEAR_UP, GEAR_DOWN } request = GEAR_NONE;
@@ -15108,9 +14710,12 @@ static void read_pedals_and_gears_core(void)
     draw_gear_indicator();                             /* cluster-2 driver, still 6502-ABI */
 }
 
-/* $1579  read_driving_controls — STEERING, THROTTLE, BRAKE, GEARS
-   The body's 3rd call.  Steering first, through whichever of the two input paths $05F5 selects,
-   and the group header's item 1 is the joystick one's whole non-linearity. */
+/* $1579  read_driving_controls — steering, throttle, brake, gears
+   The body's 3rd call.  Steering first, through whichever of the two input paths $05F5
+   selects.  The joystick's steering is squared: $1591-$1593 stores the centred reading in
+   math_hi and calls mul8 with the same value still in A.
+   ⚠ $1593 is per-circuit SMC and it is the squaring itself: an expansion circuit's hook
+   replaces Silverstone's `JSR mul8`, so the call dispatches on the operands. */
 static void read_driving_controls_core(void)
 {
     mem[STEER_KEYS]   = 0x00u;                          /* $1579 */
@@ -15120,14 +14725,14 @@ static void read_driving_controls_core(void)
     int amplifyPressed = kbd_test_key_core(0x9Du);     /* $1581-$1584 — the steering-amplify key */
 
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1589 BIT/BMI — joystick */
-        /* $158C-$15B2 — THE JOYSTICK.  The reading is SQUARED (header item 1), then quartered
+        /* $158C-$15B2 — the joystick.  The reading is squared (see the banner), then quartered
            into a 16-bit demand unless the amplify key is down, and the axis sign carries into
            STEER_SIGN bit 0. */
         AdcRead a = adc_read_core(0x01u);              /* magnitude and its direction bit */
         uint8_t dir      = a.dir;
         uint8_t demandHi = a.mag;
         mem[STEER_DEMAND] = demandHi;
-        /* ⚠ $1593 IS A PER-CIRCUIT SMC EXTENT, and it is the squaring itself: Silverstone's
+        /* ⚠ $1593 is a per-circuit SMC extent, and it is the squaring itself: Silverstone's
            `JSR mul8` is what an expansion circuit replaces with its own hook.  The twin has to
            dispatch on the operands rather than bake the call — a randomised pre-state took the
            trap 255 times in 256 and returned, which is exactly the 2448-of-5000 the fixture
@@ -15165,7 +14770,7 @@ static void read_driving_controls_core(void)
             }
             else { platform_smc_unhandled(MEM_smc_controls_hook, target); return; }
         }
-        if (!amplifyPressed) {                         /* $15A9 PLP — amplify NOT down: quarter */
+        if (!amplifyPressed) {                         /* $15A9 PLP — amplify not down: quarter */
             unsigned demand = ((unsigned)demandHi << 8) | mem[STEER_SIGN];
             demand >>= 2;
             demandHi = (uint8_t)(demand >> 8);
@@ -15177,12 +14782,12 @@ static void read_driving_controls_core(void)
         return;
     }
 
-    /* $15B3-$15F3 — THE KEYBOARD.  Two keys into STEER_KEYS (1, 2 or 3), a fixed demand of 3,
+    /* $15B3-$15F3 — the keyboard.  Two keys into STEER_KEYS (1, 2 or 3), a fixed demand of 3,
        and the amplify key replaces it with 1 or 0 plus a sign byte of $80. */
     if (kbd_test_key_core(0xA9u)) mem[STEER_KEYS] = 0x02u;
     if (kbd_test_key_core(0xA8u)) mem[STEER_KEYS] = (uint8_t)(mem[STEER_KEYS] + 1);
     mem[STEER_DEMAND] = 0x03u;
-    if (!amplifyPressed) {                             /* $15C7 PLP — amplify NOT down */
+    if (!amplifyPressed) {                             /* $15C7 PLP — amplify not down */
         /* $15CE-$15DA — demand is 1 when the wheel is barely off centre (steer_angle_hi <= 2),
            else 0; sign byte $80. */
         mem[STEER_DEMAND] = (0x02u >= (uint8_t)(car_angle_16[CAR_ANGLE_STEER] >> 8))
@@ -15215,7 +14820,7 @@ static void read_driving_controls_core(void)
 /* The steering shims all sit on the car_angle_16 boundary: each of them reads element 2 and
    every one can reach clamp_and_store_steer_angle, which writes it.  So each marshals in on the
    way down and out on the way back — the invariant is stated at car_angle_16 above. */
-/* The frame driver's entry, WITHOUT the closing publish — see apply_driving_model_frame().
+/* The frame driver's entry, without the closing publish — see apply_driving_model_frame().
    race_main_loop_core runs apply_driving_model immediately after this and that pass leaves the
    steering angle in car_angle_16[2] and publishes it itself, so a car_angle_marshal_out() here
    would write three cells that are overwritten from the same array a phase later.  The shim
@@ -15249,11 +14854,11 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
    Per car: the order array is set to the identity (car c in slot c), the grid base row is
    c >> 1 (two cars to a grid row) and the car is placed on the track by the seeder.
 
-   ⚠ TWO faithful details the transliteration made invisible:
-    - the seeder returns the cursor already DECREMENTED (mod 20), so the walk visits
+   ⚠ Two faithful details the transliteration made invisible:
+    - the seeder returns the cursor already decremented (mod 20), so the walk visits
       startCar, then 19, 18, .. 1, 0 — every car exactly once whatever startCar is;
-    - the three lap-total stores at $4D63-$4D6B use that DECREMENTED cursor, so each pass
-      zeroes the lap total of the NEXT car, not the one it just placed.  Over the whole walk
+    - the three lap-total stores at $4D63-$4D6B use that decremented cursor, so each pass
+      zeroes the lap total of the next car, not the one it just placed.  Over the whole walk
       both sets still cover all 20 cars, which is why it never mattered. */
 void reset_all_cars_for_session_core(uint8_t startCar)
 {
@@ -15270,12 +14875,12 @@ void reset_all_cars_for_session_core(uint8_t startCar)
         mem[MEM_car_grid_base + car] = (uint8_t)(car >> 1);
 
         /* $4D5E — the seeder reads and rewrites car_seed_index itself and hands the
-           decremented cursor back.  NO FLAG ESCAPES ANY MORE: the $4D59 LSR's bit 0 was live
-           in the seeder only because its $6362 PHP parked the whole flag byte at $0100+S, and
-           that residue is an implementation detail the twin no longer reproduces. */
+           decremented cursor back.  No flag escapes: the $4D59 LSR's bit 0 reaches the
+           seeder only through its $6362 PHP's stack residue at $0100+S, which is not
+           reproduced. */
         car = seed_car_track_position_next();
 
-        mem[MEM_car_lap_lo  + car] = 0x00;               /* $4D61-$4D6B — the NEXT car's total */
+        mem[MEM_car_lap_lo  + car] = 0x00;               /* $4D61-$4D6B — the next car's total */
         mem[MEM_car_lap_mid + car] = 0x00;
         mem[MEM_car_lap_hi  + car] = 0x00;
     } while (car != 0u);                             /* $4D6C TXA; BNE */
@@ -15307,13 +14912,13 @@ void all_cars_reset_best_lap_core(void)
    lap total, the third byte taking only the carry.  Returns the high byte's add so the caller
    can see the final carry.
 
-   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode).  BCD is the GAME's
+   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode).  BCD is the game's
    representation for a lap total, so the arithmetic is genuinely decimal and stays decimal —
    but it is `bcd_add` (src/cpu/bcd.h), not a `cpu.D` bracket around a flag macro.
-   ⚠ The `cpu.D = 0` at the exit is NOT the idiom and does not go: the $66B4 CLD is
+   ⚠ The `cpu.D = 0` at the exit stays: the $66B4 CLD is
    architectural state this routine leaves for its caller, and validate_native.c asserts it
    (`add_tally_to_lap_total left D set in N cases` is a FAIL).  The SED has no such standing —
-   nothing reads D between it and the CLD once the adds no longer consult it. */
+   nothing reads D between it and the CLD, since the adds do not consult it. */
 BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
 {
     BcdAdd lo  = bcd_add(mem[MEM_car_lap_lo  + car], mem[MEM_standings_bcd_lo + column], 0);
@@ -15327,10 +14932,10 @@ BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
     return hi;
 }
 
-/* THE LATE MISC TREES
+/* The late MISC trees
    Everything still transliterated in the call trees of scale_wing_settings,
    compute_segment_scale, place_player_in_section, process_car_contact and
-   tick_wheel_spin.  Every arithmetic LEAF they reach (mul8, abs8, abs16_math,
+   tick_wheel_spin.  Every arithmetic leaf they reach (mul8, abs8, abs16_math,
    sound_queue_default) is already a twin, so these are the drivers and the small
    helpers around them.  D = 0 on every one of these paths (docs/static-map.md
    §Decimal mode: none of the eight SED sites is here), so the ADC/SBC byte
@@ -15343,7 +14948,7 @@ BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    Turns the two pit-menu wing settings into the downforce/drag coefficients the
    driving model reads.  Per wing: grip = ((base * (setting*4)) >> 8) + $5A.  Drag
    folds both wings: ((3*rear + front) / 2) + $3C — accumulated as the 6502 does it,
-   where the ASL feeds its own carry (bit 7 of rear) into the first ADD, a faithful
+   where the ASL feeds its own carry (bit 7 of rear) into the first add, a faithful
    8-bit quirk with no 16-bit equivalent. */
 void scale_wing_settings_core(void)
 {
@@ -15416,7 +15021,7 @@ void compute_segment_scale_core(uint8_t trackClass)
 
 /* $1FA8  record_section_jump
    Rolls one bit into a per-frame history: a 1 iff the caller's carry is set AND this
-   car's offset within its segment has reached 3.  Carry in, and the bit rotated OUT
+   car's offset within its segment has reached 3.  Carry in, and the bit rotated out
    of the history byte comes back out in carry. */
 /* promoted for revs_native_abi.c */ int record_section_jump_core(int carry_in, uint8_t x)
 {
@@ -15434,16 +15039,17 @@ void compute_segment_scale_core(uint8_t trackClass)
    car_section_along — flipping sign by track direction and by a
    quadrant flag (section_quad_flags), and feeds record_section_jump the change since last frame.
 
-   The abs8 and the SMC hook are native leaves with live-flag INPUTS, so the seam sets
+   The abs8 and the SMC hook are native leaves with live-flag inputs, so the seam sets
    exactly the cpu registers each reads (A and its sign N; abs8's threaded carry).
    ⚠ SMC $462B-$462D: Silverstone calls abs8; an expansion circuit runs its own hook. */
 /* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
-   harness; native callers enter at the _native split.  Full argument at build_track_geometry in revs_native_seam.c. */
+   harness; native callers enter at the _native split (argument at build_track_geometry in
+   revs_native_seam.c). */
 
 EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
 {
     /* Relative angle of the nearest edge bearing to the section's yaw.  D=0, so a plain 8-bit
-       subtract whose bit 7 is the sign abs8 negates on; a circuit hook instead READS the value
+       subtract whose bit 7 is the sign abs8 negates on; a circuit hook instead reads the value
        and its sign N via cpu, so that seam re-establishes them. */
     uint8_t rel = (uint8_t)(nearest_edge_bearing_hi - section_yaw);
 
@@ -15485,7 +15091,7 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
     if (quad_c) mag = (uint8_t)((mag ^ 0x7F) + 1);   /* BMI arm: reflect past the quarter turn */
 
     /* $4639 PHA parks this magnitude across the two sub-calls; in C it just stays in `mag`.
-       The push itself is GONE under THE RESULTS RULE (`docs/validation-harness.md`): it was
+       The push itself is gone under the results rule (`docs/validation-harness.md`): it was
        reproduced on the real stack only so page 1 matched byte for byte.  Reader audit — both
        pushes are popped by this routine's own two pulls before anything else can see them, they
        are below SP at every exit, and `tools/det_compare.py` already exempts $01B8..$01FF on
@@ -15519,7 +15125,7 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
     if (!(section_quad_flags & 0x80)) b ^= 0xFF;             /* BIT section_quad_flags; BPL: EOR #$FF */
     mem[MEM_car_section_along + x] = b;
 
-    /* The exit index registers, for the NEXT body call ($1713 advance_player_section, whose
+    /* The exit index registers, for the next body call ($1713 advance_player_section, whose
        three hook seams inherit them): X is the player slot loaded at $4647 and never touched
        again, and Y is still the second fold's weight $88 — $4676's two `JSR $0C00`s are mul8,
        which writes neither index register.  Passed by value instead of through `cpu`. */
@@ -15547,7 +15153,7 @@ void tick_wheel_spin(void)
 #if defined(REVS_PLATFORM_AMIGA) && defined(REVS_TYRE_SPRITES)
     /* On the Amiga the wheels are a sprite (§12), so the EOR does not happen: the result is
        produced by flipping which of two precomputed sprites the copper points at.
-       READER AUDIT: `make fbwrites FILLREADS=1` over display lines 117..157 names
+       Reader audit: `make fbwrites FILLREADS=1` over display lines 117..157 names
        tick_wheel_spin's own read-modify-write as the only reader of these 44 bytes on a real
        BBC (docs/validation-harness.md §THE RESULTS RULE).
        The field counter and the rate accumulator above stay: field_countdown is the engine's
@@ -15570,9 +15176,9 @@ void tick_wheel_spin(void)
 }
 
 /* $11AB  spin_car_out
-   Flags car `x` as spun out.  For a real car slot (x < $14) it folds the low seven bits
-   of car_section_across into car_across_drift, armed and with magnitude 5 ($45), stamps $91 into the page-1
-   status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
+   Flags car `x` as spun out.  For a real car slot (x < $14) it folds the low seven bits of
+   car_section_across into car_across_drift, armed and with magnitude 5 ($45), stamps $91 into
+   the page-1 status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
    Returns retire_car's lap comparison — the only flag either arm leaves a caller — or -1 on the
    scenery-slot exit, where $11CD is a bare RTS and the 6502's flags are untouched. */
 int spin_car_out_core(uint8_t x)
@@ -15625,7 +15231,7 @@ void process_car_contact_native(void)
     if (impact2 >= 0x28 && (session_is_race & 0x80)) spin_car_out_core(x);
 
     /* Heading difference between the two objects, x4; its sign steers abs16_math below.
-       High bytes only, as the 6502 does — a COARSE angle, the low bytes are never loaded. */
+       High bytes only, as the 6502 does — a coarse angle, the low bytes are never loaded. */
     uint8_t  hd4     = (uint8_t)(((unsigned)mem[MEM_object_bearing_hi + x]
                                   - (uint8_t)(car_heading_v >> 8)) << 2);
     int      hd_sign = (hd4 & 0x80) != 0;                    /* PHP: N of the <<2 result */
@@ -15669,14 +15275,14 @@ void process_car_contact_native(void)
     sound_queue_exit_abi(SOUND_SLOT_IMPACT);
 }
 
-/* THE PER-CAR LAP DISTANCE, relocated out of mem[]
+/* The per-car lap distance, relocated out of mem[]
    Another plane-split array: low bytes $08D0-$08E7, high bytes $08E8-$08FF, one 16-bit
    distance-round-the-lap per car slot.  24 slots, $00-$17 — the twenty racing cars the field
    loops walk ($00-$13) plus the player's own slot $17, which the steppers address directly.
 
-   ⚠ THE MARSHAL IS PER ELEMENT, NOT PER ARRAY, and that is the whole point of doing this one.
+   ⚠ The marshal is per element, not per array, and that is the whole point of doing this one.
    The boundary shims (`track_pos_advance`, `track_pos_retreat`, `car_gap`, `car_gap_tail`) are
-   entered once per CAR, up to twenty times a frame; marshalling all 24 words there would cost
+   entered once per car, up to twenty times a frame; marshalling all 24 words there would cost
    more byte traffic than the relocation saves.  So each shim marshals only the slot(s) its own
    index names, and the whole-array pair exists solely for full_track_scan_rebuild, whose body
    walks the entire field core-to-core and is entered once. */
@@ -15705,22 +15311,18 @@ void car_distance_marshal_out(void)
     for (unsigned x = 0; x < CAR_SLOTS; x++) car_distance_marshal_out_one((uint8_t)x);
 }
 
-/* $27A4 car_gap / $27AB car_gap_tail — HOW FAR AHEAD, ROUND THE LAP
-   The signed distance from car `from` forward to car `to`, the SHORT way round a lap of
-   lap_length units: D = distance[to] - distance[from], less a `borrow` the caller supplies (car_gap's
-   finer subtract of the two cars' in-section offsets; none for the other two callers).  When |D|
-   is a whole byte or more the short way is the other way round, lap_length - |D|, with the
-   opposite sign — and `wrapped` says so, because the pair then straddles the start line.
-   `far` = 128 or more units apart the short way; every caller tests it first, and `gap` means
-   nothing when it is set.
-   ⚠ Near vs wrapped is decided on |D|, NOT on D: $27C2's BEQ tests the Z that abs16_math's
-   closing `SBC math_hi` left ($0E4D).  Deciding on D's raw high byte read every NEGATIVE near gap
-   ($FFxx) as wrapped-and-far, so check_car_pair never saw a car draw level from behind: no
-   overtake was booked, car_order went stale, and the view and the mirrors — which stage cars by
-   car_order — showed the wrong cars (the user's "a car in the mirror never appears in the view").
-   The oracle hid it, because the abs16_math shim dropped those flags too; the race-proper
-   lockstep against a real BBC found it at frame 80.
-   ⚠ lap_length stays in mem[]: it is TRACK-FILE data an expansion circuit's hook can patch.
+/* $27A4 car_gap / $27AB car_gap_tail — how far ahead, round the lap
+   The signed distance from car `from` forward to car `to`, the short way round a lap of
+   lap_length units: D = distance[to] - distance[from], less a `borrow` the caller supplies
+   (car_gap's finer subtract of the two cars' in-section offsets; none for the other callers).
+   When |D| is a whole byte or more the short way is the other way round, lap_length - |D|, with
+   the opposite sign, and `wrapped` says so (the pair straddles the start line).  `far` = 128 or
+   more units apart the short way; every caller tests it first, and `gap` is meaningless then.
+   ⚠ Near vs wrapped is decided on |D|, not on D: $27C2's BEQ tests the Z that abs16_math's
+   closing `SBC math_hi` left ($0E4D).  Deciding on D's high byte reads every negative near gap
+   ($FFxx) as wrapped and far, so check_car_pair never sees a car draw level from behind, no
+   overtake is booked, and car_order (which stages the view's and the mirrors' cars) goes stale.
+   ⚠ lap_length stays in mem[]: it is track-file data an expansion circuit's hook can patch.
    The 6502 register contract (A/N/C, math_lo/math_hi, the hypot_min_hi shift register) lives
    only in the oracle shims, car_gap / car_gap_tail (revs_native_seam.c). */
 RingGap ring_gap(uint8_t from, uint8_t to, unsigned borrow)
@@ -15747,16 +15349,12 @@ RingGap ring_gap(uint8_t from, uint8_t to, unsigned borrow)
        for each component i = 0..2:
            dest_coord[i] = src_coord[i] + delta[i]        (16-bit, wraps)
 
-   The source section is the byte cursor in Y, the destination the byte cursor in X (both index
-   section_coord_lo/hi, 40 sections x 3 bytes, plus the two scratch slots at $FA/$FD).  The step
-   delta is the StepDelta section_step_delta built for this section — three signed 16-bit
-   components, which the 6502 keeps as the low bytes math_lo/math_hi/shared_temp_76 ($74/$75/$76)
-   and the high bytes point_delta_hi[0..2] ($83/$84/$85).
-
-   The 6502 does this as three ADC lo / ADC hi byte-pair chains (CLC before each low add); on the
-   D=0 road/placement path that is exactly a binary uint16_t add, so it is written as one here.
-   No flag escapes: build_road_section does LDX straight after, and place_car_world_coords' AI branch
-   likewise — A/N/V/Z/C are all dead at both call sites. */
+   The source section is the byte cursor in Y, the destination the one in X (both index
+   section_coord_lo/hi: 40 sections x 3 bytes, plus the scratch slots at $FA/$FD).  The delta is
+   the StepDelta section_step_delta built, three signed 16-bit components the 6502 keeps as low
+   bytes math_lo/math_hi/shared_temp_76 ($74-$76) and high bytes point_delta_hi[0..2]
+   ($83-$85).  With D = 0 the three ADC byte-pair chains are binary uint16_t adds.  No flag
+   escapes: build_road_section and place_car_world_coords' AI branch both do LDX next. */
 void section_coord_add_delta_core(uint8_t dst, uint8_t src, StepDelta delta)
 {
     for (unsigned i = 0; i < 3; i++)
@@ -15773,9 +15371,9 @@ void           load_section_from_segment_core(uint8_t x, uint8_t y);
 
 /* $124D  copy_section_height_to_side1
    The road builder keeps two coordinate lists per section: side 0 at the section byte cursor X,
-   side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  build_road_section / load_section_from_segment build side 1's
-   ground-plane pair (components 0 and 2) as side 0 plus the across-track normal, but the two
-   edges sit at the same HEIGHT, so component 1 is just copied across here (both bytes). */
+   side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  build_road_section and
+   load_section_from_segment build side 1's ground-plane pair (components 0 and 2) as side 0 plus the across-track normal, but the two
+   edges sit at the same height, so component 1 is just copied across here (both bytes). */
 void copy_section_height_to_side1_core(uint8_t x)
 {
     section_word_set(SECTION_SIDE1 + x + 1, section_word(x + 1));
@@ -15833,9 +15431,9 @@ StepDelta section_step_delta(uint8_t dirIndex)
 }
 
 /* The 6502's home for the vector: low bytes $74/$75/$76, high bytes point_delta_hi[0..2].
-   ⚠ Only the ROAD BUILDER's delta is a result there: edge_x_offscreen's ROR reads the
+   ⚠ Only the road builder's delta is a result there: edge_x_offscreen's ROR reads the
    shared_temp_76 build_road_section leaves, on circuits 2, 3 and 5 (a real-BBC def-use audit,
-   `--range-audit=0074-0076,0083-0088 --defuse`, competition, all five circuits, 2026-09-29).
+   `--range-audit=0074-0076,0083-0088 --defuse`, competition, all five circuits).
    The car path's delta is halved in place three times and read by nothing after it. */
 void step_delta_publish(StepDelta d)
 {
@@ -15859,7 +15457,7 @@ void build_section_step_delta_core(uint8_t y)
 }
 
 /* $125A  derive_car_section_cursor
-   Maps the walk-origin section cursor to the CAR's section cursor: subtract $60
+   Maps the walk-origin section cursor to the car's section cursor: subtract $60
    and, if that went negative, wrap by the $78-wide section ring (40 sections x
    3 bytes).  D=0 on this path, so the subtract/add is plain binary.  No escaping
    flags — the caller ($13D3) discards N/Z/C. */
@@ -15870,30 +15468,29 @@ uint8_t derive_car_section_cursor_core(uint8_t cursor)
     return t;
 }
 
-/* $12F7  build_road_section
-   THE ROAD BUILDER.  Builds one live road section per call; build_road_section's callers loop it
-   over shared_counter_42 to (re)generate the whole track walk, which is the bulk of the off-track
-   freeze.  Each call:
+/* $12F7  build_road_section — the road builder
+   Builds one live road section per call; its callers loop it over shared_counter_42 to
+   regenerate the whole track walk, which is most of the off-track freeze.  Each call:
 
-     1. advance the walk cursor by three bytes (section_cursor += 3, wrap at $78), remembering the
-        previous cursor in section_cursor_prev;
-     2. move the player's car one segment.  Forward (track_direction bit7 clear) also arms the
-        finish-line lap credit when the car reaches the lap marker; backward latches the segment
-        being left into retreat_segment first.  Either move can report a crossed section boundary
-        (carry), which cross_section_boundary commits — and a FORWARD boundary skips the build
-        block entirely (it was already built by the crossing);
-     3. build this section's flag byte from cur_segment_flags gated by player_seg_offset and the
+     1. advance the walk cursor by three bytes (section_cursor += 3, wrap at $78), remembering
+        the previous one in section_cursor_prev;
+     2. move the player's car one segment.  Forward (track_direction bit 7 clear) also arms the
+        finish-line lap credit at the lap marker; backward first latches the segment being left
+        into retreat_segment.  Either move can report a crossed section boundary (carry), which
+        cross_section_boundary commits, and a forward boundary skips the build block (the
+        crossing already built it);
+     3. build the section's flag byte from cur_segment_flags gated by player_seg_offset and the
         segment's field-7 marker byte;
-     4. integrate the direction step into the section's own coordinates (section_coord_add_delta),
-        share the height across to side 1, then add the scaled across-track normal ($5700/$5800
-        indexed by segment_dir_index, x4) to build side 1's components 0 and 2;
-     5. run the per-circuit direction-index hook (SMC $13C9), store section_dir_index[cursor], and
-        derive the car's cursor + the section curve.
+     4. integrate the direction step into the section's coordinates (section_coord_add_delta),
+        share the height across to side 1, then add the scaled across-track normal
+        ($5700/$5800 indexed by segment_dir_index, x4) for side 1's components 0 and 2;
+     5. run the per-circuit direction-index hook (SMC $13C9), store
+        section_dir_index[cursor], and derive the car's cursor and the section curve.
 
-   ⚠ $5700 / $5800 are ModifyGameCode's addresses but, at RACE time, their second tenant is the
-   across-track normal pair (symbols.csv); referenced here by that race-time meaning.
-   No flags/registers escape (LIVE_NONE).  The oracle's PHP/PLP byte at $01FF is ignored. */
-/* $5700,dir — the ACROSS-TRACK NORMAL's X component, the sibling of MEM_track_normal_y
+   ⚠ $5700 / $5800 are ModifyGameCode's addresses; at race time their second tenant is the
+   across-track normal pair (symbols.csv), the meaning used here.
+   LIVE_NONE.  The oracle's PHP/PLP byte at $01FF is ignored. */
+/* $5700,dir — the across-track normal's X component, the sibling of MEM_track_normal_y
    ($5800).  It has no mem.h name because symbols.csv keeps $5700 its ModifyGameCode func row
    (one address, one name) and this is the page's race-time tenant, so it is spelled here once
    and used by both readers ($1391 in the road builder, $299D in the object projector). */
@@ -15909,15 +15506,15 @@ void build_road_section(void)
     } else if (mem[MEM_smc_section_advance] == 0x20) {                       /* per-circuit hook */
         uint16_t t = (uint16_t)(mem[MEM_smc_section_advance + 1] | (mem[MEM_smc_section_advance + 2] << 8));
         if (t >= 0x5300 && t <= 0x5A25) {
-            /* The JSR replaces `CLC; ADC #$03` ($12FB-$12FD), so the hook's INPUT is the
+            /* The JSR replaces `CLC; ADC #$03` ($12FB-$12FD), so the hook's input is the
                accumulator the ADC would have advanced — A = the old cursor in, A = the new one
                back.  Derived from the surrounding instructions, not from the unpatched arm
                (which has no register to hand over at all).
                N/Z are the $12F7 `LDA $24`'s, the last flag writer before the site.
-               ⚠ X, Y and C/V are the CALLER's — this routine establishes none of them — and they
+               ⚠ X, Y and C/V are the caller's — this routine establishes none of them — and they
                are not observable at this seam: `make track-patch` gives the four targets that are
                ever patched in here ($54F1 on Brands, $54EF on the other three), both of them
-               hook_next_section_cursor, which reads A and `cur_segment_flags` and WRITES A/C/V/N/Z
+               hook_next_section_cursor, which reads A and `cur_segment_flags` and writes a/C/V/N/Z
                (plus Y on the gated arm).  The engine's next instruction, $12FE `CMP #$78`, then
                overwrites N/V/Z/C, and this seam's only exit is A.  So they are handed over as 0
                rather than lifted out of `cpu`, and `make viewdiff` is the gate. */
@@ -15956,7 +15553,7 @@ void build_road_section(void)
     car_distance_marshal_out_one(0x17u);
     if (!forwardBoundary) {
         /* --- 3. build this section's flag byte --- */
-        /* ⚠ PUBLISHED, not just computed: edge_x_offscreen reads the shared_temp_76 this
+        /* ⚠ Published, not just computed: edge_x_offscreen reads the shared_temp_76 this
            leaves on three circuits (step_delta_publish). */
         const StepDelta step = section_step_delta(segment_dir_index);
         step_delta_publish(step);
@@ -16002,7 +15599,7 @@ void build_road_section(void)
         mem[MEM_point_delta_hi + 0] = (uint8_t)(nx >> 8);       /* faithful scratch residue */
         section_word_set(SECTION_SIDE1 + x, (uint16_t)(section_word(x) + nx));
 
-        /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4.  The HIGH byte's
+        /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4.  The high byte's
            add ($13C3) is the last instruction to touch the flags before the $13C9 seam below,
            so its carry/overflow/sign are kept rather than recomputed there. */
         uint16_t ny    = (uint16_t)((int16_t)(int8_t)mem[MEM_track_normal_y + dir] << 2);
@@ -16024,7 +15621,7 @@ void build_road_section(void)
                    the two coordinate rows with it), Y the direction index ($1389 LDY $0002), A
                    the high byte of the side-1 component-2 add just stored at $13C6.  Inputs
                    only — $13CC reloads X from section_cursor, so nothing is read back.
-                   The flags are NOT residue: $13C6's store sets none, so the $13C3 `ADC` that
+                   The flags are not residue: $13C6's store sets none, so the $13C3 `ADC` that
                    produced this very high byte is still the last flag writer. */
                 HookRegs hr;
                 hr.x = x;
@@ -16047,8 +15644,8 @@ void build_road_section(void)
 }
 
 /* $1267  cross_section_boundary
-   Commits the road walk crossing into a new section (called by build_road_section after track_pos_advance /
-   track_pos_retreat reports a section boundary was crossed).  It marks the near edge points to be
+   Commits the road walk crossing into a new section (called by build_road_section after
+   track_pos_advance / track_pos_retreat reports a section boundary was crossed).  It marks the near edge points to be
    scrolled next frame, loads the new section's world geometry, and clears the section's flag byte.
 
      - near_edge_scroll_pending = 6  (and near_edge_last = 6 when a far-edge rebuild is in flight,
@@ -16083,14 +15680,14 @@ void cross_section_boundary(void)
             else if (t >= 0x5300 && t <= 0x5A25) {
                 /* X = the section byte cursor ($1267 LDX $0024) and Y = the segment being
                    left ($1284 LDY $0021) are both live at $1289, and $129C `STA $0702,X` goes
-                   on using WHATEVER X THE HOOK LEFT — the same shape as $1248, where a stale
+                   on using whatever X the hook left — the same shape as $1248, where a stale
                    index put Brands Hatch's whole section_dir_index column out.  So hand both
                    over and read X back.
                    A is load_section_from_segment's exit A — the side-0 height high byte its
                    $1253 `LDA $0A01,X` left — and N/Z are that load's.  C and V are untouched by
                    everything from $1267 to $1286 (all LDA/STA/LDY), so they are handed over as
                    0, and neither is observable: all four circuits patch this seam to $5A1B
-                   (⚠ the extent table lists it as $128A-$128B, the OPERAND bytes — $1289 is
+                   (⚠ the extent table lists it as $128A-$128B, the operand bytes — $1289 is
                    already a `JSR`, so only the address changes and grepping for $1289 finds
                    nothing), which tail-calls $557F -> $5582, where a `SEC` at $5588 precedes the
                    first carry consumer; and the hook corpus has no BVC/BVS at all (the V note at
@@ -16120,25 +15717,23 @@ void cross_section_boundary(void)
 }
 
 /* $122D  load_section_from_segment
-   Builds one live section's world geometry from its track-file segment record.  A track segment
-   is an 8-byte record whose fields 1..6 are three-plus-three 16-bit coordinates (low byte in the
-   $5900 bank, high byte in the $5300 bank); this lays them into the two parallel road-edge lists.
+   Builds one live section's world geometry from its track-file segment record: an 8-byte
+   record whose fields 1..6 are three-plus-three 16-bit coordinates (low bytes in the $5900 bank,
+   high bytes in $5300), laid into the two parallel road-edge lists.
 
      X = the destination section byte cursor (side 0);  Y = the segment byte index.
 
-   load_section_triple copies fields 1,2,3 into side 0's triple (components 0,1,2).  Then fields 4
-   and 6 become side 1's components 0 and 2 — the OPPOSITE road edge — and copy_section_height_to_side1
-   shares side 0's height (component 1) across.  segment_dir_index is field 5's low byte.
+   load_section_triple copies fields 1,2,3 into side 0's triple.  Fields 4 and 6 become side 1's
+   components 0 and 2 (the opposite road edge), and copy_section_height_to_side1 shares side 0's
+   height across.  segment_dir_index is field 5's low byte.
 
-   ⚠ SMC $1248 (per-circuit, ModifyGameCode): unpatched Silverstone is `LDA $5905,Y`; an expansion
-   circuit rewrites it to a hook JSR whose result A becomes segment_dir_index.
-   AND BOTH INDEX REGISTERS ARE LIVE ACROSS THAT JSR — read them off the surrounding
-   instructions, never off the unpatched callee: $1230-$1245 index the segment record with Y and
-   the destination section with X, and $124D-$1256 go on using X after the hook has returned.  A
-   stale Y gives every expansion circuit a wrong section_dir_index column (on Brands Hatch the
-   heading goes 206 degrees out).  Silverstone, `tracks` and `track-run` cannot see it; `make
-   viewdiff` against a real BBC can.
-   No FLAGS escape (both callers overwrite A next) — bare void shim. */
+   ⚠ SMC $1248 (per-circuit): Silverstone's `LDA $5905,Y`; an expansion circuit rewrites it to a
+   hook JSR whose A becomes segment_dir_index.  Both index registers are live across that JSR
+   ($1230-$1245 index the record with Y and the section with X, and $124D-$1256 use X after the
+   hook returns), so both are handed over.  A stale Y gives the expansion circuits a wrong
+   section_dir_index (on Brands Hatch the heading is 206 degrees out); only `make viewdiff`
+   against a real BBC sees it.
+   No flags escape (both callers overwrite A next). */
 void load_section_from_segment_core(uint8_t x, uint8_t y)
 {
     load_section_triple_core(x, y);                         /* fields 1..3 -> side-0 triple */
@@ -16157,7 +15752,7 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
                byte the $1242 `LDA $5306,Y` left (the last A/flag writer before $1248; $1245's
                store sets none), so N/Z are that load's.  C and V are not established anywhere
                in $1208-$1245 — every instruction there is an LDA/STA — and neither is
-               observable: all four circuits patch $1248 to the SAME hook ($5672), whose first
+               observable: all four circuits patch $1248 to the same hook ($5672), whose first
                carry consumer ($5694 `ROR`) is preceded by an `LSR` that sets C itself, and the
                hook corpus contains no BVC/BVS at all (the V note at road_edge_walk's $248B).
                So they are handed over as 0 rather than lifted out of `cpu`. */
@@ -16183,40 +15778,33 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
 }
 
 /* $150E  step_section_curve
-   The section-CURVE stepper, a leaf of the build_road_section road-builder cluster.  It writes one byte,
-   section_curve[section_cursor], describing the curvature the road should show at the section the
-   walk is filling, and it carries a small marker state machine between calls in four zero-page
-   cells (near_curve_scale/_marker_countdown/_ramp_width/_curve_signed).
+   The section-curve stepper, a leaf of build_road_section.  It writes one byte,
+   section_curve[section_cursor], the curvature the road shows at the section being filled, and
+   keeps a marker state machine between calls in four zero-page cells
+   (near_curve_scale/_marker_countdown/_ramp_width/_curve_signed).
 
-   Indexing is off the player's own position: Y = player_car_segment (the segment number x 8, an
-   index into the per-segment track_segment_lo/hi records) and X = Y >> 3 (the plain segment number,
-   an index into segment_scale).
+   Indexed off the player's position: Y = player_car_segment (segment number x 8, into
+   track_segment_lo/hi) and X = Y >> 3 (the segment number, into segment_scale).
 
-   Two modes:
+   (a) near_marker_countdown == 0: scan for the next curve marker.  Depending on
+       cur_segment_flags bit 0 and near_curve_signed bit 7, optionally step Y on one record (+8)
+       and X by one, then inspect that record:
+         * track_segment_lo field-0 bit 0 clear, or its countdown (track_segment_hi+5) zero:
+           no marker; emit segment_scale[X] | $40 and leave the countdown at 0;
+         * otherwise latch the marker (countdown = track_segment_hi+5, near_curve_signed =
+           track_segment_hi+7 with bit 7 the direction, near_ramp_width = that & $7F,
+           near_curve_scale = segment_scale[X]) and emit near_curve_scale.
+       The pre-advance shortcut (player_seg_offset < track_segment_hi+5 with cur_segment_flags
+       bit 0 clear) emits segment_scale[X] | $40 without touching state.
 
-   (a) near_marker_countdown == 0 — SCAN for the next curve marker.  Depending on cur_segment_flags
-       bit0 and near_curve_signed bit7, optionally step Y on by one segment record (+8) and X by one,
-       then inspect that record:
-         * track_segment_lo field-0 bit0 clear, or its countdown (track_segment_hi+5) zero
-           -> no marker here: emit segment_scale[X] | $40 and leave the countdown at 0;
-         * otherwise LATCH the marker — countdown = track_segment_hi+5, near_curve_signed =
-           track_segment_hi+7 (bit7 = direction), near_ramp_width = that & $7F, near_curve_scale =
-           segment_scale[X] — and emit near_curve_scale.
-       The pre-advance shortcut (player_seg_offset < track_segment_hi+5 with cur_segment_flags bit0
-       clear) also emits segment_scale[X] | $40 without touching state.
+   (b) near_marker_countdown != 0: ramp toward the latched marker.  Decrement the countdown to v
+       and emit:
+         * v >= near_ramp_width               -> near_curve_scale        (full curve)
+         * v + (v>>3) >= near_ramp_width      -> 0                       (transition band)
+         * otherwise                          -> near_curve_scale ^ $80  (sign-flipped)
+       The band test is $1567's SBC-then-ADC carry idiom.
 
-   (b) near_marker_countdown != 0 — RAMP toward the latched marker.  Decrement the countdown to v
-       and emit a curve that ramps with distance:
-         * v >= near_ramp_width               -> near_curve_scale        (full curve, near marker)
-         * v + (v>>3) >= near_ramp_width       -> 0                        (transition band)
-         * otherwise                           -> near_curve_scale ^ $80   (sign-flipped, past band)
-       The band boundary is the 6502's SBC-then-ADC-for-carry idiom at $1567: after the borrow, the
-       add of (v>>3) sets carry exactly when v + (v>>3) >= near_ramp_width, choosing store-0 vs
-       store-flipped.
-
-   D=0 on this path (render/geometry); every arithmetic step is plain binary.  No flags or registers
-   escape — the sole caller (the $13CC region inside build_road_section) returns immediately after — so the
-   shim is a bare void wrapper. */
+   D = 0; LIVE_NONE (the sole caller, inside build_road_section at $13CC, returns next). */
 void step_section_curve(void)
 {
     uint8_t y = player_car_segment;          /* segment number x 8: track_segment_* index */
@@ -16274,47 +15862,40 @@ void step_section_curve(void)
 }
 
 /* $2937  place_car_world_coords
-   Projects one object's within-section offsets — car_section_along and car_section_across —
-   through the section's direction basis into the 3-value world coordinate at
-   object_coord_lo:object_coord_hi.  This routine is the evidence for which of the pair is
-   which: the along offset multiplies all THREE components of the direction vector
-   (track_dir_0/1/2), the across offset the two components of the horizontal NORMAL
-   ($5700/$5800, measured perpendicular to the direction at 0.725 of its length), x4.
+   Projects one object's within-section offsets, car_section_along and car_section_across,
+   through the section's direction basis into the world coordinate at
+   object_coord_lo:object_coord_hi.  The along offset multiplies all three components of the
+   direction vector (track_dir_0/1/2), the across offset the two components of the horizontal
+   normal ($5700/$5800, perpendicular to the direction at 0.725 of its length), x4.
 
-   The section byte cursor Y indexes the section ORIGIN (section_coord_lo/hi); the byte it
-   points at, section_dir_index, indexes the five direction bytes (track_dir_0/1/2 and the two
-   at $5700/$5800).  First loop, three world axes:
+   The section byte cursor Y indexes the section origin (section_coord_lo/hi); the byte it
+   points at, section_dir_index, indexes the five direction bytes.  First loop, three axes:
 
        coord[axis] = section_origin[axis] + signextend( (along * dir[axis]) >> 8 )
 
-   as a signed 16-bit add.  Second loop, two axes (0 and 2), folds the "across" offset in at 4x.
-   Then coordinate 1 is nudged by $90.  The two products were the 6502's mul8 (an 8x8 shift-add);
-   here they are revs_mulu16 (one MULU.W), the sign handled in C.
+   as a signed 16-bit add.  The second loop folds the across offset into axes 0 and 2 at 4x.
+   Then coordinate 1 is nudged by $90.
 
-   THE PRODUCT'S SIGN.  mul8 gives an unsigned 16-bit product; the 6502 keeps only its HIGH
-   byte and, on a negative direction byte, negates that byte alone (8-bit two's complement) and
-   sign-extends into shared_temp_76.  So the value added is signextend8( |dir|*along >> 8 ) with
-   the sign of dir — which is exactly `(dir<0 ? -mph : mph)` as a 16-bit signed, mph being that
-   high byte (0..254, so no 16-bit overflow either here or after the <<2 in the second loop).
+   The product's sign: mul8's product is unsigned; the 6502 keeps its high byte and, for a
+   negative direction byte, negates that byte alone and sign-extends into shared_temp_76.  So
+   the value added is `(dir < 0 ? -mph : mph)`, mph the high byte (0..254, so no 16-bit
+   overflow here or after the <<2 in the second loop).
 
-   ⚠ SMC at $298D-$298E: the middle axis's origin HIGH byte is ANDed with a per-circuit mask
-   (Silverstone's operand lives at $298E; the carry from the low-byte add is preserved across the
-   mask, the 6502's PHP/PLP).  All circuits keep the AND opcode, so a different opcode is the
-   unhandled case, faithfully reproduced.
+   ⚠ SMC at $298D-$298E: the middle axis's origin high byte is ANDed with a per-circuit mask
+   (the low-byte add's carry survives the mask through PHP/PLP).  Every circuit keeps the AND
+   opcode, so another opcode is the unhandled case.
 
-   The tail (from $29F4) is the object queue: project_object_coord dispatches on object_dist_hi, and for a
-   near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve /
-   section_coord_add_delta / project_object_slot.
+   The tail (from $29F4) is the object queue: project_object_coord dispatches on
+   object_dist_hi, and for a near car ahead of car_behind the AI branch runs
+   build_section_step_delta / step_delta_halve / section_coord_add_delta / project_object_slot.
 
-   NO ZERO-PAGE HAND-OFF.  The 6502 parks its inputs in the arithmetic window ($0C the direction
-   index, $84/$85 the two offsets, $86-$88 the direction bytes, $74-$76 the mul8 residue), the step
-   delta in $74-$76 + point_delta_hi, and the object slot in saved_slot_index ($45) and
-   shared_counter_42 ($42), and the tail reads them back out.  Here they are locals and arguments:
-   a real-BBC def-use audit (`bbc_refloop_race --competition --range-audit=000C,0074-0076,
-   0083-0088 --defuse` and `=0042,0045`, frames 20-490, all five circuits, 2026-09-29) finds no
-   reader of any of those stores outside this chain — the only foreign read of the window is
-   edge_x_offscreen's of the ROAD BUILDER's delta, which step_delta_publish keeps.  The fixtures
-   ignore those cells, citing this audit. */
+   The 6502 passes all of this through zero page ($0C the direction index, $84/$85 the offsets,
+   $86-$88 the direction bytes, $74-$76 the mul8 residue and step delta, $45 and $42 the object
+   slot); here they are locals and arguments.  Reader audit (`bbc_refloop_race --competition
+   --range-audit=000C,0074-0076,0083-0088 --defuse` and `=0042,0045`, frames 20-490, all five
+   circuits): no reader outside this chain, except
+   edge_x_offscreen's read of the road builder's delta, which step_delta_publish keeps.  The
+   fixtures ignore those cells on that audit. */
 
 /* One axis of the staged object's world coordinate as the 16-bit value it is.  The 6502 keeps
    the three axes as two parallel byte rows a page apart, so every add there is a two-lane
@@ -16329,15 +15910,12 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
     mem[MEM_object_coord_lo + axis] = (uint8_t)value;
     mem[MEM_object_coord_hi + axis] = (uint8_t)(value >> 8);
 }
-/* The AND OPCODE at $298D is not per-circuit; the MASK OPERAND at $298E is.
-   [MEASURED 2026-09-08] none of the four Acornsoft expansion circuits writes either byte, at
-   LOAD time (absent from the 62-address surface `make track-patch` reads out of every
-   ModifyGameCode) or at RUNTIME (`bbc_refloop_race --watch=298d` / `--watch=298e`, frames
-   40-100, on a real BBC: NONE, against a control on $0A that reported 116 writes).  ⚠ But the
-   Nurburgring — the sixth, fan-made circuit the port also installs — patches the OPERAND from
-   $1F to $FF (`src/gen/revs_tracks.c`, pa5/pv5), i.e. no masking at all on a far hillier
-   circuit.  That is exactly why the operand is read out of mem[] below instead of baked, and
-   why the opcode test stays a TRAP on an unmodellable shape rather than a per-circuit table. */
+/* The AND opcode at $298D is not per-circuit; the mask operand at $298E is.
+   None of the four Acornsoft expansion circuits writes either byte, at load time (`make
+   track-patch`) or at run time (`bbc_refloop_race --watch=298d` / `--watch=298e` on a real
+   BBC).  ⚠ But the Nurburgring, the fan-made sixth circuit, patches the operand from $1F to $FF
+   (src/gen/revs_tracks.c, pa5/pv5): no masking on a hillier circuit.  So the operand is read
+   from mem[], and the opcode test traps on any other shape. */
 #define SMC_MASK_OPERAND  (MEM_smc_object_coord_mask + 1u)
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
    optionally <<2 (the second loop's ASL/ROL pair). */
@@ -16362,17 +15940,17 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
                               mem[MEM_track_dir_2 + soi] };
 
     /* First loop: origin + (along * dir) >> 8, per world axis.  ⚠ The section index is the 6502's
-       8-bit Y (LDY the cursor then INY per axis), so it WRAPS at 256 — the sum is masked. */
+       8-bit Y (LDY the cursor then INY per axis), so it wraps at 256 — the sum is masked. */
     for (int axis = 0; axis < 3; axis++) {
         uint8_t sy = (uint8_t)(sectionCursor + axis);
         int16_t sp = place_car_axis_term(dir1[axis], along, 0);
 
         /* $... CLC / ADC low / ADC high — one 16-bit add of the section origin and the term.
-           ⚠ The SMC site masks the ORIGIN's high byte only, before the add, so the mask goes on
+           ⚠ The SMC site masks the origin's high byte only, before the add, so the mask goes on
            the wide origin rather than on the sum. */
         uint16_t origin = section_word(sy);
 
-        /* ⚠ THE LOW BYTE IS STORED BEFORE THE SMC SITE IS EVEN REACHED ($297F `ADC $0900,Y`
+        /* ⚠ The low BYTE is stored before the SMC site is even reached ($297F `ADC $0900,Y`
            / $2982 `STA $09FD,X`, and only then $2985-$298D), so a circuit whose mask opcode we
            cannot model still leaves this byte written.  Storing it after the opcode test made
            the trap arm diverge from the 6502 in one cell, on one case in ten of the fixture —
@@ -16435,24 +16013,21 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 }
 
 /* $5A25  tally_bcd_column
-   Front-end grid/standings BCD tally for one column X.  Zeroes the per-column 16-bit BCD
-   accumulator standings_bcd_lo:standings_bcd_hi, derives a repeat count, then BCD-accumulates
-   standings_increment into the pair that many times before folding the pair into the 24-bit
-   BCD car-lap total via add_tally_to_lap_total.
+   Front-end standings tally for one column X.  Zeroes the 16-bit BCD accumulator
+   standings_bcd_lo:standings_bcd_hi, derives a repeat count, BCD-adds standings_increment that
+   many times, then folds the pair into the 24-bit BCD car-lap total (add_tally_to_lap_total).
 
-   The repeat count comes from standings_mode ($5F38):
-     * mode 1                     -> count = 1               (accumulate once)
-     * the column's car is the player, OR the doubled (mode-1) is zero
-                                  -> count = $5F38 * (that A) — the one product, was mul8
-     * car past the cutoff $5F39  -> count = $5F38
-     * otherwise                  -> count = (mode-1) * 2
-   The count is a 16-bit down-counter (low byte, then high byte, exactly as the 6502 walks it).
+   The repeat count, from standings_mode ($5F38):
+     * mode 1                     -> 1
+     * the column's car is the player, or the doubled (mode-1) is zero
+                                  -> $5F38 * (that A)
+     * car past the cutoff $5F39  -> $5F38
+     * otherwise                  -> (mode-1) * 2
+   A 16-bit down-counter, low byte then high byte, as the 6502 walks it.
 
    ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode): the accumulate stays BCD,
-   because a standings column IS a BCD counter — but as `bcd_add` (src/cpu/bcd.h), not as a
-   `cpu.D` bracket.  ⚠ No CLD here: the SED's scope ends inside add_tally_to_lap_total, whose
-   own $66B4 CLD is what clears it, so this routine never had a D of its own to restore.
-   Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16. */
+   through bcd_add (src/cpu/bcd.h).  No CLD here: the SED's scope ends at
+   add_tally_to_lap_total's own CLD ($66B4). */
 
 uint8_t tally_bcd_column_core(uint8_t x)
 {
@@ -16462,8 +16037,8 @@ uint8_t tally_bcd_column_core(uint8_t x)
     mem[MEM_standings_bcd_lo + x] = 0x00;
     mem[MEM_standings_bcd_hi + x] = 0x00;
 
-    /* HOW MANY BUMPS this column's tally is worth.  The 6502 keeps it in math_lo/math_hi and
-       unwinds it with DEC/BNE/DEC/BPL ($5A74-$5A7A), which is ONE 16-bit counter written as two
+    /* How many bumps this column's tally is worth.  The 6502 keeps it in math_lo/math_hi and
+       unwinds it with DEC/BNE/DEC/BPL ($5A74-$5A7A), which is one 16-bit counter written as two
        bytes; here it is one value, so only the loop's own quirk has to be spelled out (below).
        ⚠ math_lo/math_hi are declared scratch for this routine — $74/$75 are in the fixture's
        ignore list — which is why the count can live in a local at all. */
@@ -16508,29 +16083,24 @@ uint8_t tally_bcd_column_core(uint8_t x)
 }
 
 /* $3D5C  paint_fence_backdrop — the crash "show the fence" fill
-   check_crash's crash arm JSRs this (its ONLY caller) once the car has hit the fence, right
-   after INCing horizon_extent.  It paints the whole 3D view SOURCE buffer to a static
-   two-band dither so the next frame shows the crash barrier instead of the road.
+   check_crash's crash arm calls this, its only caller, once the car has hit the fence, right
+   after INCing horizon_extent.  It paints the whole view source buffer with a two-band dither,
+   so the next frame shows the barrier instead of the road.
 
-   The work is one column loop over all 40 view columns.  Column `col` lives in the $80-spaced
-   source block at $3000 + col*$80 and fills from row $46 DOWNWARD to its own bottom sentinel
-   dash_block_starts[col] (exclusive).  Every filled row also lands in the two per-line
-   start-source buffers (view_left_start_src $504, view_right_start_src $4400) at the same row
-   index.  The fill byte is a 4-entry dither that repeats every four rows (a per-column counter
-   that starts at 3 and cycles 3,2,1,0) and is chosen by the horizon: rows at/above
-   horizon_extent take fence_pattern_hi, rows below take fence_pattern_lo — with a zero
-   fence_pattern_hi byte falling back to the lo table (dead in the shipping tables, kept
-   faithfully).  It also clears wheel_spin_rate: after a crash the car is stopped.
+   One loop over the 40 view columns.  Column `col` (the source block at $3000 + col*$80) fills
+   from row $46 downward to its bottom sentinel dash_block_starts[col], exclusive, and every
+   filled row also lands in the two per-line start-source buffers (view_left_start_src $504,
+   view_right_start_src $4400).  The fill byte is a 4-row dither (a per-column counter cycling
+   3,2,1,0) chosen by the horizon: rows at or above horizon_extent take fence_pattern_hi, rows
+   below fence_pattern_lo; a zero fence_pattern_hi byte falls back to the lo table (never in
+   the shipped tables).  It also clears wheel_spin_rate: the car is stopped.
 
-   ⚠ ONE 6502 idiom is load-bearing and kept exactly: the row loop tests Y AFTER decrementing,
-   so the bottom sentinel is never itself written, and a sentinel > $46 wraps Y through all 256
-   rows.  A `do { } while (y != bottom)` over uint8_t reproduces both.  All addresses are masked
-   to 16 bits so the wrap can never index past mem[]; the destinations stay within $3000-$44FF
-   and never reach the hardware window, so there are no guarded writes.
+   ⚠ The row loop tests Y after decrementing, so the sentinel itself is never written and a
+   sentinel > $46 wraps Y through all 256 rows; `do { } while (y != bottom)` over uint8_t
+   reproduces both.  Addresses are masked to 16 bits; the destinations stay in $3000-$44FF.
 
-   No callees and no register inputs (the body opens by storing constants).  check_crash ignores
-   every register on return (its next act is JSR sound_stop_all), so nothing is declared live;
-   the shim still reconstructs the true exit ABI for faithfulness. */
+   No callees and no register inputs.  check_crash ignores every register on return (it calls
+   sound_stop_all next); the shim still reconstructs the exit ABI. */
 
 #define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
 #define FENCE_TOP_ROW          0x46u    /* every column fills from row $46 downward            */
@@ -16584,17 +16154,17 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
     return last;
 }
 
-/* THE CAR-ORDER INDEX CLUSTER
+/* The car-order index cluster
    The mod-20 running-order index helpers, the car_order swap, and the two
    routines built on them.  All of it is index bookkeeping over the 20-entry
    car_order table — no arithmetic the 68000 lacks — so the twin's only job is
    to delete the per-instruction interpreter around a walk that runs every frame.
    car_order holds the field in running order; each entry is a car index 0-19. */
 
-#define FPN_PLAYER_SLOT MEM_zp_scratch_index   /* zp_scratch_index ($0003); in THIS routine = the player's slot in car_order */
+#define FPN_PLAYER_SLOT MEM_zp_scratch_index   /* zp_scratch_index ($0003); in this routine = the player's slot in car_order */
 
 /* $507E car_index_dec — step a car_order index back one, wrapping 0 -> 19.
-   Faithful to `DEX / BPL / LDX #$13` for ANY input byte: a result with bit 7 set
+   Faithful to `DEX / BPL / LDX #$13` for any input byte: a result with bit 7 set
    (only x==0 among valid indices) wraps to 19. */
 /* promoted for revs_native_abi.c */ uint8_t car_index_dec_core(uint8_t x)
 {
@@ -16644,7 +16214,7 @@ void clear_race_clock_core(uint8_t x)
     mem[MEM_race_clock_hi  + x] = 0x00u;
 }
 
-/* the track-position STEPPERS.
+/* the track-position steppers.
 
    Each moves car X one offset-unit along (advance) or back (retreat) the track.
    The track is a ring of segments; a car sits at car_segment[X] (an index in
@@ -16652,9 +16222,9 @@ void clear_race_clock_core(uint8_t x)
    separate 16-bit car_distance[X] counts distance round the lap.  Stepping off
    the current segment moves to the neighbour and wraps the ring at
    segment_count_x8; the distance counter wraps at lap_length and, going
-   backward, un-books a lap for the PLAYER only.
+   backward, un-books a lap for the player only.
 
-   Escaping flag: CARRY = "crossed a segment boundary this step" (the ONLY flag
+   Escaping flag: carry = "crossed a segment boundary this step" (the only flag
    any caller consumes — all three branch on !C; see the call sites).  No BCD:
    this is the geometry path, always entered with D=0 (docs/static-map.md
    §Decimal mode), so the distance counter is a plain binary uint16_t. */
@@ -16703,19 +16273,19 @@ void clear_race_clock_core(uint8_t x)
     mem[MEM_car_seg_offset + x] = (uint8_t)(off - 1);
 
     /* one unit back round the lap; underflowing past 0 wraps to a full lap and, for the
-       PLAYER only, un-books a completed lap */
+       player only, un-books a completed lap */
     /* One 16-bit decrement of the car's lap distance, with a wrap to a
        full lap when it would go past the start line.  The 6502 spells it as three separate
        lane steps — decrement the low byte, borrow into the high one, and if the high one came
-       out NEGATIVE reload both lanes from lap_length and start over — so the wrap test is a
+       out negative reload both lanes from lap_length and start over — so the wrap test is a
        sign test, not a zero test: a high lane already >= $81 wraps too.  Wide, the same
        predicate is "the decrement would leave bit 15 set", and the reload is one assignment.
-       ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
+       ⚠ lap_length stays in mem[]: it is track-file data, and an expansion circuit's hook can
        patch it at runtime, so it is read wide per call rather than relocated to a global
        (docs/wide-value-cleanup.md, Eligibility and the fourth eligibility test). */
     uint16_t dist = car_distance_16[x];
     /* ⚠ the low lane is only decremented once, at the end; the 6502 borrows into the high lane
-       ONLY when the low one is already zero, so the sign test is gated on that. */
+       only when the low one is already zero, so the sign test is gated on that. */
     while ((dist & 0x00FFu) == 0u && ((uint16_t)(dist - 1u) & 0x8000u) != 0u) {
         dist = (uint16_t)(lap_length_lo | (lap_length_hi << 8));   /* wrap to a full lap */
         if (x == player_car && mem[MEM_car_lap_count + x] != 0)
@@ -16725,7 +16295,7 @@ void clear_race_clock_core(uint8_t x)
     return crossed;
 }
 
-/* $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
+/* $109B  full_track_scan_rebuild  —  native driver (stage 5), the root of the crash-freeze subtree.
  *
  * reset_driving_variables calls this on a crash / session reset.  With the off-line-scan flag
  * (track_scan_active bit 7) raised — so lap_complete ignores the artificial track motion — it
@@ -16742,12 +16312,12 @@ void clear_race_clock_core(uint8_t x)
  *   5. seed every car's car_section_across with an alternating $AF/$50 pattern in sorted order;
  *   6. rebuild that many track sections from the walk origin (build_road_section).
  *
- * A DRIVER, not a leaf: every loop ends on a game-state boundary (the field's distance wrap; the
+ * a driver, not a leaf: every loop ends on a game-state boundary (the field's distance wrap; the
  * $20 pace gap; a segment-boundary carry), never on a bounded input, so no randomised validate
  * fixture can drive it to a defined exit.  It is a NATIVE_FUNCS member (transpile.py), gated by
  * `make determinism-crash` — a HOLD_THROTTLE run that actually crashes off-track and runs this
  * routine seven times before the frame-1500 dump.  Its callees are all native twins already, so
- * this reproduces only its OWN mem[] writes and drives the callees in order with the same register
+ * this reproduces only its own mem[] writes and drives the callees in order with the same register
  * inputs.  Exit regs/flags are dead (reset_driving_variables reloads X and A immediately after).
  *
  * The shared-scratch cells the transliteration writes are reproduced faithfully — shared_temp_76/77
@@ -16756,12 +16326,12 @@ void clear_race_clock_core(uint8_t x)
  * ------------------------------------------------------------------------------------------------ */
 void full_track_scan_rebuild_core(uint8_t retreatDepth)
 {
-    /* The one place the WHOLE distance array is marshalled: the body below walks all twenty
+    /* The one place the whole distance array is marshalled: the body below walks all twenty
        cars, repeatedly, core-to-core, so one 24-word round trip buys hundreds of word-sized
-       steps.  ⚠ It must PUBLISH before step 6, which calls a shim that marshals in itself. */
+       steps.  ⚠ It must publish before step 6, which calls a shim that marshals in itself. */
     car_distance_marshal_in();
     shared_temp_76 = retreatDepth;            /* the per-cell retreat depth (see step 2) */
-    /* The three counters below are LOOP COUNTERS, not shared state while they run: nothing
+    /* The three counters below are loop counters, not shared state while they run: nothing
        the loops call reads $76/$77/$78 (track_pos_retreat_core touches only the car arrays), so
        they run in registers and each cell is published once at the value the 6502 leaves.  That
        is ~900 mem[] byte accesses a call gone, and this driver runs seven times per crash
@@ -16774,7 +16344,7 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
 
     /* 1. advance the whole field until car 0 sits on the start line (distance == 0) */
     do {
-        for (int x = 0x13; x >= 0; x--) {          /* was uint8_t counting down THROUGH the 8-bit
+        for (int x = 0x13; x >= 0; x--) {          /* was uint8_t counting down through the 8-bit
                                                      wrap to $FF; `int` states the descent and
                                                      drops the per-use zero-extend */
             track_pos_advance_core((uint8_t)x);   /* exit C dead: the loop only steps */
@@ -16835,7 +16405,7 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
     }
 
     /* 6. rebuild shared_counter_42 track sections from the walk origin.
-       ⚠ build_road_section is a boundary SHIM — it re-reads slot $17 out of mem[], so the walk's
+       ⚠ build_road_section is a boundary shim — it re-reads slot $17 out of mem[], so the walk's
        own steps have to be published first or it would reload a stale distance. */
     car_distance_marshal_out();
     section_cursor = 0u;
@@ -16850,15 +16420,15 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
 
 
 /* $4F77 lap_complete.  track_pos_advance calls this when a car's distance counter wraps
- * a lap.  It books the completed lap and, when the mode calls for it, records the lap TIME:
+ * a lap.  It books the completed lap and, when the mode calls for it, records the lap time:
  * race_clock - car_lap_start as a 3-byte BCD value (centiseconds / seconds base-60 / minutes), and
  * keeps the per-car best.  The player's finish is credited once per approach (a one-shot debounce)
  * and, on the final lap, arms the end-of-session countdown.
  *
  * BCD is real here — it is one of the eight sanctioned SED sites (docs/static-map.md §Decimal
  * mode) — so the time subtract goes through bcd_sub/bcd_add (src/cpu/bcd.h), which do the digit
- * arithmetic directly instead of wearing a cpu.D=1 bracket around a binary flag macro.  The best-lap check is a plain 24-bit magnitude compare: valid
- * BCD bytes order like their decimal value, so no decimal arithmetic is needed merely to sort them.
+ * arithmetic directly, with no cpu.D bracket.  The best-lap check is a plain 24-bit magnitude
+ * compare: valid BCD bytes order like their decimal value, so no decimal arithmetic is needed merely to sort them.
  * No register or flag escapes (the sole caller discards A/flags), so the shim marshals nothing back.
  * ------------------------------------------------------------------------------------------------ */
 
@@ -16884,9 +16454,9 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
     uint8_t laps = mem[MEM_car_lap_count + x];
     if (!(laps & 0x80u)) mem[MEM_car_lap_count + x] = (uint8_t)(laps + 1u);
 
-    /* decide whether this lap's TIME gets recorded, by session mode */
+    /* decide whether this lap's time gets recorded, by session mode */
     int record;
-    if (session_is_race & 0x80u) {                      /* RACE: gate on the session lap total */
+    if (session_is_race & 0x80u) {                      /* Race: gate on the session lap total */
         if (laps < race_lap_total) {
             record = 1;                                 /* still within the race distance */
         } else if (laps == race_lap_total) {
@@ -16901,7 +16471,7 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
     }
     if (!record) return;
 
-    /* lap time = race_clock - car_lap_start, a 3-byte BCD value whose MIDDLE byte is seconds in
+    /* lap time = race_clock - car_lap_start, a 3-byte BCD value whose middle byte is seconds in
        base 60: a borrow there adds $60 and forces a borrow into the minutes byte. */
     /* SED at $4FE1 — sanctioned BCD site, and decimal here is the game's own representation
        of a time, not a 6502 artefact.  The subtracts are bcd_sub (src/cpu/bcd.h). */
@@ -16952,12 +16522,9 @@ void reject_all_object_slots_core(void)
    The body's other-car pass:
 
      - Practice (qualify_minutes negative) has no other cars, and the 6502's early exit is a busy
-       delay, $262D-$2636: six passes of 256 decrements of math_lo, which padded a practice frame
-       by ~6 ms on a 2 MHz 6502 so that it paced like a race one.  The port keeps its memory
-       effect (math_lo = 0) and drops the cycles: the delay only slows practice to race pacing,
-       and the port never paid it (GCC had already reduced the transliterated loop to its final
-       value), so every baseline was measured without it (docs/perf-method.md §A BUSY-DELAY
-       LOOP).
+       delay, $262D-$2636: six passes of 256 decrements of math_lo, ~6 ms on a 2 MHz 6502 to pace
+       a practice frame like a race one.  The port keeps its memory effect (math_lo = 0) and
+       drops the cycles (docs/perf-method.md §A BUSY-DELAY LOOP).
      - Otherwise: un-reject the car ahead's object slot, run the three motion passes (the per-car
        update engine, the overtaking pass, then re-reject every slot) and re-find the player's
        neighbours; walk six ring positions outwards from zp_scratch_index in the direction the
@@ -16973,7 +16540,7 @@ void reject_all_object_slots_core(void)
    walk (so the six staging calls do not re-reject the ahead slot) and the slot's object inside
    the view window; a fifth of the cases set that up. */
 /* `steps` is how many simulation steps this painted frame covers (docs/faithfulness-seam.md
-   §THE FRAME-RATE-INDEPENDENT SIMULATION): the other cars MOVE once per step and are DRAWN once.
+   §THE FRAME-RATE-INDEPENDENT SIMULATION): the other cars move once per step and are drawn once.
    Their moves stay here, after the car-ahead un-reject, rather than beside the player's step,
    because drive_one_car's across-track nudge reads that slot's reject bit — so this is the
    one place in the frame where they see the state they always saw. */
@@ -16985,7 +16552,7 @@ void reject_all_object_slots_core(void)
 void move_and_draw_cars_steps(unsigned steps)
 {
     if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
-        /* $262D-$2636 is a 1536-iteration busy delay whose ONLY memory effect is math_lo
+        /* $262D-$2636 is a 1536-iteration busy delay whose only memory effect is math_lo
            reaching 0.  The burn is deliberately not reproduced: it is 5% of the framerate on
            the 50 Hz body, the transliteration never paid it (GCC folded the loop away), and a
            cycle-pad that exists to slow practice to 50 Hz buys a 4 FPS port nothing. */
@@ -16994,9 +16561,9 @@ void move_and_draw_cars_steps(unsigned steps)
     }
 
     uint8_t aheadSlot = mem[MEM_car_order + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
-    mem[MEM_car_flags_shape + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
+    mem[MEM_car_flags_shape + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot not rejected */
 
-    /* One overtaking check PER STEP, as on the BBC, where every drive is followed by one: the
+    /* One overtaking check per step, as on the BBC, where every drive is followed by one: the
        swap window is 10 units and a car closes up to ~3 a step, so checking once after several
        steps (the decoupled sim at a low framerate) can let a car pass straight through
        the window unbooked — car_order goes stale and the view and the mirrors, which stage cars
@@ -17039,18 +16606,18 @@ void move_and_draw_cars_steps(unsigned steps)
 
 void move_and_draw_cars_core(void) { move_and_draw_cars_steps(1u); }
 
-/* $66DF  draw_car_field — DRAW EVERY OTHER CAR, BACK TO FRONT
+/* $66DF  draw_car_field — draw every other car, back to front
    The frame's other-car draw pass, and move_and_draw_cars' last call but one.  Three groups,
    in the order they are painted:
 
      1. the ring walk.  Starting at the player's own car_order position (zp_scratch_index, left
-        there by find_player_neighbours) it steps FORWARD with car_index_inc and draws each car
+        there by find_player_neighbours) it steps forward with car_index_inc and draws each car
         it lands on, stopping when the cursor reaches car_behind.
      2. object slots $16, $15 and $14 — the three non-car objects, drawn by slot number.
-     3. car_behind itself, LAST.
+     3. car_behind itself, last.
 
-   The order IS the algorithm: the ring walk runs away from the player and back round, so cars
-   are painted far-to-near and the nearest one wins every overlap.  The car BEHIND is nearest of
+   The order is the algorithm: the ring walk runs away from the player and back round, so cars
+   are painted far-to-near and the nearest one wins every overlap.  The car behind is nearest of
    all, which is why it is held back to the end instead of being drawn when the walk reaches it.
 
    ⚠ $66E1's `BPL $66E6` skips the first draw whenever zp_scratch_index is positive — and a
@@ -17059,25 +16626,24 @@ void move_and_draw_cars_core(void) { move_and_draw_cars_steps(1u); }
    never negative" is a claim about find_player_neighbours, not about this routine.
 
    Groups 1 and 3 go through the $2ACB entry (draw_car_at_order), which saves the caller's
-   POSITION in saved_slot_index and indexes car_order to get the object SLOT; group 2 enters at
+   position in saved_slot_index and indexes car_order to get the object slot; group 2 enters at
    $2AD1 with a slot already in hand.  Both are two lines, so they are inlined here.
 
-   ⚠ Y and V thread from one draw to the next; C does NOT, even though draw_track_object leaves
+   ⚠ Y and V thread from one draw to the next; C does not, even though draw_track_object leaves
    it live.  Every draw here is preceded by a CPX — the ring stop at $66E9 and the slot-loop
-   bound at $66F5 — and those recompute the carry, so what each draw receives is the COMPARE's
-   result, not the previous draw's.  (Threading C instead is a real divergence: it shows up as a
-   flag-only mismatch on about one case in five.)  X threads through neither, because $2B0A
+   bound at $66F5 — and those recompute the carry, so what each draw receives is the compare's
+   result, not the previous draw's.  X threads through neither, because $2B0A
    reloads it from saved_slot_index — the cursor this routine just stored. */
 void draw_car_field_core(void)
 {
     /* Every bearing draw_track_object measures is against the camera heading, and nothing in
-       this pass moves it — so it is marshalled in ONCE, on the shim, not per car. */
+       this pass moves it — so it is marshalled in once, on the shim, not per car. */
     uint8_t pos  = zp_scratch_index;                        /* $66DF LDX zp_scratch_index */
     int     draw = (pos & 0x80u) != 0;                      /* $66E1 BPL — see the header */
 
     for (;;) {
         if (draw) {                                         /* $66E3 JSR draw_car_at_order */
-            saved_slot_index = pos;                         /* $2ACB — the POSITION, not the slot */
+            saved_slot_index = pos;                         /* $2ACB — the position, not the slot */
             draw_track_object_core(mem[MEM_car_order + pos]);
             pos = saved_slot_index;                         /* $2B0A reloads X = saved_slot_index */
         }
@@ -17099,7 +16665,7 @@ void draw_car_field_core(void)
 /* $27ED drive_other_cars — the per-frame per-car update engine
  *
  * Called once per frame from the driving loop ($117E, $2649); both callers JSR $2692 immediately
- * after, so drive_other_cars's exit registers and flags are DEAD (fixture mask LIVE_NONE) — only mem[]
+ * after, so drive_other_cars's exit registers and flags are dead (fixture mask LIVE_NONE) — only mem[]
  * (math_lo/math_hi/shared_temp_76 among it) is compared.
  *
  * For every car (X = 19..0, skipping player_car) it:
@@ -17111,7 +16677,7 @@ void draw_car_field_core(void)
  *      (track_pos_advance, which books a completed lap via lap_complete);
  *   4. nudges the car's across-track offset (car_section_across) +/-1 back toward the centre line.
  *
- * The two genuine wide values, de-carried to plain uint16_t here (the campaign deliverable):
+ * The two wide values, as plain uint16_t:
  *   - $2861-$2865  [math_hi:A] <<= 2         (a 16-bit left shift, top bits discarded)
  *   - $2867-$287C  speed += that, clamp      (a 16-bit add of [car_speed_scaled:car_speed_frac])
  * math_lo/math_hi are written to their real cells inline (not deferred): a mid-routine lap wrap
@@ -17120,12 +16686,12 @@ void draw_car_field_core(void)
  * D=0 on this path (per-frame race sim; the 8 SED sites are elsewhere — docs/static-map.md).
  */
 #define CAR_SPEED_FRAC        0x3850u   /* car_speed_frac — low byte of car speed, overlaying
-                                          engine_init's bytes.  MEASURED: mid-race those twenty
-                                          bytes are all $00 on a real BBC, so the init code is
-                                          GONE by the first race frame and the two roles never
+                                          engine_init's bytes.  Mid-race those twenty bytes
+                                          are all $00 on a real BBC: the init code is gone by
+                                          the first race frame and the two roles never
                                           overlap in time (symbols.csv $3850). */
 
-/* The other cars' across-track moves are per ENGINE frame — a ±1 centring nudge and the drift
+/* The other cars' across-track moves are per engine frame — a ±1 centring nudge and the drift
    settle below — so a step takes h of each, carried per car (sim_scale). */
 static int sim_ai_nudge(uint8_t x, int perFrame)
 {
@@ -17308,7 +16874,7 @@ void drive_other_cars(void)
 }
 
 /* $1805  reset_driving_variables
-   THE SESSION RESET — everything a new practice/qualifying/race session, or a crash recovery,
+   The session reset: everything a new practice/qualifying/race session, or a crash recovery,
    needs put back.  race_main_loop's restart ladder calls it at RESTART_MID and deeper.  Five
    parts, in order:
 
@@ -17316,14 +16882,14 @@ void drive_other_cars(void)
         (the view-origin page and the HUD scratch above it);
      2. redefine sound envelope 1 from definition block 0, so the engine note starts from a known
         shape;
-     3. re-lay the FIELD.  All 24 object slots get the circuit's own start_distance and a zeroed
+     3. re-lay the field.  All 24 object slots get the circuit's own start_distance and a zeroed
         segment/offset, then the running order is settled: a practice session swaps the player
         into practice_start_slot and fans the other cars right round the lap
         (practice_field_spread, $28 for Silverstone), while a race keeps them on the grid with a
         retreat depth of 1.  full_track_scan_rebuild does the walking either way.  The twenty
-        DRIVERS then get their per-car arrays reset — $80 into car_flags_shape and
+        drivers then get their per-car arrays reset — $80 into car_flags_shape and
         car_lap_start_hi, $FF into car_target_speed (no limit yet) and zero into the lap count,
-        both flag bytes, the steering state and BOTH halves of the 16-bit speed
+        both flag bytes, the steering state and both halves of the 16-bit speed
         (car_speed_scaled and the car_speed_frac overlay at $3850);
      4. the driver's own controls: first gear (and lap_credit_armed, which shares the constant),
         the starter's random mask, the two near-edge cursors, and a non-zero mirror_seg_state for
@@ -17331,7 +16897,7 @@ void drive_other_cars(void)
         each of them on the first frame rather than leaving a stale car drawn there;
      5. the opening message, the one place the two session kinds diverge.  Practice prints token
         $28 on both status rows, clears clock 1, paints both lap-time readouts and arms
-        lap_time_show_timer with the $DF sentinel that makes the FIRST completed lap suppress its
+        lap_time_show_timer with the $DF sentinel that makes the first completed lap suppress its
         readout.  A race instead clears the lap/position markers, prints tokens $2B and $2C on the
         two rows, and seeds pass_count_bcd from the player's grid slot.
 
@@ -17341,8 +16907,8 @@ void drive_other_cars(void)
    which carries nothing across — so the shim replays no exit state.
    ⚠ NATIVE_FUNCS, not VALIDATE_FUNCS: part 3 is full_track_scan_rebuild, whose loops end on game
    state and not on bounded inputs, so no randomised fixture can drive this routine to an exit.
-   `make determinism-crash` gates the PRACTICE arm (it is that driver's only caller, so it runs
-   the same seven times); `make determinism-race` gates the RACE arm ($18A5-$18BB), being the one
+   `make determinism-crash` gates the practice arm (it is that driver's only caller, so it runs
+   the same seven times); `make determinism-race` gates the race arm ($18A5-$18BB), being the one
    target that reaches session_is_race = $80. */
 
 void reset_driving_variables_core(void)
@@ -17383,7 +16949,7 @@ void reset_driving_variables_core(void)
     find_player_neighbours_core();                     /* $1835 */
 
     /* 3b. settle the running order and re-lay the field ($1838-$184C).  BIT tests bit 7 of
-           session_is_race, so the practice arm is the one where it is CLEAR. */
+           session_is_race, so the practice arm is the one where it is clear. */
     uint8_t retreatDepth = 0x01u;                      /* $1838 LDA #$01 — the race depth */
     if (!(session_is_race & 0x80u)) {
         car_order_swap_core(practice_start_slot, zp_scratch_index);
@@ -17414,7 +16980,7 @@ void reset_driving_variables_core(void)
     for (int x = 5; x >= 0; x--)  mem[MEM_mirror_seg_state + x] = 0x01u;
     draw_gear_indicator_core();                        /* $188B — repaint the gear digit */
 
-    /* 5. the opening message.  LDA/BMI here, so the RACE arm is the bit-7-set one. */
+    /* 5. the opening message.  LDA/BMI here, so the race arm is the bit-7-set one. */
     if (session_is_race & 0x80u) {
         /* $18A5/$18A7 store A, and A is session_is_race — `$188E LDA session_is_race / BMI`
            is what brought us here ($80: bit 7 = "positions changed", so the leaderboard redraws
@@ -17440,50 +17006,42 @@ void reset_driving_variables_core(void)
    The body's 8th call: the session clocks and the two message rows along the top of the screen.
    The two session kinds share nothing but the entry test.
 
-   RACE (session_is_race bit 7 set):
-     On a credited lap, work out how many laps are LEFT — race_lap_total - laps_done, computed the
-     6502's way as ~laps_done + total + (laps_done >= 1) — print it as BCD at column $0C / row $21,
-     and when the count has gone NEGATIVE (the flag the PHP/PLP pair carries across both calls)
-     print token $35, the chequered-flag line.  Then, unless the session-end countdown is already
-     running, update the position readout.
+   Race (session_is_race bit 7 set): on a credited lap, work out how many laps are left
+   (race_lap_total - laps_done, computed the 6502's way as ~laps_done + total + (laps_done >=
+   1)), print it as BCD at column $0C / row $21, and when the count has gone negative (the flag
+   the PHP/PLP pair carries across both calls) print token $35, the chequered-flag line.  Then,
+   unless the session-end countdown is running, update the position readout.
 
-   PRACTICE / QUALIFYING:
-     Add a frame to clock 1 — the LAP timer, separate from the player's race clock — then run the
-     lap-time readout: a credited lap adds $21 to lap_time_show_timer and reprints the time
-     (except on the very first lap, where the $DF sentinel reset_driving_variables planted makes
-     the add land on 0), and otherwise the timer counts down one a frame and, on reaching 0,
-     restores the standard pair of lines.  Finally, the qualifying deadline: qualify_minutes
-     against race_clock_hi[0], token $29 the first time they match and token $2A plus a 60-frame
-     session_end_countdown once the clock passes it, both gated by qualify_msg_flags.
+   Practice / qualifying: add a frame to clock 1 (the lap timer, separate from the race clock),
+   then run the lap-time readout: a credited lap adds $21 to lap_time_show_timer and reprints the
+   time (except on the first lap, where reset_driving_variables' $DF sentinel makes the add land
+   on 0); otherwise the timer counts down and, on reaching 0, restores the standard lines.
+   Finally the qualifying deadline: qualify_minutes against race_clock_hi[0], token $29 the first
+   time they match and token $2A plus a 60-frame session_end_countdown once the clock passes it,
+   both gated by qualify_msg_flags.
 
-   TWO OF THE 6502'S BRANCHES CANNOT BE TAKEN THE OTHER WAY, so this reads as a plain if/else
-   chain where the transliteration has gotos: $1054's `BEQ $106F` follows clear_race_clock, whose
-   body opens `LDA #$00`, so its exit Z is always 1; $1068's follows print_spaces ($3D50), which
-   ends the same way.  Both are unconditional jumps written as conditional branches.
-   ⚠ THREE things here are genuinely 6502 and are modelled, not simplified:
-     - the $1017 PHP / $1022 PLP really occupies its stack slot.  print_bcd_digits does its own
-       PHA/PLA between the two, so leaving the byte as residue without moving S would let that
-       push overwrite it;
-     - add_frame_time is one of the eight SED sites and its exit CARRY is a genuine input — the
-       BCD seconds carry its own $17D6 PHP kept — and that carry is what decides $106A;
-     - the cursor set at $101B/$101D stays AMBIENT past print_message_pair's call, which is why
-       it is carried in two locals and not recomputed.  Everything this routine calls is native
-       and takes its inputs as arguments, and so does this one: the
-       OSWRCH ambient X/Y and the two ambient P bits the PHP stacks arrive as PARAMETERS,
-       marshalled out of cpu by the 6502-ABI shim.  They are state the MOS text arm reads, not
-       values this routine computes, which is why they are arguments and not cpu reads here.
+   Two 6502 branches cannot go the other way, so this is an if/else chain where the
+   transliteration has gotos: $1054's `BEQ $106F` follows clear_race_clock, whose body opens
+   `LDA #$00`, and $1068's follows print_spaces ($3D50), which ends the same way.
+   ⚠ Three 6502 behaviours are modelled:
+     - the $1017 PHP / $1022 PLP occupies its stack slot: print_bcd_digits does its own PHA/PLA
+       between the two, so the byte must not be left as residue without moving S;
+     - add_frame_time is one of the eight SED sites, and its exit carry (the BCD seconds carry
+       its own $17D6 PHP kept) decides $106A;
+     - the cursor set at $101B/$101D stays ambient past print_message_pair's call, so it is
+       carried in two locals.  The OSWRCH ambient X/Y and the two ambient P bits the PHP stacks
+       arrive as parameters, marshalled out of cpu by the shim: they are state the MOS text arm
+       reads, not values this routine computes.
 
-   clear_race_clock's shim must publish the Z its `LDA #$00` leaves (and N): the oracle's $1054
-   BEQ branches on it (revs_native_seam.c).
-   Fixture note: inside the real 0..19 lap domain the laps-left byte is 0..$13 or $ED..$FF, so its
-   bits 6 and 7 are always equal; a quarter of the cases span 0..99 to decouple them. */
-/* ambX/ambY are the OSWRCH cursor, genuinely AMBIENT here: it arrives from whatever the body
-   called last and is handed on unchanged when the race arm prints nothing.
-   The $1017 PHP is not reproduced, under THE RESULTS RULE (docs/validation-harness.md): the
-   routine reads one bit of it back, the sign, which is a local.  Reader audit: the byte goes to
-   $0100+S with the routine's own PLP popping it before anything else can read it, it is below SP
-   at every exit, and `tools/det_compare.py` already exempts $01B8..$01FF on this same argument.
-   The residue is scoped out in the fixture's `set_ignore`. */
+   clear_race_clock's shim must publish the Z (and N) its `LDA #$00` leaves: the oracle's $1054
+   BEQ branches on it (revs_native_seam.c). */
+/* ambX/ambY are the OSWRCH cursor, ambient here: it arrives from whatever the body called last
+   and is handed on unchanged when the race arm prints nothing.
+   The $1017 PHP is not reproduced (docs/validation-harness.md §THE RESULTS RULE): the routine
+   reads back one bit of it, the sign, which is a local.  Reader audit: the byte goes to $0100+S,
+   the routine's own PLP pops it before anything else can read it, it is below SP at every exit,
+   and tools/det_compare.py already exempts $01B8..$01FF on this argument.  The fixture's
+   set_ignore scopes out the residue. */
 void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
 {
 
@@ -17502,7 +17060,7 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
             const int lapsRanOut = (lapsLeft & 0x80u) != 0;
 
             uint8_t lapsBcd = position_to_bcd_core(lapsLeft).a;   /* $1018 — 1-based BCD */
-            ambX = 0x0Cu; ambY = 0x21u;               /* $101B/$101D — and the cursor STAYS
+            ambX = 0x0Cu; ambY = 0x21u;               /* $101B/$101D — and the cursor stays
                                                          ambient past the two calls below */
             print_bcd_digits_at_core(lapsBcd, ambX, ambY);   /* $101F */
 
@@ -17517,10 +17075,10 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
     }
 
     /* ---- practice / qualifying ---- */
-    /* $1034 — clock 1, the LAP timer.  Its exit carry is the BCD seconds' own, and the Y it
+    /* $1034 — clock 1, the lap timer.  Its exit carry is the BCD seconds' own, and the Y it
        leaves (the tick countdown) is the ambient OSWRCH row register every text call below
        inherits — none of them changes it. */
-    /* Clock 1 counts ENGINE frames, so it advances once per slow tick since the previous
+    /* Clock 1 counts engine frames, so it advances once per slow tick since the previous
        painted frame (sim_render_ticks; 1 in legacy) — which is what keeps a lap time the
        original's whatever the frame rate.  With no tick this frame nothing is added, and the
        row register is the countdown the add would have loaded. */
@@ -17533,7 +17091,7 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
         textY = ft.y;
     }
 
-    /* $1037's BIT reads BOTH high bits of lap_completed_flag and the two branches that follow
+    /* $1037's BIT reads both high bits of lap_completed_flag and the two branches that follow
        pick one of three ways on: bit 6 runs the readout countdown, bit 7 alone books a new lap
        time, and neither goes straight to the deadline check. */
     uint8_t lapFlags = lap_completed_flag;
@@ -17582,28 +17140,27 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
 /* $28F2  stage_nearby_car
    Called twice per frame by move_and_draw_cars to place one nearby car into the view.  On entry
    X is a car_order position; the shim resolves the car slot = car_order[X] and stows it in
-   saved_slot_index ($45) and shared_counter_42 ($42) for the slot writers this routine tail-calls.
-   The core then decides the object's fate from the signed ring gap car_gap_tail returned:
+   saved_slot_index ($45) and shared_counter_42 ($42) for the slot writers this routine
+   tail-calls.  The core decides the object's fate from the signed ring gap:
 
-     - REJECT when the gap is far (C set out of car_gap_tail), on the wrong side of the reference
-       car (sign of gap ^ track_direction), or |gap| >= $28 sections away;
-     - otherwise stage it: derive the view-section cursor  Y = section_cursor - 3*|gap|, wrapping
-       +$78 when the subtraction goes negative (all 8-bit), and for a fast car in a normal state
-       (car_race_flags bit4 clear AND car_speed_scaled >= $32) copy that section's curve into the
-       car's drift command (section_curve[Y] -> car_across_drift[slot]).  The two share a bit
-       layout — bit 7 direction, bit 6 armed, bits 0-5 magnitude — and car_steering_settle adds
-       that magnitude into car_section_across, so this hand-off is literally "a fast car runs wide
-       in the coming corner" ([DERIVED] 2026-09-08 on a real BBC; see the section_curve row).
+     - reject when the gap is far (C set out of car_gap_tail), on the wrong side of the
+       reference car (sign of gap ^ track_direction), or |gap| >= $28 sections away;
+     - otherwise stage it: the view-section cursor Y = section_cursor - 3*|gap|, +$78 when the
+       subtraction goes negative (all 8-bit), and for a fast car in a normal state (car_race_flags
+       bit 4 clear and car_speed_scaled >= $32) copy that section's curve into the car's drift
+       command (section_curve[Y] -> car_across_drift[slot]).  The two share a bit layout (bit 7
+       direction, bit 6 armed, bits 0-5 magnitude) and car_steering_settle adds the magnitude
+       into car_section_across: a fast car runs wide in the coming corner ([DERIVED] on a real
+       BBC; see the section_curve row in symbols.csv).
 
-   The routine's working cells — the reduced gap car_gap_tail leaves in math_lo/math_hi/
-   hypot_min_hi and the |gap| it stores back at $290B — are read only inside this routine
-   (def-use audit, a competition race on all five circuits, 2026-09-28; the one other reader, the
-   view chain at $7C77, is an interrupt-time read charged to the interrupted PC), so they are locals
-   and the fixture ignores them (docs/validation-harness.md §THE RESULTS RULE).
-   D=0 on this path (docs/static-map.md §Decimal mode: no SED on the car/geometry path).
+   The working cells (the reduced gap car_gap_tail leaves in math_lo/math_hi/hypot_min_hi and the
+   |gap| stored back at $290B) are read only inside this routine (def-use audit, a competition
+   race on all five circuits; the one other reader, the view chain at $7C77, is an
+   interrupt-time read charged to the interrupted PC), so they are locals and the fixture ignores
+   them (docs/validation-harness.md §THE RESULTS RULE).  D = 0.
 
    Exit A/X/Y/flags are dead: move_and_draw_cars reloads X from $1D and Y from $62F4 after the
-   first call and reads nothing from the second (it returns) — so the fixture is result-only. */
+   first call and returns after the second, so the fixture is result-only. */
 StageNearbyCar stage_nearby_car_core(RingGap g, uint8_t slot)
 {
     StageNearbyCar r = { 1, 0 };                             /* default: reject */
@@ -17630,38 +17187,35 @@ StageNearbyCar stage_nearby_car_core(RingGap g, uint8_t slot)
     return r;
 }
 
-/* $2692  check_car_pair — THE OVERTAKING PASS
+/* $2692  check_car_pair — the overtaking pass
    Called twice a frame (the driving loop's $1181, and move_and_draw_cars' $264C).  Walks the
-   running order once round from zp_scratch_index, and for each position compares the car there
-   with the car one order position down (car_index_dec), by how far that neighbour is ahead of it
-   round the lap (ring_gap, with the two in-section offsets as the finer term):
+   running order once round from zp_scratch_index and compares each car with the one an order
+   position down (car_index_dec), by how far that neighbour is ahead round the lap (ring_gap,
+   with the two in-section offsets as the finer term):
 
-     - FAR apart (128+ units): nothing but the tail.
-     - NEGATIVE and within 10 units: the pair is out of order — SWAP them in car_order, flag the
+     - far apart (128+ units): only the tail.
+     - negative and within 10 units: the pair is out of order.  Swap them in car_order, flag the
        leaderboard for a redraw (position_swap_flag), and when the player is one of the two and
-       both are on the same lap, add to pass_count_bcd: $99 (BCD -1) if the player was overtaken,
+       both are on the same lap, add $99 (BCD -1) to pass_count_bcd if the player was overtaken,
        $01 if the player overtook.  "Same lap" allows for a pass across the start line: when the
-       short way round wraps, the car ahead on the road has booked one lap more ($26D6's ROL $79
-       picks that borrow out of the bit car_gap_tail rotated in — `wrapped` here).
-     - 0..4 units, the neighbour faster: the PROXIMITY arm.  It builds the front car's new race
-       flags — bit 6 "alongside" (gap under 4), bit 7 the neighbour's speed advantage, bit 4 "take
-       avoiding action" — and may set a drift command (car_across_drift: bit 7 which side, the
+       short way round wraps, the car ahead has booked one lap more ($26D6's ROL $79 picks that
+       borrow out of the bit car_gap_tail rotated in, `wrapped` here).
+     - 0..4 units with the neighbour faster: the proximity arm.  It builds the front car's new
+       race flags (bit 6 "alongside" under 4, bit 7 the neighbour's speed advantage, bit 4 "take
+       avoiding action") and may set a drift command (car_across_drift: bit 7 the side, the
        magnitude from the speed difference, clamped 4..$1E) to move the front car across.
 
-   The tail then stores the new flags unless the car's flags have bit 0 set (a car the race logic
-   holds).  On the swap arm the flags go to the car that was the neighbour: the 6502's X is left on
-   it by car_order_swap, and nothing clears the fresh flags byte first.
+   The tail stores the new flags unless the car's flags have bit 0 set (a car the race logic
+   holds).  On the swap arm they go to the car that was the neighbour: car_order_swap leaves the
+   6502's X on it, and nothing clears the fresh flags byte first.
 
-   ALL OF THE 6502'S WORKING CELLS ARE LOCALS — shared_temp_76 (the speed bit), math_lo (the
-   drift side), point_delta_hi (the magnitude), span_line_cursor (the flags being built),
-   shared_temp_77 / hypot_min_lo (the two positions) and the hypot_min_hi shift register.  The def-use
-   audit (`make rangeaudit DEFUSE=1` on a COMPETITION race — the pass never runs in practice —
-   Silverstone and all four expansion circuits, 2026-09-28) found every one of their stores read only
-   inside this routine and car_gap_tail; the only other readers were single interrupt-time reads
-   charged to the interrupted PC (a BCS at $1EBC, MOS ROM), which the port's ISR does not make.
-   So they are the 6502's working notes, not results (docs/validation-harness.md §THE RESULTS RULE),
-   and the fixture ignores them.
-   ⚠ ONE BCD SITE: the pass-count add ($26DD SED ... $26E5 CLD); every other sum is binary. */
+   The 6502's working cells are locals: shared_temp_76 (the speed bit), math_lo (the drift
+   side), point_delta_hi (the magnitude), span_line_cursor (the flags being built),
+   shared_temp_77 / hypot_min_lo (the two positions) and the hypot_min_hi shift register.  Reader
+   audit (`make rangeaudit DEFUSE=1` on a competition race, all five circuits): every store is
+   read only here and in car_gap_tail, apart from single interrupt-time reads charged to the
+   interrupted PC, which the port's ISR does not make.  The fixture ignores them.
+   ⚠ One BCD site: the pass-count add ($26DD SED ... $26E5 CLD); every other sum is binary. */
 void check_car_pair_core(void)
 {
     uint8_t pos = zp_scratch_index;                          /* $2692 LDX $03 */
@@ -17696,7 +17250,7 @@ void check_car_pair_core(void)
                 }
             }
         } else if (g.gap < 5) {
-            /* ---------- the PROXIMITY arm ($26E9) ---------- */
+            /* ---------- the proximity arm ($26E9) ---------- */
             const int speedDiff = (int)(mem[CAR_SPEED_FRAC + here] | (mem[MEM_car_speed_scaled + here] << 8))
                                 - (int)(mem[CAR_SPEED_FRAC + neighbour] | (mem[MEM_car_speed_scaled + neighbour] << 8))
                                 - 1;                         /* $26ED-$26F7 — CLC: a forced borrow */
@@ -17765,41 +17319,34 @@ void check_car_pair_core(void)
     }
 }
 
-/* $0F64  sort_cars_by_key — BUBBLE-SORT THE CAR ORDER ARRAY BY A BCD KEY
+/* $0F64  sort_cars_by_key — bubble-sort the car order array by a BCD key
+   An adjacent-swap bubble sort of the 21-entry order array at car_order_prev ($13B; car_order
+   $13C is the same array + 1, so ORDER[j] = mem[$13B+j]).  It compares adjacent pairs (car slots
+   0..19) by one of three 3-byte keys, swapping out-of-order pairs and repeating until a pass
+   makes no swap.  Entries 1..20 are sorted; order[0] is left as the caller set it.  Ends by
+   calling find_player_neighbours.
 
-   WHAT IT COMPUTES.  An adjacent-swap bubble sort of the 21-entry order array at
-   car_order_prev ($13B; car_order $13C is the SAME array + 1, so ORDER[j] = mem[$13B+j]).
-   It compares adjacent pairs ORDER[i]/ORDER[i+1] (each a car slot 0..19) by one of three
-   3-byte keys and swaps them out of order, repeating passes until a pass makes no swap.
-   Entries 1..20 are sorted; ORDER[0] is left as the caller set it.  Ends by calling
-   find_player_neighbours, which reads the sorted order to find the player's rivals.
+   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode): SED at $0F66 and CLD at
+   $0FB5 bracket the sort, so the key compares go through bcd_sub (src/cpu/bcd.h).  The borrow-out
+   is the binary borrow in both modes, so the ordering is exact regardless of D; only the
+   difference bytes are BCD, which is why the fixture does not pin D = 0.  The $0FB5 CLD stays as
+   a `cpu.D = 0` write: it is state the sort leaves for its caller.
 
-   ⚠ ONE OF THE EIGHT SED SITES (docs/static-map.md §Decimal mode).  SED at $0F66 and CLD
-   at $0FB5 bracket the whole sort, so the three key compares are genuinely decimal — they
-   go through bcd_sub (src/cpu/bcd.h), and this is emphatically NOT a de-carry-to-uint16
-   site.  The compare's borrow-out is the plain binary borrow in both modes, so the ORDERING
-   is exact regardless of D; only the DIFFERENCE bytes are BCD, and they are the sole reason
-   the fixture must not pin D=0.  ⚠ The $0FB5 CLD stays as a `cpu.D = 0` write even though
-   nothing here consults D any more: it is architectural state the sort leaves for its
-   caller, so dropping it would be dropping a real side effect, not an idiom.
+   Zero-page scratch keeping its 6502 exit values in mem[]:
+     math_lo      ($74) — the swap-partner car index, STX $74 at $0FEC, written only on a swap
+     math_hi      ($75) — the low diff byte, rewritten by every compare
+     hypot_min_hi ($79) — the mid diff byte, rewritten by every compare
+     hypot_min_lo ($78) — the key selector (input A), stored once at entry
+   shared_temp_76 ($76) is the per-pass swap counter (0 at pass start, DEC on each swap, repeat
+   while nonzero); shared_temp_77 ($77) is the inner index i.  LIVE_NONE (CLD; JSR; RTS).
 
-   Four zero-page scratch cells this routine reuses keep their 6502 exit values in mem[]:
-     math_lo      ($74) — the swap-partner car index, STX $74 at $0FEC.  Written ONLY on a
-                          swap, so an already-sorted input leaves it untouched (as the oracle does).
-     math_hi      ($75) — the low  diff byte, STA $75; rewritten by every compare.
-     hypot_min_hi ($79) — the mid  diff byte, STA $79; rewritten by every compare.
-     hypot_min_lo ($78) — the KEY SELECTOR (input A), STA $78 once at entry.
-   shared_temp_76 ($76) is the per-pass swap counter (STX $76=0 at pass start, DEC on each
-   swap, pass repeats while nonzero); shared_temp_77 ($77) is the inner index i.  Both keep
-   their exit bytes.  Exit registers/flags are dead (CLD; JSR; RTS) — LIVE_NONE.
-
-   KEY SELECTION — BIT $78 sets V=bit6, N=bit7; BVS tested before BMI:
+   Key selection: BIT $78 sets V = bit 6 and N = bit 7; BVS is tested before BMI:
      bits 6,7 clear ($0F83)  key A = car_best_lap  (Y-X order; ascending; tie -> shift)
      bit 6 set/BVS  ($0FBA)  key B = car_lap       (X-Y order; descending; tie -> shift)
-     bit 7 set/BMI  ($0FD4)  key C = car_lap_start (Y-X order; ascending; NO tie handling)
+     bit 7 set/BMI  ($0FD4)  key C = car_lap_start (Y-X order; ascending; no tie handling)
 
-   ⚠ $0100 is car_race_flags in symbols.csv but is used here as a 21-byte sort scratch
-   array (mem[$100+i] = i, tie-shift copies it down).  Reproduced byte-exact. */
+   ⚠ $0100 is car_race_flags in symbols.csv but is a 21-byte sort scratch here (mem[$100+i] =
+   i, the tie shift copies it down). */
 
 #define SORT_SCRATCH      MEM_car_race_flags   /* stable-position scratch (aliases car_race_flags) */
 
@@ -17868,29 +17415,20 @@ void sort_cars_by_key_core(uint8_t sel)
     find_player_neighbours_core();               /* $0FB6 JSR $63A2 (its shim is a bare forward) */
 }
 
-/* $0EE5  shift_key_commands — THE IN-RACE COMMAND KEYS
+/* $0EE5  shift_key_commands — the in-race command keys
+   Called once per painted frame from race_main_loop's tail ($1791, Y=$0B) and from
+   finish_race's run-out ($1176, Y=$00, the whole table).  Returns at once unless SHIFT is held
+   (negative INKEY -1, X=$FF); then scans shift_key_tbl[$0B..0] for the first held key and applies
+   its shift_key_action_tbl byte: the low nibble selects a cell in the state_flags block
+   ($05F4+n), the high nibble (low nibble masked off) is the value stored.  The tail services two
+   of those cells: pause_request (negative = real PAUSE: stop sound, then spin redrawing until
+   key $A6 arrives; nonzero positive = just nudge engine_note) and, every other frame,
+   volume_change_request (steps sound_volume one unit and rewrites the envelope attack level as
+   |volume|*8).
 
-   WHAT IT DOES.  Called once per painted frame from race_main_loop's tail ($1791)
-   ($1791, Y=$0B) and from finish_race's run-out ($1176, Y=$00 — the whole table).
-   Returns at once unless SHIFT is held
-   (negative INKEY -1, X=$FF); then scans shift_key_tbl[$0B..0] for the first held
-   key and applies that key's shift_key_action_tbl byte — low nibble selects a cell
-   in the state_flags block ($05F4+n), high nibble (with the low nibble masked off)
-   is the value stored.  The tail then services two of the cells it just may have
-   written: pause_request (negative = real PAUSE: stop sound, then spin redrawing
-   until key $A6 arrives; nonzero-positive = just nudge engine_note) and, every
-   other frame, volume_change_request (steps sound_volume one unit and rewrites the
-   envelope attack level = |volume|*8).
-
-   READER-NATIVISATION (the campaign's point).  The routine's ONLY $74/$75 use is
-   math_lo ($74) as a save/restore slot for the scan index Y — there is no math_hi
-   use at all.  Here that slot is a plain C local; the twin still writes math_lo the
-   6502 exit value (the index the scan stopped on: the matched key's index, or 0 if
-   none matched, or the entry Y=$0B if SHIFT was not held) so mem[] stays byte-exact
-   until the final $74/$75 relocation.  Exit registers/flags are dead — LIVE_NONE.
-
-   ⚠ NOT a decimal-mode site (docs/static-map.md §Decimal mode); no arithmetic here
-   is BCD, so it needs no D handling. */
+   The scan index Y, which the 6502 saves in math_lo ($74), is a local; math_lo still gets its
+   exit value (the matched key's index, 0 if none matched, or the entry $0B if SHIFT was not
+   held).  LIVE_NONE.  No BCD. */
 
 /* The only input is the scan index in Y.  The body is cpu-free: the 6502's X is threaded as a
    local (osX) because the envelope redefine in the tail genuinely reads it, and its exit A/Y
@@ -17906,7 +17444,7 @@ void shift_key_commands_core(uint8_t entryY)
     }
 
     /* $0EEE..$0EFF — scan shift_key_tbl[Y..0], stop on the first held key.
-       osX TRACKS THE 6502'S X through the routine, because the envelope redefine in the tail
+       osX tracks the 6502's X through the routine, because the envelope redefine in the tail
        reads it: every INKEY leaves the MOS's answer there ($FF held, $00 not), the $0F08 TAX
        overwrites it with the action index, and the pause spin's own INKEY overwrites it again.
        A local, so the dependency is visible. */
@@ -17942,10 +17480,10 @@ void shift_key_commands_core(uint8_t entryY)
     uint8_t pr = mem[MEM_pause_request];
     if (pr != 0u) {                              /* $0F14 BEQ skips */
         if (pr & 0x80u) {                        /* $0F16 BPL — negative = real pause */
-            /* ambY is provably the MATCHED index here, never the $FF: nothing but this
+            /* ambY is provably the matched index here, never the $FF: nothing but this
                routine's own scan-apply writes pause_request (symbols.csv $05F7) and $0F29
                clears it again on every call that reads it nonzero, so a negative value at
-               $0F11 means the idx-7 key ($96, action $83) matched in THIS call.  Y is a dead
+               $0F11 means the idx-7 key ($96, action $83) matched in this call.  Y is a dead
                input to OSBYTE 21 but the differential logs it at the MOS boundary, so it is
                threaded rather than left in cpu. */
             sound_stop_all_core(ambY);           /* $0F18 */
@@ -17985,7 +17523,7 @@ void shift_key_commands_core(uint8_t entryY)
             /* $0F57/$0F59 — redefine envelope 1 (base 0) with the new attack level.  Core-to-
                core: the shim's whole job would be to put a 0 in cpu.A and read flags nothing
                here looks at, and X is not live across this call either. */
-            /* ⚠ X here is whatever ran LAST, not necessarily actionIdx: on a frame that
+            /* ⚠ X here is whatever ran last, not necessarily actionIdx: on a frame that
                paused, the spin's own INKEY left $FF in it.  osX carries exactly that. */
             sound_envelope_core(0x00u, osX);
             mem[MEM_engine_note]++;               /* $0F5C INC engine_note */
@@ -17995,14 +17533,14 @@ void shift_key_commands_core(uint8_t entryY)
     /* $0F63 RTS */
 }
 
-/* THE CRASH / RESTART SUBTREE
+/* The crash / restart SUBTREE
    The whole call tree of check_crash and build_player_car, made native together — each of
    these was the last transliteration in its own tree.  NONE of them is patched by an
    expansion circuit: disasm/track_smc.txt has no extent anywhere in $111E-$1207, $1C0B-$1C1B,
    $2B0E-$2B1D or $43F6-$43FE, so Silverstone's control flow through here IS every circuit's
    and `make determinism` genuinely gates them. */
 
-/* $43F6  sound_stop_all — SILENCE EVERY CHANNEL
+/* $43F6  sound_stop_all — silence every channel
    Four calls of sound_stop_channel, channel 3 down to 0.  ⚠ The 6502's `DEX` steps the X the
    CALLEE returned, not a private counter — sound_stop_channel hands the channel straight back
    on both of its paths, so the walk really is 3,2,1,0, but the twin threads the returned value
@@ -18015,8 +17553,8 @@ void sound_stop_all_core(uint8_t ambientY)
     } while (!(chan & 0x80u));                          /* $43FC BPL — stops when X hits $FF */
 }
 
-/* $1C0B  begin_scrape — check_crash's SCRAPE arm
-   Reached by JMP from $1135, so it is check_crash's TAIL rather than a callee.  The car has
+/* $1C0B  begin_scrape — check_crash's scrape arm
+   Reached by JMP from $1135, so it is check_crash's tail rather than a callee.  The car has
    left the track but the track is still roughly ahead: park the clamped yaw kick, tell both
    axles they are sliding, and make the noise.  Its exit ABI is therefore sound_queue_default's,
    which the shim replays. */
@@ -18031,28 +17569,23 @@ void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
     sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, savedX);   /* $1C16-$1C18 */
 }
 
-/* $111E  check_crash — DID THE CAR LEAVE THE TRACK?
-   Two memory cells decide everything, and both are byproducts of the road pass that has
-   already run this frame:
+/* $111E  check_crash — did the car leave the track?
+   Two cells decide everything, both byproducts of this frame's road pass:
 
-     edge_nearest_hi          the high byte of the frame's running MINIMUM distance to a track
-                              edge point.  Under 2 (nearer than $200) the car is still on the
-                              track and there is nothing to do at all.
-     nearest_edge_bearing_hi  the AZIMUTH of that closest bit of track.  Its magnitude says
-                              where the track went: still ahead (a SCRAPE) or off to the side
-                              past ~$60 (a CRASH — the car is into the fence).
+     edge_nearest_hi          the high byte of the running minimum distance to a track edge
+                              point.  Under 2 (nearer than $200) the car is on the track and
+                              there is nothing to do.
+     nearest_edge_bearing_hi  the azimuth of that nearest bit of track: still ahead (a scrape)
+                              or off to the side past ~$60 (a crash, into the fence).
 
-   THE SIGN-COPY IDIOM at $112D-$1132 is the one thing here worth spelling out.  The 6502
-   writes `LDA #$14 / BIT heading_step_hi / JSR abs8`: BIT leaves N = bit 7 of the MEMORY
-   operand and abs8's `BPL` tests N, not A's sign — so the constant $14 comes back NEGATED iff
-   heading_step_hi was negative.  A is never itself negative here, so this is not an absolute
-   value at all, it is a sign COPY: clamp the yaw rate's magnitude to $14 and keep the direction
-   the car was already turning.
+   $112D-$1132 is a sign copy: `LDA #$14 / BIT heading_step_hi / JSR abs8`.  BIT leaves N = bit
+   7 of the memory operand and abs8's `BPL` tests N, so $14 comes back negated iff
+   heading_step_hi was negative: clamp the yaw rate's magnitude to $14 and keep its direction.
 
-   ⚠ THE TWO ARMS PASS DIFFERENT X TO sound_queue.  The scrape arm reaches it with the caller's
-   X untouched (BIT and abs8 leave X alone); the crash arm has run paint_fence_backdrop (X = $28
-   on exit) and then sound_stop_all (X = $FF), so it queues with X = $FF.  sound_queue parks that
-   byte in sound_saved_x, so the difference is observable in mem[] and is not a detail. */
+   ⚠ The two arms pass different X to sound_queue.  The scrape arm reaches it with the caller's
+   X (BIT and abs8 leave X alone); the crash arm has run paint_fence_backdrop (X = $28) and
+   sound_stop_all (X = $FF), so it queues with X = $FF.  sound_queue parks X in sound_saved_x,
+   so the difference is visible in mem[]. */
 uint8_t check_crash_core(uint8_t savedX)
 {
     if ((uint8_t)(edge_nearest_v >> 8) < 0x02u)   /* $111E-$1122 — still on the track */
@@ -18065,13 +17598,13 @@ uint8_t check_crash_core(uint8_t savedX)
                         : nearest_edge_bearing_hi;
 
     if (offAxis < 0x60u) {
-        /* $112D-$1135 THE SCRAPE — see the sign-copy note above. */
+        /* $112D-$1135 the scrape — see the sign-copy note above. */
         uint8_t yawKick = (ms_hi(MS_HEADING_STEP) & 0x80u) ? negate8(0x14u).hi : 0x14u;
         begin_scrape_core(yawKick, savedX);
         return CRASH_ARM_SCRAPE;
     }
 
-    /* ---- $1138 THE CRASH ------------------------------------------------------------- */
+    /* ---- $1138 the crash ------------------------------------------------------------- */
     crash_flag = (uint8_t)(crash_flag - 1u);      /* $1138 DEC: 0 -> $FF for exactly one frame */
     horizon_extent++;                             /* $113B — one line more of backdrop to fill */
     paint_fence_backdrop_core(horizon_extent);    /* $113D — the barrier over the whole view */
@@ -18080,7 +17613,7 @@ uint8_t check_crash_core(uint8_t savedX)
     sound_stop_all_core(math_hi);
     sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, 0xFFu);    /* $1143-$1145; X = $FF */
 
-    /* $1148-$1150 — zero the WHOLE driving model.  $62D0+$1E down to $62D0 spans
+    /* $1148-$1150 — zero the whole driving model.  $62D0+$1E down to $62D0 spans
        model_state_lo[0..14], the unused gap byte at $62DF and model_state_hi[0..14]: every
        16-bit element of the state vector at once, which is why the loop counts bytes and not
        elements. */
@@ -18097,14 +17630,14 @@ uint8_t check_crash_core(uint8_t savedX)
 }
 
 /* $11CE  build_player_car — put the player's car back into the world
-   It runs place_car_world_coords TWICE for the same car —
+   It runs place_car_world_coords twice for the same car —
 
-     at the section the car is IN     ...whose world coordinate becomes the VIEW ORIGIN, i.e.
+     at the section the car is IN     ...whose world coordinate becomes the view origin, i.e.
                                         where the camera sits for the whole next frame;
-     three sections FURTHER ON        ...whose bearing becomes car_heading, i.e. which way the
+     three sections further on        ...whose bearing becomes car_heading, i.e. which way the
                                         car is pointing.
 
-   ⚠ ITS BODY RUNS $11CE-$1207 AND SO FALLS THROUGH $1200, which symbols.csv names
+   ⚠ Its body runs $11CE-$1207 and so falls through $1200, which symbols.csv names
    `loader_stub`.  That name is a revs_mem.bin artifact — in the runtime image the address is
    this routine's own tail. */
 void build_player_car_core(void)
@@ -18129,37 +17662,37 @@ void build_player_car_core(void)
     uint8_t ahead = (uint8_t)(car_section_cursor + 0x03u);
     if (ahead >= 0x78u) ahead = 0x00u;
 
-    /* ⚠ $11F6-$11F8 — THE CALLEE'S RETURN VALUE IS THE INDEX THE TAIL USES, not the slot.
+    /* ⚠ $11F6-$11F8 — the callee's return value is the index the tail uses, not the slot.
        place_car_world_coords hands X back as saved_slot_index on every real path but as 1 on
        its per-circuit SMC trap, and the 6502 then indexes object_bearing with whatever came
        back.  Threading the returned byte (rather than re-reading saved_slot_index) is what
        makes the trap arm agree with the oracle. */
     uint8_t x = place_car_world_coords_core(slot, ahead);       /* $11F6 LDX saved_slot_index */
 
-    /* $11FB-$1207 WIDE VALUE: the heading is ONE 16-bit angle ($10000 = a full turn).  The
+    /* $11FB-$1207 wide value: the heading is one 16-bit angle ($10000 = a full turn).  The
        object queue has just filed the bearing to that look-ahead point in object_bearing[slot];
        the car points that way, mirrored by which way round the circuit it is going — the 6502
-       EORs track_direction into the HIGH byte only, so as a wide value that is an EOR with
+       EORs track_direction into the high byte only, so as a wide value that is an EOR with
        track_direction << 8 and the low byte passes straight through. */
     uint16_t bearing = object_bearing_word(x);
     uint16_t heading = (uint16_t)(bearing ^ ((unsigned)track_direction << 8));
     car_heading_v = heading;                      /* relocated out of mem[$0A/$0B] */
 }
 
-/* $2B0E  step_delta_halve — HALVE THE STEP-DELTA VECTOR
-   The step delta is three SIGNED 16-bit components whose LOW bytes are $74/$75/$76 and whose
-   HIGH bytes are point_delta_hi[0..2] ($83/$84/$85) — build_section_step_delta's output, the
+/* $2B0E  step_delta_halve — halve the step-delta vector
+   The step delta is three signed 16-bit components whose low bytes are $74/$75/$76 and whose
+   high bytes are point_delta_hi[0..2] ($83/$84/$85) — build_section_step_delta's output, the
    per-section increment place_car_world_coords walks a car along.  This halves all three with
    the sign preserved.
 
-   ONE 68000 INSTRUCTION PER COMPONENT.  The 6502 spells the halve `LDA hi / CLC / BPL / SEC /
+   One 68000 instruction per component.  The 6502 spells the halve `LDA hi / CLC / BPL / SEC /
    ROR hi / ROR lo` — seed the carry from the sign bit, then rotate both bytes — which is exactly
    an arithmetic shift right of the pair.  Written as a signed 16-bit `>> 1` it is one ASR.W,
    instead of a load, a branch, two rotates and two stores.
 
-   ⚠ THIS IS THE ROUTINE THAT MAKES math_lo/math_hi LOOK INDEXED: $74/$75/$76 here are the three
-   LOW bytes of THIS vector, not a lo/hi pair, so `$74,X` is a component select and says nothing
-   about math_lo (docs/wide-value-cleanup.md, the EIGHTH lesson). */
+   ⚠ This is the routine that makes math_lo/math_hi look indexed: $74/$75/$76 here are the three
+   low bytes of this vector, not a lo/hi pair, so `$74,X` is a component select and says nothing
+   about math_lo (docs/wide-value-cleanup.md, the eighth lesson). */
 void step_delta_halve_core(void)
 {
     StepDelta d = step_delta_from_mem();              /* $2B0E LDX #2 ... $2B1A DEX / BPL */
@@ -18169,33 +17702,29 @@ void step_delta_halve_core(void)
 }
 
 /* $2A5D  project_object_coord  /  $2A5F  project_object_slot
-   ONE WORLD COORDINATE INTO ONE DRAWABLE OBJECT SLOT.  place_car_world_coords' queue tail
-   calls this four times a pass and it is the whole of what an "object" means to the renderer:
+   One world coordinate into one drawable object slot.  place_car_world_coords' queue tail calls
+   this four times a pass; it is what an "object" means to the renderer:
 
-     the BEARING     bearing_to_section from the camera, and this is the only writer of
-                     object_bearing[slot] — the angle build_player_car turns into car_heading
-                     and draw_track_object turns into a screen column.
-     the CONTACT test  note_object_contact at a fixed threshold of $25, which runs
-                     point_distance_hypot for the same point and may claim the frame's single
-                     collision candidate.
-     the PROJECTION  project_point, the perspective divide.
-     the SLOT WRITE  write_object_slot: object_line, object_width and the shape nibble.
+     the bearing      bearing_to_section from the camera; the only writer of
+                      object_bearing[slot], which build_player_car turns into car_heading and
+                      draw_track_object into a screen column.
+     the contact test note_object_contact at a fixed threshold of $25, which runs
+                      point_distance_hypot for the same point and may claim the frame's single
+                      collision candidate.
+     the projection   project_point, the perspective divide.
+     the slot write   write_object_slot: object_line, object_width and the shape nibble.
 
-   The coordinate index arrives in X and is an index into $0900/$0A00, so $FD selects the
-   object_coord pair at $09FD/$0AFD that place_car_world_coords has just filled; $F4 and $FA
-   select the two neighbours it stages.  $2A5D is nothing but `LDX #$FD` falling into $2A5F.
+   The coordinate index arrives in X and indexes $0900/$0A00: $FD selects the object_coord pair
+   at $09FD/$0AFD that place_car_world_coords has just filled, $F4 and $FA the two neighbours it
+   stages.  $2A5D is `LDX #$FD` falling into $2A5F.
 
-   THE SHIM BELOW IS ORACLE-ONLY, and so is its marshalling: the core files the angle itself
-   with object_bearing_word_set(bearing_v), and all three call sites reach
-   project_object_slot_core directly, so nothing in the shipping build calls the plain name.
-   MEASURED: `objdump -t out/Revs.elf` lists project_object_slot_core and NEITHER shim, and
-   zero __t6502 symbols at all — --gc-sections drops every oracle, so this costs the Amiga
-   nothing.
-   It stays because `make validate` needs it: the transliterated oracle reaches $78-$7B and
-   $8A/$8B through the bearing_to_section SHIM, so the twin has to publish what the 6502 would
-   have left there (docs/wide-value-cleanup.md, the publish-don't-blunt gate).
+   The shim below is oracle-only: the core files the angle itself with
+   object_bearing_word_set(bearing_v), and all three call sites reach project_object_slot_core
+   directly (--gc-sections drops the shims from the Amiga link).  `make validate` needs it: the
+   transliterated oracle reaches $78-$7B and $8A/$8B through the bearing_to_section shim, so the
+   twin publishes what the 6502 would have left there (docs/wide-value-cleanup.md).
 
-   ⚠ note_object_contact's exit is DEAD here — $2A73's project_point opens `LDY #0 / LDA`, so
+   ⚠ note_object_contact's exit is dead here ($2A73's project_point opens `LDY #0 / LDA`), so
    its entry C is not consumed and the twin passes 0. */
 void project_object_slot_core(uint8_t coordIndex, uint8_t shape, uint8_t slot)
 {
@@ -18203,7 +17732,7 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape, uint8_t slot)
 
     bearing_to_section_core(coordIndex, 0x00u);          /* $2A61, from the camera (Y = 0) */
 
-    /* $2A64-$2A6D WIDE VALUE: the bearing is ONE 16-bit angle, filed whole. */
+    /* $2A64-$2A6D wide value: the bearing is one 16-bit angle, filed whole. */
     object_bearing_word_set(slot, bearing_v);
 
     note_object_contact_core(0x25u, slot);                     /* $2A70 — exit dead, see above */
@@ -18212,26 +17741,23 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape, uint8_t slot)
 
     /* `coordIndex` reaches write_object_slot only to be handed straight back out in
        SlotExit.x — the callee stores nothing under it — and both of this routine's shims
-       declare LIVE_NONE because every caller overwrites X immediately.  So perturbing it
-       HERE is provably a no-op, and a sabotage that increments it survives by construction,
-       not through a fixture gap (docs/validation-harness.md §FIFTEENTH).  The sibling case
-       confirms it: perturbing the coordIndex that write_object_slot INDEXES WITH — the
-       third queue projector's $FA — is caught at once. */
+       declare LIVE_NONE because every caller overwrites X immediately, so a wrong value here
+       is invisible by construction (docs/validation-harness.md §FIFTEENTH). */
     write_object_slot_core(p.line, p.clip, slot);            /* falls into $2A76 */
 }
 
 /* ---------------------------------------------------------------- wing mirrors */
-#define MIRROR_LOWER_BOUND    (MEM_point_delta_lo + 2u)  /* the car block's BOTTOM line — a THIRD tenant of
+#define MIRROR_LOWER_BOUND    (MEM_point_delta_lo + 2u)  /* the car block's bottom line — a third tenant of
                                           point_delta_lo+2, after the camera delta and the
                                           span rasteriser's end line (see symbols.csv $0080) */
 
-/* mirror_draw_car ($7FB6).  Paints ONE wing-mirror segment: walk its run of scan
+/* mirror_draw_car ($7FB6).  Paints one wing-mirror segment: walk its run of scan
    lines from MEM_mirror_seg_start_row down to MEM_mirror_seg_end_row, writing $F0 — the car reflection's
    pixel pattern — into each.  Between the car block's top (span_line_cursor) and bottom bounds the
    pattern is ANDed with the engine shudder: a byte of the User VIA's free-running T1 counter, run
    through a mask table and gated on engine_running, so the reflection vibrates only with the
    engine turning.  Outside those bounds the full $F0 goes down, which is how the same routine also
-   ERASES a stale segment (mirrors_update passes bound 0 for that).
+   erases a stale segment (mirrors_update passes bound 0 for that).
 
    It takes A and Y as arguments, so mirrors_update's segment loop calls the core directly.
 
@@ -18251,7 +17777,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
     shared_temp_77 = mem[MEM_mirror_seg_end_row + segment];          /* $7FC7 — the run's last line */
     uint8_t row    = mem[MEM_mirror_seg_start_row + segment];        /* $7FC9 — ...and its first */
 
-    /* One hardware-window test per SEGMENT, not per row: `dst` only ever DECREASES from here
+    /* One hardware-window test per segment, not per row: `dst` only ever decreases from here
        and `row` indexes $00..$FF off it, so proving the top of the walk is RAM proves all of it. */
     const int dstIsRam = page_is_ram(dst);
 
@@ -18263,16 +17789,16 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
         }
         if (dstIsRam) mem[(uint16_t)(dst + row)] = pattern;      /* $7FDF */
         else          bus_write((uint16_t)(dst + row), pattern);
-        /* THE MIRROR'S OWN STORE SITE, into the owned dashboard rows (revs_plot.h §delta).
-           ⚠ INVISIBLE TO EVERY PRACTICE MEASUREMENT — a `STRAIGHT_TO_RACE` lap has an empty
+        /* The mirror's own store site, into the owned dashboard rows (revs_plot.h §delta).
+           ⚠ Invisible to every practice measurement — a `STRAIGHT_TO_RACE` lap has an empty
            track and reflects nothing, so this writes the same $F0 every frame and no census can
            see it move.  Its footprint comes from the game's own six-segment tables instead
            (display lines 154..178, cells 0..2 and 37..39).  Owning 158..191 without this would
            freeze both wing mirrors in a real race and nothing in a practice run could tell. */
         REVS_PLOT_BYTE((uint16_t)(dst + row), pattern);
-        /* ...AND ONTO THE COCKPIT'S PLAYFIELD for the four lines of it that reach display
+        /* ...AND onto the cockpit's playfield for the four lines of it that reach display
            117..157 (§12f-iv).  Once §2a owns that band the decode stops converting it, so a
-           reflection that only ever reached `mem[]` would FREEZE — and freeze invisibly, because
+           reflection that only ever reached `mem[]` would freeze — and freeze invisibly, because
            a practice lap has nothing to reflect.  Rows 158..178 are still the decode's and the
            call returns without writing, so every row has exactly one owner. */
         REVS_COCKPIT_BYTE((uint16_t)(dst + row), pattern);
@@ -18290,26 +17816,23 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
  *
  * Four small routines that share two things:
  *
- *   1. ONE DISPATCH.  Every character goes through $5092's choice between OSWRCH and the MODE-5
- *      bitmap emitter (`vdu_emit_char` below), which is the same open-coded pair print_spaces_core
- *      already used — factored out here so all five callers agree.
+ *   1. One dispatch: every character goes through $5092's choice between OSWRCH and the MODE 5
+ *      bitmap emitter (vdu_emit_char below), the same pair print_spaces_core uses.
  *
- *   2. ONE SHIFT REGISTER (`print_field_mask`, defined with the helpers above print_spaces_core).
- *      $0078 is `hypot_min_lo` when the ground-plane maths owns it; in the
- *      printers it is a FIELD MASK, shifted left once per digit position.  It decides three
- *      things: what a suppressed leading zero looks like (bit 7 set -> the pad glyph $4F, clear ->
- *      a space), and whether the next digit is printed at all (the bit shifted OUT).  That is how
- *      one routine paints one-digit, two-digit and blank-padded numbers.  The arithmetic-window
- *      addresses carry one global symbol each, so the tenancy is a file-local
- *      name here, and the shift keeps the relocated `hypot_min_v` word in step with the cell.
+ *   2. One shift register, print_field_mask (defined above print_spaces_core).  $0078 is
+ *      hypot_min_lo to the ground-plane maths; in the printers it is a field mask, shifted left
+ *      once per digit position.  It decides what a suppressed leading zero looks like (bit 7 set
+ *      -> the pad glyph $4F, clear -> a space) and whether the next digit prints at all (the bit
+ *      shifted out), so one routine paints one-digit, two-digit and blank-padded numbers.  The
+ *      shift keeps the relocated hypot_min_v word in step with the cell.
  *
- * ⚠ print_bcd_digits' PHA/PLA leaves a stack residue byte that the twin does NOT write, and it
- * must not: the transliterated oracle pushes at $0100+S with the CALLER's S, because a C call
- * models no return address, so the oracle's own residue address is already not the 6502's.  Both
- * fixtures pin S and ignore that one cell (docs/validation-harness.md's i=5 precedent).
- * ⚠ print_bcd_digits_at's and print_lap_time's fixtures cannot see a defect inside the $37D6
- * printer: their oracles call the native shim, so oracle and twin share it.  Those fixtures gate
- * their own bodies (the cursor stores, the time-lane and mask plumbing). */
+ * ⚠ print_bcd_digits' PHA/PLA leaves a stack residue byte that is not written here: the
+ * transliterated oracle pushes at $0100+S with the caller's S (a C call models no return
+ * address), so its residue address is not the 6502's anyway.  Both fixtures pin S and ignore
+ * that cell.
+ * ⚠ print_bcd_digits_at's and print_lap_time's oracles call the native $37D6 shim, so their
+ * fixtures cannot see a defect inside it; they gate their own bodies (the cursor stores, the
+ * time lane and the mask plumbing). */
 
 /* $3250 emit_driver_name.  Prints the twelve characters of a driver's name from the
  * table entry driver_name_address ($40xx) just selected, which arrives as a pointer in Y:A and is
@@ -18413,14 +17936,14 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
     return print_bcd_digits_core(mem[MEM_car_best_lap_lo + carIdx], carIdx, y); /* $7BB8 — hundredths */
 }
 
-/* THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
+/* The dashboard READOUTS that drive the printers
  * ------------------------------------------------------------------------------------------------
  * The transliterated callers of the number/name printers: the position readout, the lap-time
  * readout chain and the two driver-name lines.  Between them they are the whole of the in-race
  * text output, and converting them is what lets the printers be reached core-to-core instead of
  * through their 6502-ABI shims.
  *
- * Three of them are FALL-THROUGH entries into one another ($501D -> $502D -> $502F), so each core
+ * Three of them are fall-through entries into one another ($501D -> $502D -> $502F), so each core
  * simply calls the next: the 6502 saved a JSR, the C says what it means.
  * ================================================================================================ */
 
@@ -18430,7 +17953,7 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
 
 /* $65C8 position_to_bcd.  A 0-based index (0..$13) to the 1-based BCD number shown on
    the dashboard.  The CMP leaves C set for A >= 10, which turns the ADC #$05 into +6 and carries
-   the tens digit into the high nibble; a DECIMAL ADC #$01 then adds the 1.  One of the eight
+   the tens digit into the high nibble; a decimal ADC #$01 then adds the 1.  One of the eight
    sanctioned SED sites (docs/static-map.md §Decimal mode).  Exit V is not modelled — the two
    callers read A alone (one stores it, one prints it). */
 BcdExit position_to_bcd_core(uint8_t index)
@@ -18472,7 +17995,7 @@ TextExit show_lap_time_lower_core(uint8_t y)
     return print_time_row21_core(0x28u, y);          /* $502D LDA #$28 */
 }
 
-/* $501D show_lap_time_lines.  Both readouts: the PLAYER's time at column $20 / row
+/* $501D show_lap_time_lines.  Both readouts: the player's time at column $20 / row
    $21 first (mask $26), then the lower line.  X carries the player car into print_lap_time as
    both the table index and the ambient OSWRCH register. */
 TextExit show_lap_time_lines_core(uint8_t y)
@@ -18483,7 +18006,7 @@ TextExit show_lap_time_lines_core(uint8_t y)
     return show_lap_time_lower_core(y);              /* fall through */
 }
 
-/* $667B print_driver_name_by_order.  Y is a POSITION in car_order; turn it into the
+/* $667B print_driver_name_by_order.  Y is a position in car_order; turn it into the
    car, park that in saved_slot_index (the plotter's own slot cell), look the name row up and print
    its twelve characters.  Exit X is the car, Y is emit_driver_name's terminator ($0C), and the
    flags are that routine's fixed CPY result. */
@@ -18528,7 +18051,7 @@ void prompt_driver_ready_core(void)
 }
 
 /* $66D4 read_driver_name.  The other half of the pair, and the only routine in the
-   game that WRITES driver_name_table: it hands console_io the address of the player's own name
+   game that writes driver_name_table: it hands console_io the address of the player's own name
    row and a field width of twelve, and the line editor types straight into the table.
    Exit ABI dead (the sole caller runs a session next). */
 void read_driver_name_core(void)
@@ -18585,17 +18108,17 @@ PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY)
     return e;
 }
 
-/* $17C3 add_frame_time.  ONE main-loop frame of elapsed time onto driver
+/* $17C3 add_frame_time.  One main-loop frame of elapsed time onto driver
    `clockIdx`'s 3-byte BCD clock.  Nine hundredths a frame, except on the single frame where
    time_tick_countdown has come back round to time_tick_period, which gets $18 — with the
    Silverstone period of $18 that averages 9.36 hundredths, the BBC's own ~10.7 frames a second.
-   The seconds byte wraps at BCD 60 rather than at 100, and a NEGATIVE hours byte means the clock
+   The seconds byte wraps at BCD 60 rather than at 100, and a negative hours byte means the clock
    ran off the end: the clock is reset and the player's lap-start high byte is flagged $80.
 
    One of the eight sanctioned SED sites (docs/static-map.md §Decimal mode).
 
-   ⚠ The exit CARRY is a real output — update_lap_timers' $106A BCC reads it — and it is the
-   carry of the LOW byte's add, not of the last one: the $17D6 PHP / $17F9 PLP pair carries that
+   ⚠ The exit carry is a real output — update_lap_timers' $106A BCC reads it — and it is the
+   carry of the low byte's add, not of the last one: the $17D6 PHP / $17F9 PLP pair carries that
    whole flag byte across the two higher bytes.  The twin returns it directly instead, so it
    makes no stack write of its own; the fixture ignores the oracle's residue cell. */
 FrameTimeExit add_frame_time_core(uint8_t clockIdx)
@@ -18613,9 +18136,9 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx)
     mem[MEM_race_clock_lo + clockIdx] = lo.val;                     /* $17D3 */
 
     mid = bcd_add(mem[MEM_race_clock_mid + clockIdx], 0x00u, lo.carry);   /* $17D7/$17DA */
-    /* ⚠ The MINUTES tick on the CMP's carry, not on the add's: $17DC CMP #$60 leaves C set for
+    /* ⚠ The minutes tick on the CMP's carry, not on the add's: $17DC CMP #$60 leaves C set for
        60 seconds or more, $17E0 zeroes the byte, and that same C is the carry into $17E8.  A
-       seconds byte that wrapped 99->00 in BCD therefore does NOT advance the minutes — it cannot
+       seconds byte that wrapped 99->00 in BCD therefore does not advance the minutes — it cannot
        happen from a legal clock, but the twin reproduces the 6502's arithmetic, not the intent. */
     { int wrapped = (mid.val >= 0x60u);                          /* $17DC / $17DE BCC */
       if (wrapped) mid.val = 0x00u;                              /* $17E0 */
@@ -18636,16 +18159,16 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx)
     return e;
 }
 
-/* $5052 tick_race_timers.  The body's FIRST call of every frame, and four unrelated
+/* $5052 tick_race_timers.  The body's first call of every frame, and four unrelated
    pieces of frame bookkeeping:
      1. time_tick_countdown steps down and reloads from time_tick_period + 1 at zero — the
         divider add_frame_time's long frame is picked out of;
-     2. the player's own race clock advances, but ONLY once the starting lights have gone out
+     2. the player's own race clock advances, but only once the starting lights have gone out
         (start_light_state negative means the sequence is still running);
      3. loop_counter (and its high byte) counts the frame;
      4. the non-player drivers' speeds are re-seeded — every 32nd frame, and on every frame
         before the minutes byte has ticked at all.
-   ⚠ Exit A/X/Y and the flags are DEAD: both callers ($1171 in finish_race, $1701 in
+   ⚠ Exit A/X/Y and the flags are dead: both callers ($1171 in finish_race, $1701 in
    race_main_loop) reload immediately, so the fixture compares mem[] alone. */
 void tick_race_timers_core(void)
 {
@@ -18674,8 +18197,8 @@ void tick_race_timers_core(void)
 }
 
 /* $11BE retire_car.  Car X is out of the running: $C0 into car_flags_shape[X] (bit 6
-   is the FINISHED bit finish_race polls; the store also wipes the low SHAPE nibble, which no
-   longer matters for a car that is out), and if the car has NOT covered the full distance —
+   is the finished bit finish_race polls; the store also wipes the low shape nibble, which no
+   longer matters for a car that is out), and if the car has not covered the full distance —
    race_lap_total is still >= its lap count — $C0 into car_lap_start_hi[X] as well, the same
    negative marker add_frame_time writes for a clock that ran off the end: no valid time.
    Returns the CMP's carry, which is the only flag either caller could read. */
@@ -18690,16 +18213,16 @@ uint8_t retire_car_core(uint8_t x)
 }
 
 /* $1163 finish_race.  Called once, when a session really ends, so that the results
-   table is a real one: the player is parked and the REMAINING drivers are raced to the finish
+   table is a real one: the player is parked and the remaining drivers are raced to the finish
    with nothing drawn at all (which is why the screen holds the last painted frame while this
    runs).  Each pass is one frame of clock, the command keys (so the player can still abort),
    the other-car driving pass and the running-order re-sort — and then the exit test:
-     - in a RACE, walk all twenty drivers from slot $13 down and keep going while any one of them
+     - in a race, walk all twenty drivers from slot $13 down and keep going while any one of them
        has neither finished (car_flags_shape bit 6) nor fallen a full distance behind;
      - outside a race there is no field to run out, so the loop just counts frames and stops at
        loop_counter_hi $0E — and only when the player is in slot $13, which is where the front
        end puts them for practice and qualifying.
-   ⚠ Exit A/X/Y and the flags are DEAD: the only caller is race_main_loop, which returns. */
+   ⚠ Exit A/X/Y and the flags are dead: the only caller is race_main_loop, which returns. */
 void finish_race_core(void)
 {
     wheel_spin_rate   = 0x00u;                       /* $1163/$1165 */
@@ -18718,7 +18241,7 @@ void finish_race_core(void)
 
         drive_other_cars();                                  /* $117E — drive the other nineteen cars */
         check_car_pair();                            /* $1181 — and re-sort the running order.
-                                                        ⚠ the SHIM, not the core: it marshals the
+                                                        ⚠ the shim, not the core: it marshals the
                                                         relocated car_distance array in, and the
                                                         drive pass above leaves that global as the
                                                         authority (it marshals per car, one slot
@@ -18754,22 +18277,19 @@ void finish_race_core(void)
 }
 
 /* $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid
- * ------------------------------------------------------------------------------------------------
- * ONE LAP-TIME COLUMN of the standings/results table (print_standings_table's two call sites are the only
- * callers).  The value is car `x`'s two low BCD bytes of car_lap_* — mid and lo — printed as a
- * padded field with a space either side:
+ * One lap-time column of the standings table (print_standings_table's two call sites are the
+ * only callers).  The value is car `x`'s two low BCD bytes of car_lap_* (mid and lo), printed
+ * as a padded field with a space either side:
  *
- *   $43D0 print_lap_value_field   two spaces, mask $20 (a leading digit still inside the field),
- *                                 then car_lap_mid[x] and car_lap_lo[x].  A ZERO mid byte is not
- *                                 printed as "00": two more spaces stand in for it, the mask
- *                                 steps BACK one position, and only the low byte prints.
+ *   $43D0 print_lap_value_field     two spaces, mask $20, then car_lap_mid[x] and car_lap_lo[x].
+ *                                   A zero mid byte is not printed as "00": two more spaces
+ *                                   stand in, the mask steps back one position, and only the
+ *                                   low byte prints.
  *   $43E7 print_lap_value_from_mid  the same field with the leading byte supplied by the caller
- *                                 (print_standings_table hands it car_lap_hi[x] and its own mask $28), and no
- *                                 leading spaces.
+ *                                   (car_lap_hi[x] and mask $28), and no leading spaces.
  *
- * Both fall through the same tail at $43EA — the low byte then one trailing space — so the exit
- * is always print_spaces': A = $20, N = 0, Z = 1, with C left by the last print_bcd_digits.
- * ================================================================================================ */
+ * Both fall into the tail at $43EA (the low byte, then one space), so the exit is always
+ * print_spaces': A = $20, N = 0, Z = 1, with C left by the last print_bcd_digits. */
 
 /* $43EA — the tail both entries fall into. */
 static TextExit print_lap_value_low(uint8_t x, uint8_t y)
@@ -18800,7 +18320,7 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
     if (field_mask_lsr() != 0u)               /* $43E3 LSR $78 / $43E5 BNE */
         return print_lap_value_low(x, y);
 
-    /* $43E5 falling through to $43E7 is UNREACHABLE from this entry: the mask was just seeded
+    /* $43E5 falling through to $43E7 is unreachable from this entry: the mask was just seeded
        with $20, so one LSR leaves $10.  Kept because the fall-through is what the 6502 does, and
        A there is the space print_spaces returned. */
     return print_lap_value_from_mid_core(0x20u, x, y);
@@ -18808,18 +18328,19 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
 
 /* the standings table's two remaining leaf callees
  * ------------------------------------------------------------------------------------------------
- *   $3E60 set_row_rule_glyphs   picks the row's pair of rule glyphs and PATCHES them into the
+ *   $3E60 set_row_rule_glyphs   picks the row's pair of rule glyphs and patches them into the
  *                               script that draws the column rule
  *   $3C6F print_race_class_name runs the script that names the class
- * Both are result-only: their exit registers and flags are dead at every caller (print_standings_table reloads
- * X immediately, and text_script_interp's own exit ABI is dead by its twin's contract).
+ * Both are result-only: their exit registers and flags are dead at every caller
+ * (print_standings_table reloads X immediately, and text_script_interp's own exit ABI is dead by its twin's contract).
  * ================================================================================================ */
 
-/* $3E60 — the rule's two glyphs are chosen by the table MODE (shared_counter_42, which print_standings_table
-   seeded from its mode nibble: $0, $4 or $8) and the ROW's parity, and written straight into
+/* $3E60 — the rule's two glyphs are chosen by the table mode (shared_counter_42, which
+   print_standings_table seeded from its mode nibble: $0, $4 or $8) and the row's parity, and
+   written straight into
    script $1F's byte string at offsets +5 and +3.  The script is run twice per row, either side of
    the driver name, so patching it is how one script draws six different rules.
-   ⚠ The index add is BINARY: this is front-end display code entered with D = 0, and none of the
+   ⚠ The index add is binary: this is front-end display code entered with D = 0, and none of the
    eight sanctioned SED sites is on the path (docs/static-map.md §Decimal mode). */
 void set_row_rule_glyphs_core(uint8_t row)
 {
@@ -18834,30 +18355,29 @@ void print_race_class_name_core(void)
     text_script_interp_core((uint8_t)(race_class + 7u));               /* $3C6F-$3C76 */
 }
 
-/* the ABORT poll and the DISMISS-KEY waiters.
-   $3261 abort_if_quit_keys is the in-race/front-end escape hatch: SHIFT (negative INKEY -1, code
-   $FF) together with key $86 (-122, shift_key_tbl's index $0B) means "give up and go back to the
-   menus".  ⚠ abort_state ($1C) is NOT a plain flag — every poll that does not see the combination
-   LSRs it, so it walks down to 0 while the keys are up, and only bit 7 is ever tested.  Bit 7 set
-   means an abort is already in progress and the poll does nothing at all.
+/* The abort poll and the dismiss-key waiters.
+   $3261 abort_if_quit_keys is the in-race and front-end escape: SHIFT (negative INKEY -1, code
+   $FF) with key $86 (-122, shift_key_tbl's index $0B) means "go back to the menus".
+   ⚠ abort_state ($1C) is not a plain flag: every poll that does not see the combination LSRs
+   it, so it walks down to 0 while the keys are up, and only bit 7 is tested.  Bit 7 set means
+   an abort is already in progress and the poll does nothing.
 
    $34D0 / $34D2 wait_dismiss_space / wait_dismiss_key are one routine with two entries: $34D0
-   seeds the flag with 0, $34D2 takes it from the caller's A.  The flag is print_field_mask ($78),
-   borrowed here as a one-bit "RETURN is also accepted" switch, and its EXIT value is a real output
-   — $654C reads bit 7 to tell "dismissed with SPACE" from "dismissed with RETURN".  The sequence
-   is: paint prompt script $1E, wait for SPACE to be RELEASED (so the keypress that got here does
-   not dismiss the page it just opened), then poll until SPACE goes down, or — when bit 7 was set on
-   entry — RETURN does, which LSRs the flag to record which key it was.
+   seeds the flag with 0, $34D2 takes it from the caller's A.  The flag is print_field_mask
+   ($78), here a one-bit "RETURN is also accepted" switch, and its exit value is an output:
+   $654C reads bit 7 to tell SPACE from RETURN.  Paint prompt script $1E, wait for SPACE to be
+   released (so the keypress that got here does not dismiss the new page), then poll until SPACE
+   goes down, or RETURN when bit 7 was set, which LSRs the flag to record the key.
 
-   ⚠ $34D0 is an oracle that CANNOT see this body.  Both entries are VALIDATE_FUNCS members, so
-   the generated $34D0 oracle is `LDA #0` plus a call to the native $34D2 shim — its own answer.
-   Only the "force the flag to 0" step is gated at that entry; the wait itself is gated at $34D2.
+   ⚠ The $34D0 oracle cannot see this body: both entries are VALIDATE_FUNCS members, so the
+   generated $34D0 oracle is `LDA #0` plus a call to the native $34D2 shim.  Only the
+   force-to-0 step is gated at that entry; the wait itself is gated at $34D2.
 
-   ⚠ The abort arm is a NON-LOCAL EXIT the port cannot reproduce: abort_to_front_end restores S
-   from top_level_stack and jumps to front_end_menus, where the C version can only tail-call and
-   return back up the stack.  Both models do the same wrong thing, so the differential is blind to
-   it by construction — the fixture keeps SHIFT and $86 from ever being held together, and this arm
-   is gated by `make refloop` instead (docs/faithfulness-seam.md, the S-manipulation class). */
+   ⚠ The abort arm is a non-local exit the port cannot reproduce: abort_to_front_end restores S
+   from top_level_stack and jumps to front_end_menus, where C can only tail-call.  Both models do
+   the same thing, so the differential is blind to it; the fixture never holds SHIFT and $86
+   together, and `make refloop` gates the arm (docs/faithfulness-seam.md, the S-manipulation
+   class). */
 #define KEY_INKEY_SHIFT   0xFFu   /* negative INKEY -1   — either SHIFT */
 #define KEY_INKEY_ABORT   0x86u   /* negative INKEY -122 — shift_key_tbl index $0B, the abort key */
 #define KEY_INKEY_SPACE   0x9Du   /* negative INKEY -99  — SPACE */
@@ -18875,31 +18395,23 @@ void abort_if_quit_keys_core(void)
     if (abort_state & 0x80u)                        /* $326F BIT / $3271 BMI — already aborting */
         return;
     /* Carry is 1 by construction: kbd_test_key's tail is CPX #$FF, and reaching here
-       means the last poll found the key DOWN (X = $FF), so the CPX set C as well as Z. */
+       means the last poll found the key down (X = $FF), so the CPX set C as well as Z. */
     abort_to_front_end_core(1);                     /* $3273 — the abort longjmp */
 }
 
 /* $34D2 — wait for the page to be dismissed.  `offerReturn` is the caller's A: bit 7 set also
    accepts RETURN, and the exit value of print_field_mask says which key was used.
 
-   THE TWO POLL LOOPS DRIVE A FRAME, and that is not decoration.  On the 6502 the page is
-   already on the screen the instant text_script_interp writes it — MODE 7 screen RAM IS the
-   display.  This port paints into a BBC-shaped frame buffer that only reaches the bitplanes
-   when platform_render_frame() decodes it, so a spin-wait that renders nothing leaves the
-   PREVIOUS page up for as long as the wait lasts.  Measured symptom: the pit-lane wing page
-   ($3C50) never appeared at all — the practice/competition menu stayed on screen and the game
-   looked like it wanted a second SPACE on a page it had already answered.  menu_wait_key
-   ($6577) has always had this trio; this routine is the other front-end wait and was missing it.
-   ⚠ The UP-wait needs it too, or a page entered with SPACE still held is not presented until
-   the finger comes off.
-   ⚠ AMIGA ONLY, and the guard is load-bearing.  Neither hook is free on the host:
-   PlatformHost::renderFrame() is the GAME-FRAME COUNTER ($1701) and also drives the 50 Hz band
-   cycle, and platform_tick_vbi() IS the host's 50 Hz interrupt.  Calling either from a wait the
-   6502 spent no game frames in moves the whole trajectory — `make determinism` diverged in 7003
-   bytes, and is byte-identical with the guard.  So this is a presentation need of a port that
-   decodes a frame buffer, not a property of the routine, and it belongs behind the platform
-   ifdef (docs/faithfulness-seam.md).  tickVBI() is a no-op on the Amiga anyway — the
-   VERTB ISR owns that clock — so only the render and the quit poll are here. */
+   The two poll loops present a frame.  On the 6502 MODE 7 screen RAM is the display, so the page
+   is visible the moment text_script_interp writes it; the port's frame buffer reaches the
+   bitplanes only through platform_render_frame(), so a wait that renders nothing leaves the
+   previous page up.  The up-wait needs it too, or a page entered with SPACE held is not shown
+   until the key comes off.  menu_wait_key ($6577) does the same.
+   ⚠ Amiga only.  On the host, PlatformHost::renderFrame() is the game-frame counter ($1701) and
+   drives the 50 Hz band cycle, and platform_tick_vbi() is the 50 Hz interrupt; calling either from
+   a wait the 6502 spent no game frames in changes the trajectory (`make determinism` diverges).
+   tickVBI() is a no-op on the Amiga (the VERTB ISR owns that clock), so only the render and the
+   quit poll are here (docs/faithfulness-seam.md). */
 #ifdef REVS_PLATFORM_AMIGA
 #define WAIT_DISMISS_PRESENT()  do { platform_render_frame(); platform_poll_events(); } while (0)
 #else
@@ -18938,44 +18450,36 @@ void wait_dismiss_key_core(uint8_t offerReturn)
     wait_dismiss_core(offerReturn);
 }
 
-/* THE STANDINGS / RESULTS TABLE  ($65D3 print_standings_table, $41D0
- *                 select_text_variant)
- * ------------------------------------------------------------------------------------------------
- * The page the game shows after practice, qualifying and the race: a heading line, twenty rows of
- * "position  DRIVER NAME  time", and a footer.  It is the last transliterated routine in the text
- * subsystem, so converting it is what finally lets the whole cluster be reached core-to-core —
- * every one of its nine callees already has a twin.
+/* The standings / results table  ($65D3 print_standings_table, $41D0 select_text_variant)
  *
- * Two parameters, and the 6502 passes them in registers:
- *   X = the LAYOUT VARIANT (0..6).  select_text_variant patches the heading scripts for it.
- *   A = the MODE.  Its low nibble seeds shared_counter_42, which set_row_rule_glyphs turns into
- *       the row's pair of rule glyphs ($0, $4 or $8 in practice), and the rest picks the TIME
- *       COLUMN — three different columns out of one row loop:
- *         $00            the car's BEST lap, mm:ss  (print_lap_time, field mask $26)
- *         positive != 0  car_lap_*[$14 + row], the six REFERENCE pseudo-slots, for rows 0..5 —
- *                        rows 6..$13 get seven spaces, because there are only six of them
- *         negative       the car's OWN current three-byte time, hi:mid:lo (field mask $28)
+ * The page shown after practice, qualifying and the race: a heading line, twenty rows of
+ * "position  DRIVER NAME  time", and a footer.
  *
- * The mode byte is also the argument the routine ENDS on: wait_dismiss_key(mode) means bit 7 of
- * the mode decides whether RETURN dismisses the page as well as SPACE, and $654C reads the flag
- * back to tell "the player pressed SPACE, cycle the pages again" from "RETURN, we are done".  So
- * one byte carries the rule glyphs, the time column and the page's exit condition.
+ * Two parameters, passed in registers:
+ *   X = the layout variant (0..6); select_text_variant patches the heading scripts for it.
+ *   A = the mode.  Its low nibble seeds shared_counter_42, which set_row_rule_glyphs turns into
+ *       the row's pair of rule glyphs ($0, $4 or $8 in practice), and the rest picks the time
+ *       column:
+ *         $00            the car's best lap, mm:ss  (print_lap_time, field mask $26)
+ *         positive != 0  car_lap_*[$14 + row], the six reference pseudo-slots, for rows 0..5;
+ *                        rows 6..$13 get seven spaces
+ *         negative       the car's own current three-byte time, hi:mid:lo (field mask $28)
  *
- * Why the ambient X/Y are threaded so carefully here: every character this page prints goes
- * through vdu_emit_char, whose OSWRCH arm hands the 6502's X and Y to the MOS.  They are ambient
- * junk — the script index the interpreter happened to leave in X, the offset of the $FF that ended
- * the last script in Y — but they are ambient junk the real machine passed on, so the twin passes
- * the same.  That is why text_script_interp_core now RETURNS its exit Y.
+ * The routine ends with wait_dismiss_key(mode), so bit 7 of the mode decides whether RETURN
+ * dismisses the page as well as SPACE, and $654C reads the flag back to tell "SPACE, cycle the
+ * pages again" from "RETURN, done".
  *
- * ⚠ The two heading scripts are SELF-MODIFIED, by design and at every entry: select_text_variant
- * writes five glyph bytes and one command byte into scripts $21 and $22 before running them.
- * Those writes stay as mem[] stores (they are the mechanism, not an artefact) and the addresses
- * are named in symbols.csv.
+ * Every character goes through vdu_emit_char, whose OSWRCH arm hands the 6502's X and Y to the
+ * MOS.  They are ambient (the script index the interpreter left in X, the offset of the $FF that
+ * ended the last script in Y), but the real machine passed them on, so they are threaded here;
+ * that is why text_script_interp_core returns its exit Y.
  *
- * ⚠ Binary arithmetic throughout: this is front-end display code entered with D = 0, and none of
- * the eight sanctioned SED sites is on the path (docs/static-map.md §Decimal mode).  The one
- * decimal add in the neighbourhood is inside position_to_bcd, which does its own SED/CLD.
- * ================================================================================================ */
+ * ⚠ The two heading scripts are self-modified at every entry: select_text_variant writes five
+ * glyph bytes and one command byte into scripts $21 and $22 before running them.  Those stores
+ * stay in mem[]; the addresses are named in symbols.csv.
+ *
+ * Binary arithmetic throughout (D = 0); the one decimal add nearby is inside position_to_bcd,
+ * which does its own SED/CLD. */
 
 /* The five parallel per-variant tables and the two scripts they patch. */
 
@@ -18984,10 +18488,10 @@ void wait_dismiss_key_core(uint8_t offerReturn)
    primary road-pass name and the twin carries the alias.) */
 #define STANDINGS_ROW span_saved_index
 
-/* $41D0 select_text_variant — DRESS THE HEADING SCRIPTS FOR ONE LAYOUT, THEN DRAW THEM.
+/* $41D0 select_text_variant — dress the heading scripts for one layout, then draw them.
  * Six bytes of patch and one script run.  Five come straight out of the parallel tables; the
  * sixth is computed: script $22's +4 becomes the text-script command "recurse into script
- * <variant>", which is how the cell picks up the words that name THIS variant's column.
+ * <variant>", which is how the cell picks up the words that name this variant's column.
  * Result-only: its exit registers are dead at both callers (print_standings_table reloads Y and X
  * immediately, and text_script_interp's $4DA5 arm restores both off the 6502 stack).
  * ------------------------------------------------------------------------------------------------ */
@@ -19021,14 +18525,14 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
         set_row_rule_glyphs_core(row);             /* $65E3 — this row's rule pair */
         text_script_interp_core(0x20u);            /* $65E6/$65E8 — the row's left margin */
 
-        /* $65ED-$65F4.  In a RACE the leading number comes out of car_race_flags — the finishing
+        /* $65ED-$65F4.  In a race the leading number comes out of car_race_flags — the finishing
            order latched there — and outside one it is simply the row.  Either way position_to_bcd
            makes it 1-based BCD.  X is still the script index the interpreter left ($20). */
         pos = (session_is_race & 0x80u) ? mem[MEM_car_race_flags + row] : row;
         print_bcd_digits_core(position_to_bcd_core(pos).a, 0x20u, row);    /* $65F5/$65F8 */
 
         text_script_interp_core(0x1Fu);             /* $65FB/$65FD — the column rule */
-        print_driver_name_by_order_core(row);       /* $6600/$6602 — Y is the ORDER position */
+        print_driver_name_by_order_core(row);       /* $6600/$6602 — Y is the order position */
         y = text_script_interp_core(0x1Fu);         /* $6605/$6607 — and the rule again */
         car = saved_slot_index;                     /* $660A — the car the name printer parked */
 
@@ -19062,7 +18566,7 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
     }
 
     print_spaces_core(0x03u, ambX, 0x14u);          /* $664A/$664C — the footer's indent */
-    /* $664F/$6651 — a DIRECT JSR OSWRCH, not the vdu_char_def dispatch: this one byte always goes
+    /* $664F/$6651 — a direct JSR OSWRCH, not the vdu_char_def dispatch: this one byte always goes
        to the MOS whatever text_out_via_mos says. */
     mos_oswrch(0x9Cu, ambX, 0x14u);
 
@@ -19078,16 +18582,16 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
     wait_dismiss_key_core(mode);                    /* $666E PLA / $666F — SPACE, or RETURN if <0 */
 }
 
-/* relocated_poison — THE VALIDATION HARNESS'S GUARD ON THE MARSHAL SEAM
+/* relocated_poison — the validation harness's guard on the marshal seam
    Every mechanism-(B) relocation moves a value out of mem[] into a native global, and the
    boundary rule says a 6502-ABI shim whose core reads it must marshal it IN.  A missing marshal
-   is INVISIBLE to `make validate` on its own, because the two models share this process's
-   globals: many transliterated oracles tail-call the NATIVE shim (stage_nearby_car__t6502 calls
+   is invisible to `make validate` on its own, because the two models share this process's
+   globals: many transliterated oracles tail-call the native shim (stage_nearby_car__t6502 calls
    car_gap_tail(), which marshals), so whichever model runs second inherits the value the first
    one marshalled.  A dropped marshal then reads the right word by accident and the differential
-   PASSES — the same class as the stale cpu_unwind trap diff_run documents.
+   passes — the same class as the stale cpu_unwind trap diff_run documents.
 
-   diff_run calls this before EACH model so neither can inherit the other's marshal.  The value
+   diff_run calls this before each model so neither can inherit the other's marshal.  The value
    is deliberately not zero (a zero can be the correct answer) and per-element distinct for the
    arrays, so a marshal that covers only some slots still diverges.  Never call it from game code. */
 void relocated_poison(void)
@@ -19096,12 +18600,12 @@ void relocated_poison(void)
     /* The span walk's direction and marker switch are the same kind of relocation: on the 6502
        they are opcode bytes in mem[], which the pre-state restore would refresh.
        Poison them with the value the decoders themselves call "cannot execute", so a read
-       before the write TRAPS and the differential sees it.  Without this, a dropped write in
-       interp_edge step 5a PASSES: the oracle's own boundary decode (span_walk_oracle) runs
-       first and leaves the right direction behind for the twin to inherit — measured.
-       ⚠ That sabotage now HANGS rather than mismatching, and the reason is worth knowing: the
-       trap arm returns before span_plot_core's `y == SPAN_LINE_END` test, which is the walk's
-       only terminator when the DDA cannot carry (SPAN_DX == 0).  A detection either way. */
+       before the write traps and the differential sees it.  Without this, a dropped write in
+       interp_edge step 5a passes: the oracle's own boundary decode (span_walk_oracle) runs
+       first and leaves the right direction behind for the twin to inherit.
+       ⚠ Such a dropped write hangs rather than mismatching: the trap arm returns before
+       span_plot_core's `y == SPAN_LINE_END` test, the walk's only terminator when the DDA
+       cannot carry (SPAN_DX == 0). */
     g_spanStepIn = SPAN_STEP_TRAP; g_spanStepOut = SPAN_STEP_TRAP;
     g_spanMarkOn = SPAN_MARK_TRAP;
     hypot_min_v = 0xA5A8u; hypot_max_v = 0xA5A9u;
@@ -19114,7 +18618,7 @@ void relocated_poison(void)
 }
 
 /* $655C  enter_session / $655A enter_practice_session — run one session
-   `kind` is the session flavour and lands in BOTH session_is_race ($6C) and start_light_state
+   `kind` is the session flavour and lands in both session_is_race ($6C) and start_light_state
    ($6D): $28 for a practice or qualifying run (enter_practice_session's own entry loads it),
    $80 for the race, from front_end_menus' grid walk.
 
@@ -19123,13 +18627,12 @@ void relocated_poison(void)
    which re-asks the wings and runs again, and bit 7 "abort", which leaves through
    abort_to_front_end and never comes back on the 6502.
 
-   ⚠ Still a 6502-ABI call at two points, both deliberate:
-     * race_main_loop() — its shim IS the $16DC entry contract (hw_init, the view-origin
-       marshal, the RESTART depth from state_flags bit 6), not a marshal to be deleted.
-     * the non-local exit's ROR rotates the LIVE CARRY into abort_state, and that carry is
-       whatever race_main_loop left; it is now the value race_main_loop_session() RETURNS
-       instead of a cpu.C read.  Nothing between the two calls may disturb it (the 6502's BIT
-       does not either), which the local makes structural rather than a comment. */
+   ⚠ Two 6502-ABI points, both deliberate:
+     * race_main_loop(): its shim is the $16DC entry contract (hw_init, the view-origin
+       marshal, the restart depth from state_flags bit 6).
+     * the non-local exit's ROR rotates the live carry into abort_state, and that carry is
+       whatever race_main_loop left: the value race_main_loop_session() returns.  Nothing
+       between the two calls may disturb it (the 6502's BIT does not). */
 void enter_session_core(uint8_t kind)
 {
     session_is_race   = kind;                    /* $655C */
@@ -19151,48 +18654,46 @@ void enter_practice_session_core(void)
 }
 
 /* $63E0  front_end_menus — the whole front end
-   engine_init JMPs here once the hardware is up, and this routine NEVER RETURNS: its tail jumps
+   engine_init JMPs here once the hardware is up, and this routine never returns: its tail jumps
    back to the qualifying menu, so the front end and the race are one endless cycle.  The shape:
 
      1. $63E0  clear state_flags, put the field back to a session start
                (reset_all_cars_for_session with class 0), dress the menu page (text variant 4 +
                the two graphics bars) and print the top-level menu, script $27.
-     2. $63F5  two answers: PRACTICE (0) runs one unlimited practice session for car 0
+     2. $63F5  two answers: Practice (0) runs one unlimited practice session for car 0
                (qualify_minutes = $FF is the "no limit" sentinel — the DEX from 0), then falls
-               through; RACE (1) goes straight on.
+               through; race (1) goes straight on.
      3. $640A  the championship cycle — pick the class (script $15), then forever:
                   a. $641F  pick the qualifying length (script $16) and clear every best lap;
-                  b. $6436  walk the cars DOWN from $13, one qualifying run each.  On the first
+                  b. $6436  walk the cars down from $13, one qualifying run each.  On the first
                      time round (drivers_named still 0) each car's driver is named first
                      (script $17 + read_driver_name) and the walk stops when the player answers
                      "no more drivers" at script $1B — that car index becomes human_car_first,
                      the boundary between human and computer cars.  On later laps of the cycle
                      the names stand and the walk simply re-runs every human car.
-                  c. $6480  first time only: pick the race class from the SLOWEST human's best
+                  c. $6480  first time only: pick the race class from the slowest human's best
                      lap against the three class targets, but never a faster class than the one
                      the player chose.
                   d. $64B3  print the qualifying standings, stash the resulting order as the
                      starting grid, and give each human car its grid row (place >> 1 — two cars
                      to a row).  First time only, ask the race length (script $1C).
                   e. $64F6  for each human car in turn: hand over (prompt_driver_ready), restore
-                     the grid order, clear the best laps and RACE ($80).  Then tally the six
+                     the grid order, clear the best laps and race ($80).  Then tally the six
                      statistics columns plus the total, and show the results pages until
                      hypot_min_lo's bit 7 says the driver dismissed them.
                   f. $6557  round again from (a) — a fresh qualifying session.
 
-   ⚠ Two shared cells are read here under their OTHER tenancy:
-     * $0100 SORT_SCRATCH holds sort_cars_by_key's stable PLACE per order slot, which is what
+   ⚠ Two shared cells are read here under their other tenancy:
+     * $0100 SORT_SCRATCH holds sort_cars_by_key's stable place per order slot, which is what
        the grid rows are derived from — not car_race_flags, its name in the race.
      * hypot_min_lo ($78) is sort_cars_by_key's key selector on the way in, and on the way out
        it is wait_dismiss_key's dismiss flag: print_standings_table's $88 mode accepts RETURN as
-       well as SPACE and LSRs the flag, so bit 7 says WHICH key ended the results page.
+       well as SPACE and LSRs the flag, so bit 7 says which key ended the results page.
 
-   ⚠ WHAT GATES THIS ROUTINE, and what does not: `make determinism` enters the race through this
-   code, and four deliberate defects in the entry block diverge the 64 KB dump (a different
-   seeding class, an off-by-one menu answer, an off-by-one player car, dropping the DEX that
-   makes qualify_minutes $FF).  Two do NOT and cannot: changing the text-script index or the text
-   variant only alters the MODE 7 page at $7C00, which the race's own dash code has overwritten
-   long before the frame-300 dump.  Those belong to a real-BBC front-end differential. */
+   ⚠ `make determinism` enters the race through this code and gates its state (the seeding
+   class, the menu answers, the player car, qualify_minutes).  It cannot see a wrong text-script
+   index or text variant: those only change the MODE 7 page at $7C00, which the race's dash code
+   overwrites before the frame-300 dump; a real-BBC front-end differential covers them. */
 void front_end_menus_core(void)
 {
     state_flags = 0x00;                              /* $63E0 */
@@ -19202,7 +18703,7 @@ void front_end_menus_core(void)
     menu_draw_gfx_bars_core();                       /* $63ED */
     text_script_interp_core(0x27);                   /* $63F0 — the top-level menu page */
 
-    uint8_t top = menu_wait_key_core(0x02);          /* $63F5 — PRACTICE (0) or RACE (1) */
+    uint8_t top = menu_wait_key_core(0x02);          /* $63F5 — practice (0) or race (1) */
     if (top < 0x01) {                                /* $63FA CPX #1; BCS */
         player_car      = top;                       /* $63FE — practice always drives car 0 */
         qualify_minutes = (uint8_t)(top - 1);        /* $6400 DEX — $FF: no time limit */
@@ -19219,7 +18720,7 @@ void front_end_menus_core(void)
         text_script_interp_core(0x16);               /* $641F — the qualifying-length menu */
         qualify_minutes = mem[MEM_qualify_minutes_tbl + menu_wait_key_core(0x03)];   /* $6424 */
 #ifdef REVS_QUICK_QUALIFY
-        /* ⚠ MEASUREMENT BUILDS ONLY (`make QUICKQUAL=1`, amiga/Makefile): a ONE-minute qualifying
+        /* ⚠ Measurement builds only (`make QUICKQUAL=1`, amiga/Makefile): a one-minute qualifying
            session instead of the menu's shortest four, so a race-proper pricing run reaches the
            grid in ~a quarter of the fields.  The deadline ($106F) is the only reader of the value
            besides its practice sign bit, so the session simply ends sooner; the race it leads to
@@ -19258,7 +18759,7 @@ void front_end_menus_core(void)
             sort_cars_by_key_core(0x00);             /* $647B */
 
             /* L_6480 — the class the field actually qualified for: walk the three class
-               targets until the SLOWEST human's best lap (a 16-bit BCD field, compared here
+               targets until the slowest human's best lap (a 16-bit BCD field, compared here
                as a plain binary pair — the SBC chain runs with D clear) reaches one.  X wraps
                through 256 targets before giving up, exactly as the 6502 does. */
             uint8_t slowest = mem[MEM_car_order + 0x13];       /* $6480 — the last place */
@@ -19334,10 +18835,10 @@ void front_end_menus_core(void)
     }                                                /* $6557 — round again, forever */
 }
 
-/* $17FC/$4D70/$4D74/$4D76  the STATUS-ROW PRINTERS
+/* $17FC/$4D70/$4D74/$4D76  the status-row printers
    The race view keeps two one-line message rows above the road, and every message in the game
-   goes out through these four entries.  Only the scan line differs: $21 is the LOWER row and $18
-   the UPPER one, both at column 1, and the body is text_script_interp on the caller's script.
+   goes out through these four entries.  Only the scan line differs: $21 is the lower row and $18
+   the upper one, both at column 1, and the body is text_script_interp on the caller's script.
 
    print_message_pair is the "announce something" form: the caller's script on the lower row, then
    the fixed script $2D on the upper one — the three callers (reset_driving_variables' session
@@ -19368,7 +18869,7 @@ uint8_t print_message_pair_core(uint8_t script)
     return print_message_upper_row_core(0x2D);   /* $17FF — the fixed second line */
 }
 
-/* $6300  console_io — THE LINE EDITOR
+/* $6300  console_io — the line editor
    The game's only text-input routine: read a fixed-width field from the keyboard
    into memory, echoing as it goes.  Two callers, both in the pits —
    console_read_two_digits ($3EE0) types a two-character wing setting into
@@ -19394,18 +18895,18 @@ uint8_t print_message_pair_core(uint8_t script)
    and exit X is 0 — every OSBYTE here returns X = 0 — which is what
    console_read_two_digits reads back to count the characters it must un-echo.
 
-   ⚠ THE ESCAPE ARM ($6345) IS UNREACHABLE ON THIS PORT, and is kept faithfully
-   anyway: OSRDCH returning C=1 means an ESCAPE condition, which the real MOS raises
-   and src/platform/mos.cpp's OSRDCH never does (it forces C=0).  The 6502
+   ⚠ The ESCAPE arm ($6345) is unreachable on this port and kept anyway: OSRDCH
+   returning C=1 means an ESCAPE condition, which the real MOS raises and
+   src/platform/mos.cpp's OSRDCH never does (it forces C=0).  The 6502
    acknowledges it with OSBYTE $7E and reads again, preserving Y across the call by
    pushing it — so the partly-typed line survives an ESCAPE. */
 uint8_t console_io_core(uint16_t field, uint8_t width)
 {
-    /* The field's address is ONE value here and is only SPLIT to publish it: plot_ptr_lo/hi
+    /* The field's address is one value here and is only split to publish it: plot_ptr_lo/hi
        ($70/$71) are the cells the 6502 stored it in and the twin keeps writing them, but
        nothing in the loop below reads them back — every character is addressed off `field`
        with one add, not two byte loads, a shift and an or.
-       ⚠ Through PLOT_SET_LO/HI, so the RELOCATED MIRROR moves with the lanes.  The 6502's
+       ⚠ Through PLOT_SET_LO/HI, so the relocated mirror moves with the lanes.  The 6502's
        pointer after this routine IS the field address, so leaving plot_ptr_v at its entry
        value would let a later plotter read a different pointer than the 6502 does — invisible
        to the differential (both models write the same mem[$70/$71]) and a real divergence in
@@ -19417,7 +18918,7 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
        ever indexes $00..$FF off `field`, so proving the base is RAM proves every store. */
     const int fieldIsRam = page_is_ram(field);
 
-    /* $6306-$6311.  The ambient Y at both calls is the caller's pointer HIGH byte. */
+    /* $6306-$6311.  The ambient Y at both calls is the caller's pointer high byte. */
     mos_osbyte(0x02u, 0x00u, (uint8_t)(field >> 8)); /* input stream := keyboard */
     mos_osbyte(0x15u, 0x00u, (uint8_t)(field >> 8)); /* flush the keyboard buffer */
 
@@ -19460,10 +18961,10 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
     return 0x20u;
 }
 
-/* THE ROAD WALK'S DIRECTION CLUSTER
+/* The road walk's direction cluster
    $1433 step_walk_one_segment · $12F3 build_section_ahead · $1420 rebuild_walk_reversed
    $140B rebuild_walk_backward · $13FB reverse_walk_direction
-   Everything that MOVES the road walk, as opposed to building one section of it
+   Everything that moves the road walk, as opposed to building one section of it
    (build_road_section).  road_edge_walk's tail decides each frame how far the
    view has to travel and calls in here: one section along the direction of travel is the
    ordinary case, one section back costs a whole re-lay of the ring, and a heading that has
@@ -19476,7 +18977,7 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
    ⚠ These were the last unnamed transliterated routines reachable in production
    (step_walk_one_segment / build_section_ahead / rebuild_walk_reversed / rebuild_walk_backward / reverse_walk_direction). */
 
-/* $1433 — step the PLAYER one segment along the walk.  `against` is the caller's carry: the
+/* $1433 — step the player one segment along the walk.  `against` is the caller's carry: the
    6502 rotates C into bit 7 and EORs it with track_direction, so a request that agrees with
    the direction of travel advances the car's track position and one that disagrees retreats
    it.  Both steppers take the player's slot, and both move the relocated distance counter,
@@ -19500,7 +19001,7 @@ void build_section_ahead_core(void)
     build_road_section();                            /* $12F7 — the boundary shim, see #147 */
 }
 
-/* $1420 — flip the direction of travel and rebuild `count` sections.  ⚠ It does NOT flip the
+/* $1420 — flip the direction of travel and rebuild `count` sections.  ⚠ It does not flip the
    bit back: rebuild_walk_backward calls it twice to end where it started, and
    reverse_walk_direction leaves it flipped on purpose.  $1424 is the image's only writer of
    track_direction. */
@@ -19523,7 +19024,7 @@ void rebuild_walk_reversed_core(uint8_t count)
             /* A is the flipped direction and N/Z the $1422 `EOR`'s (the last flag writer before
                $1426 — $1424's store sets none); X is the section count.  Y, C and V are not
                established anywhere in $1420-$1424, and none of the three is observable: all four
-               circuits patch this seam to the SAME hook ($5572, per disasm/track_hooks.txt's
+               circuits patch this seam to the same hook ($5572, per disasm/track_hooks.txt's
                $1427-$1428 extent), which overwrites A/N/Z at once, reaches Y only through
                $55C6's `LDY`, hits its first carry consumer behind a `SEC`/`CLC` ($5588, $55DC,
                and abs16_math's own $0E46), and the hook corpus has no BVC/BVS at all (the V note
@@ -19546,7 +19047,7 @@ void rebuild_walk_reversed_core(uint8_t count)
     } while (shared_counter_42 != 0u);                /* a count of 0 therefore runs 256 */
 }
 
-/* $140B — move the walk one section BACKWARD, which costs a full re-lay: step the car one
+/* $140B — move the walk one section backward, which costs a full re-lay: step the car one
    segment against the direction of travel, rebuild the whole ring in the flipped direction,
    then 39 sections back in the original one, so the direction bit ends where it started.
    far_edge_rebuild is held non-zero across both passes — cross_section_boundary reads it and
@@ -19562,7 +19063,7 @@ void rebuild_walk_backward_core(void)
 
 /* $13FB — the U-turn.  The car's heading has crossed far enough past the track's that nothing
    in the walk can be reused, so mark the whole near edge dead and rebuild 64 sections with the
-   direction of travel flipped ONCE — the flip is the point, not a side effect.
+   direction of travel flipped once — the flip is the point, not a side effect.
    walk_reverse_active is raised across the rebuild for the per-circuit hook inside it; no
    engine code reads it. */
 void reverse_walk_direction_core(void)
@@ -19573,7 +19074,7 @@ void reverse_walk_direction_core(void)
     walk_reverse_active = 0x00u;                     /* $1406-$1408 */
 }
 
-/* THE PER-SCAN-LINE SURFACE TABLE
+/* The per-scan-line surface table
    Two halves of the same job, run either side of draw_road in the body: one
    clears the drawing state for the lines the road can reach, the other decides
    what colour each of the 80 scan lines shows where no road cell covers it. */
@@ -19583,26 +19084,26 @@ void reverse_walk_direction_core(void)
    buffers get $80 (the "no boundary on this line" marker) for every line the
    road can reach, 0..horizon_extent, and the whole 80-entry view_line_surface
    table goes to zero so fill_line_surface can tell "unwritten" from a colour.
-   ⚠ The two loops have DIFFERENT bounds — the edges only up to the horizon,
+   ⚠ The two loops have different bounds — the edges only up to the horizon,
    the surface table always all 80 lines.  Exit ABI dead (both callers issue an
    unrelated LDX next). */
 void clear_surface_buffers_core(void)
 {
     /* $66BA — lines horizon_extent..0 of all four buffers get the "no boundary here" marker.
        The 6502 walks them a byte at a time because it has no wider store; the fill value is
-       the SAME byte everywhere, which is the one shape the mem[] aliasing rule allows to be
+       the same byte everywhere, which is the one shape the mem[] aliasing rule allows to be
        widened, so the 68000 clears long words instead.  ~320 byte writes a frame gone.
-       ⚠ ONLY while the fill stays inside one buffer's own 80 lines.  The four bases are $50,
-       $5C and $50 apart, so a horizon_extent of $50 or more makes buffer 0's fill run INTO
+       ⚠ Only while the fill stays inside one buffer's own 80 lines.  The four bases are $50,
+       $5C and $50 apart, so a horizon_extent of $50 or more makes buffer 0's fill run into
        buffer 1 — and then the 6502's per-line interleave (edge_1, edge_3, edge_2, edge_0) is
        observable, because the later line's edge_0 store lands on a cell the earlier line's
        edge_1 store already wrote.  build_track_geometry clamps horizon_extent to <= $4E, not
        this routine, so the byte loop stays as the out-of-range arm.
-       ⚠ And the 6502 exits on the DECREMENT's sign: an entry of $81..$FF writes exactly one
+       ⚠ And the 6502 exits on the decrement's sign: an entry of $81..$FF writes exactly one
        line, while $80 writes $80 and then carries on down to 0. */
     uint8_t line = horizon_extent;
     if (line < 0x50u) {
-        /* ONE LOOP FOR THE FOUR BUFFERS, not four memset calls: each call paid the wrapper's
+        /* One loop for the four buffers, not four memset calls: each call paid the wrapper's
            entry, its alignment tests and its own byte tail for ~80 bytes (phase 10 single-stepped
            at ~600 instructions for five of them).  All four bases are 4-aligned in an aligned(4)
            mem[] ($0554/$05A4/$0600/$0650), so the four walks share one count and one tail.
@@ -19640,7 +19141,7 @@ void clear_surface_buffers_core(void)
    horizon downward.  One entry is seeded at the horizon line: $23 normally, but
    $20 when the two edge points at horizon_index straddle -$14 in screen X (the
    far one left of it, the near one right of it) — the horizon is then looking
-   ALONG the road rather than across it.  The rest of the table is then filled by
+   along the road rather than across it.  The rest of the table is then filled by
    a single downward sweep from line 79: every zero entry inherits the last
    non-zero value seen above it, and the sweep starts holding $21, so the lines
    below everything the road wrote get the plain-ground colour.
@@ -19654,13 +19155,13 @@ void fill_line_surface_core(void)
     mem[MEM_view_line_surface + horizon_extent] = seed;      /* $18D6 */
 
     /* The 6502 stores on every line because it has nowhere else to keep the running colour.
-       Where the entry is already non-zero the byte written IS the byte read, so only the ZERO
+       Where the entry is already non-zero the byte written IS the byte read, so only the zero
        entries need a store.
-       FOUR LINES A STEP: in a race frame ~78 of the 80 entries are zero, so the sweep is
+       Four lines a step: in a race frame ~78 of the 80 entries are zero, so the sweep is
        really a fill of the running colour.  A group of four zero bytes takes one longword store
        of that colour; a group holding a non-zero entry is walked byte by byte, top line first,
        exactly as the 6502 does.  $5F60 is 4-aligned in mem[] and 80 = 20 groups.
-       ENDIAN-OK: the group is only tested against ZERO and only stored as a UNIFORM value. */
+       ENDIAN-OK: the group is only tested against zero and only stored as a uniform value. */
     uint8_t  colour = 0x21u;                             /* $18D9 — below the road: ground */
     uint32_t fill4  = 0x21212121u;                       /* colour in all four lanes */
     uint32_t* w = (uint32_t*)(void*)&mem[MEM_view_line_surface + 0x50u];   /* ENDIAN-OK: zero/uniform */
@@ -19678,7 +19179,7 @@ void fill_line_surface_core(void)
 }
 
 /* $24B9  advance_player_section
-   The body's 7th call: moves the CURSOR into the section arrays, not the car.
+   The body's 7th call: moves the cursor into the section arrays, not the car.
    Two decisions, in order.
 
    (a) Has the car turned so far off the section's own bearing that the whole
@@ -19688,12 +19189,12 @@ void fill_line_surface_core(void)
        frame is done.
    (b) Otherwise the subdivision count build_track_geometry left in
        edge_nearest_section says whether the road ahead ran short or long:
-       below $0C step the cursor FORWARD one section, above the (per-circuit)
-       ceiling step it BACK one or two, and at exactly $0C do neither.  Either
+       below $0C step the cursor forward one section, above the (per-circuit)
+       ceiling step it back one or two, and at exactly $0C do neither.  Either
        way a forward step also happens whenever section_quad_flags' bit 7 is
        set — the quarter-turn shift register wanting another section built.
 
-   ⚠ THREE per-circuit SMC sites, all three hook JSRs or their operands
+   ⚠ Three per-circuit SMC sites, all hook JSRs or their operands
    (make track-smc): the forward call at $24DE (Donington redirects it to
    $53E9), the ceiling byte at $24EA ($0E unpatched, $0D on all four expansion
    circuits) and the back-step call at $24F2 (all four redirect it to $55BD).
@@ -19764,11 +19265,11 @@ void advance_player_section_core(uint8_t entryX, uint8_t entryY)
 }
 
 /* $3273  abort_to_front_end
-   The in-race ABORT longjmp: rotate the caller's carry into abort_state's bit 7
+   The in-race abort longjmp: rotate the caller's carry into abort_state's bit 7
    — the latch that makes a second abort a no-op — and go back to the front end.
-   ⚠ THE STACK UNWIND CANNOT BE MODELLED.  On the 6502 this restores S from
+   ⚠ The stack unwind cannot be MODELLED.  On the 6502 this restores S from
    top_level_stack (saved by the front-end reset at $386D) and JMPs, so the race's
-   whole call chain is discarded.  The port instead RECURSES into front_end_menus
+   whole call chain is discarded.  The port instead recurses into front_end_menus
    and unwinds back up the C stack when the menus finally return — the
    S-manipulation class in docs/faithfulness-seam.md.  Both the twin and its
    oracle do this, which is exactly why the differential is blind to the arm:
@@ -19781,7 +19282,7 @@ void abort_to_front_end_core(int carry)
 }
 
 /* $63BD  engine_main  /  $3850  engine_init
-   THE entry point: the unpack stub's closing JMP lands on engine_main, which is
+   the entry point: the unpack stub's closing JMP lands on engine_main, which is
    itself just a JMP to engine_init.  Init makes the keyboard behave (cursor keys
    as plain ASCII), hands the screen to the MOS VDU driver, clears the ten status
    bytes at state_flags, sets the default sound amplitude, records the stack top
@@ -19791,7 +19292,7 @@ void abort_to_front_end_core(int carry)
    would run the entire front end alongside the twin and agree by construction —
    the same blindness abort_to_front_end has.  `make refloop` and every boot of
    the port gate this, not the differential.
-   ⚠ engine_init's bytes are ALSO the car_speed_frac table once init has run; the
+   ⚠ engine_init's bytes are also the car_speed_frac table once init has run; the
    dual use is why nothing may be assumed about them afterwards. */
 void engine_init_core(void)
 {
@@ -19803,8 +19304,8 @@ void engine_init_core(void)
     sound_volume = 0xF6u;                         /* $386A — amplitude -10 */
     top_level_stack = cpu.S;                      /* $386D TSX — abort's unwind target, and
                                                      the one cell that genuinely IS the 6502's S */
-    /* $3870 JSR CallTrackHook ($5A22).  A no-op here for EVERY circuit: an expansion
-       circuit's hook is ModifyGameCode, whose output this port applies as DATA at
+    /* $3870 JSR CallTrackHook ($5A22).  A no-op here for every circuit: an expansion
+       circuit's hook is ModifyGameCode, whose output this port applies as data at
        selection time (tools/track_patch.py) — running it would patch a patched image.
        See the $5A22 note in symbols.csv. */
     mos_osbyte(0xBEu, 0x20u, 0x00u);              /* $3873-$3879 — ADC channel count */
@@ -19817,7 +19318,7 @@ void engine_main_core(void)
 }
 
 /* $4DDD  hw_init
-   THE PLATFORM BOUNDARY: the only routine in the game that programs hardware,
+   The platform boundary: the only routine in the game that programs hardware,
    run once as race_main_loop's first act.  In order:
      * the 14 6845 CRTC registers, from crtc_init_regs, counted down with
        interrupts off — this is what puts the display into the race's geometry;
@@ -19831,9 +19332,9 @@ void engine_main_core(void)
        System VIA's vsync flag waited for so the claim lands in the vertical
        blank, then the User VIA's T1 armed for the band interrupts and both VIAs'
        timers loaded with the band schedule ($11D4 and $1E, $4E4E);
-     * IRQ1V := $4E5C (irq1v_band_schedule), low byte LAST — the two stores go
+     * IRQ1V := $4E5C (irq1v_band_schedule), low byte last — the two stores go
        through bus_write so the platform's shadow notify sees the claim.
-   Hardware writes stay bus_write() by design: they ARE the hardware. */
+   Hardware writes stay bus_write(): they are the hardware. */
 #define CRTC_ADDR_REG      0xFE00u   /* 6845 address register */
 #define CRTC_DATA_REG      0xFE01u   /* ...and its data port */
 #define ULA_PALETTE        0xFE21u   /* Video ULA palette register */
@@ -19864,11 +19365,11 @@ void hw_init_core(uint8_t osbyteY)
     bus_write(SYSVIA_ACR, (uint8_t)(bus_read(SYSVIA_ACR) | 0x40u));  /* $4E1B-$4E1E */
     bus_write(USRVIA_IER, 0xC0u);                        /* $4E23 — User VIA IER: enable T1 */
     bus_write(SYSVIA_IER, 0xC0u);                        /* $4E26 — System VIA IER: enable T1 */
-    /* ⚠ The first pair is the USER VIA's T1 COUNTER, not the System VIA's latch (an older
+    /* ⚠ The first pair is the User VIA's T1 counter, not the System VIA's latch (an older
        comment here had both wrong): $11D4 us is the first band's duration, started at once. */
     bus_write(USRVIA_T1CL, 0xD4u);                       /* $4E2B */
     bus_write(USRVIA_T1CH, 0x11u);                       /* $4E30 — $11D4 */
-    /* Then the System VIA's T1 is STARTED short and RELOADS long: latch low $01 and a write
+    /* Then the System VIA's T1 is started short and reloads long: latch low $01 and a write
        to the counter high byte begin a $3D01 us count, after which the pair of latch writes
        below leaves $4E1E (= 20 002 us, one field) as every subsequent reload.  The User VIA's
        latch gets the same $4E1E, low byte first — that is the band schedule's own period. */
@@ -19884,32 +19385,32 @@ void hw_init_core(uint8_t osbyteY)
     /* $4E57 CLI */
 }
 
-/* PER-CIRCUIT HOOK TWINS
-   These are twins of code that lives in an EXPANSION CIRCUIT's own file, not in the engine —
+/* Per-circuit hook twins
+   These are twins of code that lives in an expansion circuit's own file, not in the engine —
    the bodies `src/gen/revs_track_hooks.c` transliterates.  Same seam rules as every other
    twin (`HOOK_TWINS` in tools/transpile.py routes the dispatch to them; `g_hookOracle` flips
    a validation run back to the transliteration), with one extra caution: a hook is entered
-   with whatever registers the PATCHED-OUT instruction's neighbourhood left live, so the entry
+   with whatever registers the patched-out instruction's neighbourhood left live, so the entry
    ABI is derived from the call site and never from the callee it displaced.
    ⚠ And `make validate`/`determinism` race SILVERSTONE, which never calls any of this.
    `make viewdiff` is the gate that actually exercises these. */
 
-/* The hook's one-shot latch — the THIRD tenant of point_delta_lo[2] ($0082; symbols.csv's $0080
+/* The hook's one-shot latch — the third tenant of point_delta_lo[2] ($0082; symbols.csv's $0080
    row carries all three), live only inside one $56C8 call and carrying nothing out: the hook
    returns to $1949, which JMPs straight to $1977 without reading the cell.  It is mirrored into
    mem[] rather than kept purely local so the oracle differential stays byte-exact on it too. */
 #define HOOK_CLAMP_LATCH (MEM_point_delta_lo + 2u)   /* = point_delta_lo + 2 */
 
-/* $56C8 — MAKE THE HORIZON MONOTONIC (Brands Hatch, Donington Park, Oulton Park; the three
+/* $56C8 — make the horizon monotonic (Brands Hatch, Donington Park, Oulton Park; the three
    circuits emit byte-identical code here).  Patched in at $1946, over the engine's
    `JSR edge_x_offscreen` in fill_line_attr.
     
-   Walking edge points DOWNWARD from the entry point, it carries a running cursor of the
+   Walking edge points downward from the entry point, it carries a running cursor of the
    highest (numerically largest, i.e. lowest on screen) line seen so far and pulls any point
-   that projects ABOVE it back down to it, so the far road cannot poke through a nearer crest.
+   that projects above it back down to it, so the far road cannot poke through a nearer crest.
    The walk stops at the first point at or beyond `horizon_extent` — the horizon itself.
    
-   The FIRST clamp is also the trigger for a one-shot: the cursor becomes the object-count
+   The first clamp is also the trigger for a one-shot: the cursor becomes the object-count
    ceiling ($1FE9's SMC operand, which these circuits have rewritten to the `LDX #imm` shape),
    and the road's half-width is recomputed at the point just above.  A latch seeded from bit 5
    of the entry Y suppresses that entirely — an entry from the upper band gets the clamp with
@@ -19962,7 +19463,7 @@ void hook_horizon_clamp(HookRegs *r)
     /* $56FD `JMP edge_x_offscreen` is a tail call, so the hook also returns whatever that
        leaves: X is the entry X (the clamp never touches it) and Y survives the callee.  The
        $1946 seam discards A and the flags ($1949 `LDY $1F / JMP $1977`), and they are handed
-       back only as far as the callee's own exit — ⚠ V is NOT reproduced, because the walk's
+       back only as far as the callee's own exit — ⚠ V is not reproduced, because the walk's
        own ADC sets it in the transliteration and the C core has no carry chain to set it from.
        The fixture declares X,Y for exactly that reason. */
     EdgeOffFlags e = edge_x_offscreen_core(r->x);
@@ -19970,10 +19471,10 @@ void hook_horizon_clamp(HookRegs *r)
     r->a = e.a; r->v = e.v; r->c = e.c; r->n = e.n; r->z = e.z;
 }
 
-/* $57A1 (Brands Hatch) — THE STEERING RESPONSE CURVE, RESHAPED FOR THIS CIRCUIT.  Patched in at
+/* $57A1 (Brands Hatch) — the steering response curve, reshaped for this circuit.  Patched in at
    $1593 (`make track-patch`: $1594 $00->$A1, $1595 $0C->$57), which is read_driving_controls'
-   `JSR mul8` on the JOYSTICK path — the squaring of the steering axis.  Silverstone squares the
-   reading and stops; Brands Hatch first SCALES it, then squares, then doubles:
+   `JSR mul8` on the joystick path, the squaring of the steering axis.  Silverstone squares the
+   reading and stops; Brands Hatch first scales it, then squares, then doubles:
 
        k     = $B5, or $F0 while the player is on segment $20
        a     = high(k * reading)
@@ -19987,9 +19488,9 @@ void hook_horizon_clamp(HookRegs *r)
    Exit ABI: A = the product's high byte and math_lo its low, exactly as the mul8 it displaced;
    math_hi is left holding `a` (the $57B2 store), Y the scale k, and N/Z/C the closing ROL's.
    V is the last shift-and-add's, which is why the multiplies go through mul8_noinit_core — it
-   returns that one escaping bit, and a zero multiplier must NOT overwrite the caller's V. */
+   returns that one escaping bit, and a zero multiplier must not overwrite the caller's V. */
 /* The curve itself, shared by every circuit that patches $1593: scale the reading by k, square
-   the scaled value, double the product.  Only the CHOICE of k differs per circuit. */
+   the scaled value, double the product.  Only the choice of k differs per circuit. */
 static void steer_response_curve(HookRegs *r, uint8_t k)
 {
     r->y = k;                                          /* the LDY, still live at the exit */
@@ -20018,7 +19519,7 @@ void hook_steer_response_brands(HookRegs *r)
     steer_response_curve(r, mem[MEM_car_segment + player_car] == 0x20u ? 0xF0u : 0xB5u);
 }
 
-/* $57A1 (Oulton Park) — THE SAME STEERING RESPONSE CURVE, THREE SEGMENTS SINGLED OUT.  Patched
+/* $57A1 (Oulton Park) — the same steering response curve, three segments singled out.  Patched
    over the same `JSR mul8` at $1593, and its tail is Brands Hatch's byte for byte (Oulton spells
    it as a JMP to a shared $53EF instead of inlining it), so both run steer_response_curve.  What
    differs is only which segments get which scale:
@@ -20027,7 +19528,7 @@ void hook_steer_response_brands(HookRegs *r)
        k = $BE on segments $B8/$B0   — 0.74
        k = $B5 everywhere else       — 0.71, the same soft default as Brands Hatch
 
-   ⚠ The three compares run in sequence on the SAME loaded byte and the $B8/$B0 test is not
+   ⚠ The three compares run in sequence on the same loaded byte and the $B8/$B0 test is not
    skipped when the $48 test hits, so the last match would win — but a byte cannot equal both,
    which is why this reads as three independent tests rather than a chain.
 
@@ -20046,13 +19547,13 @@ void hook_steer_response_oulton(HookRegs *r)
     steer_response_curve(r, k);                               /* $57B8 TYA / mul8 / JMP $53EF */
 }
 
-/* $57A1 (Snetterton) — THE SAME STEERING RESPONSE CURVE, AND A GRIP-LOSS PARDON.  The third
+/* $57A1 (Snetterton) — the same steering response curve, and a grip-loss pardon.  The third
    body patched over `JSR mul8` at $1593, and the third to end in the shared scale-square-double
    (Snetterton spells the curve at $53CF; Brands inlines it, Oulton JMPs to its own $53EF copy).
    Two things make this one different:
 
      - four scales instead of three:  $DC on segment $28, $C3 on $A0 and $A8, $B5 elsewhere;
-     - on two of those segments it LSRs section_jump_history, which is a SIDE EFFECT, not part
+     - on two of those segments it LSRs section_jump_history, a side effect, not part
        of the curve at all.  That byte is a one-bit-per-frame record of "the player jumped
        sideways", and update_grip_limits' `BIT $62FB / BPL` ($4C1C) reads only bit 7 — so the
        shift pardons the pending grip loss.  Snetterton is doing it where its own geometry makes
@@ -20062,8 +19563,8 @@ void hook_steer_response_oulton(HookRegs *r)
    at least 2 units into the segment (car_seg_offset >= 2), on $A8 unconditionally.  Segment $A0
    takes the same $C3 scale as $A8 with no pardon at all.
 
-   Exit ABI: steer_response_curve's.  ⚠ The LSR's C does NOT escape — the curve's closing ROL
-   overwrites it — and its N/Z are overwritten by the TYA; the WRITE is the whole point. */
+   Exit ABI: steer_response_curve's.  ⚠ The LSR's C does not escape — the curve's closing ROL
+   overwrites it — and its N/Z are overwritten by the TYA; the write is what matters. */
 void hook_steer_response_snetter(HookRegs *r)
 {
     uint8_t car     = player_car;                          /* $57A1 LDY player_car */
@@ -20089,29 +19590,29 @@ void hook_steer_response_snetter(HookRegs *r)
     steer_response_curve(r, k);                               /* $53CF TYA / mul8 / mul8 / ASL / ROL */
 }
 
-/* $5779 (Donington Park) — THE FOURTH STEERING RESPONSE CURVE, AND THE WIDEST PARDON.  Donington
+/* $5779 (Donington Park) — the fourth steering response curve, and the widest pardon.  Donington
    is the odd one of the family: `make track-patch` shows it retargeting $1593 to $5779, not the
    $57A1 the other three use, and its curve lives at $53DC.  The curve is the same
    scale-square-double; everything before it is Donington's own.
 
    Four scales:  $D7 on segment $10, $CD on $18, $BC on $30 and $28, $B5 everywhere else.
 
-   And FIVE segments pardon a pending grip loss (`LSR section_jump_history`, the bit-7 record
+   And five segments pardon a pending grip loss (`LSR section_jump_history`, the bit-7 record
    update_grip_limits reads at $4C1C — see hook_steer_response_snetter above), three of them only
    once the car is far enough into the segment:
 
        $10   when car_seg_offset >  1     ($5785 CMP #$02 / BCC)
        $58   when car_seg_offset >  $27   ($57A0 CMP car_seg_offset,Y / BCC — the sense is
-       $A8   when car_seg_offset >  $21    reversed here: the THRESHOLD is in A, so the branch
+       $A8   when car_seg_offset >  $21    reversed here: the threshold is in A, so the branch
                                            taken on carry-clear is the one that pardons)
        $60   always
        $B0   always
 
    ⚠ The $10 arm tests `offset >= 2` and the $58/$A8 arms test `offset > threshold`, because the
-   compare operands are swapped between them — not a transcription slip.
+   compare operands are swapped between them.
 
-   ⚠ $5791 PHA / $57B2 PLA park the segment on the stack across the pardon tests.  That is a REAL
-   STORE a memory differential sees (docs/validation-harness.md — the same trap as $01FF in
+   ⚠ $5791 PHA / $57B2 PLA park the segment on the stack across the pardon tests.  That is a real
+   store a memory differential sees (docs/validation-harness.md — the same trap as $01FF in
    hook_scale_entry_by_gradient), so the twin writes the byte; S comes back where it started.
 
    Exit ABI: steer_response_curve's. */
@@ -20130,7 +19631,7 @@ void hook_steer_response_doning(HookRegs *r)
         uint8_t pardon;
 
         /* $5791 PHA parks the segment across the compares; `segment` already is it, and the
-           residue write is gone under THE RESULTS RULE (the $57B2 PLA below pops it). */
+           residue write is gone under the results rule (the $57B2 PLA below pops it). */
 
         if (segment == 0x58u)                              /* $5792 / $5796 LDA #$27 */
             pardon = (uint8_t)(offset > 0x27u);
@@ -20153,15 +19654,15 @@ void hook_steer_response_doning(HookRegs *r)
     steer_response_curve(r, k);                               /* $53DC TYA / mul8 / mul8 / ASL / ROL */
 }
 
-/* $59E9 (Brands) / $59C9 (Donington) / $59E7 (Oulton) / $59C7 (Snetterton) — THE CAMERA SCALE
-   TAKES THE ROAD SPEED WHEN THE CAR IS SETTLED.  One body, four circuits, byte for byte (only
+/* $59E9 (Brands) / $59C9 (Donington) / $59E7 (Oulton) / $59C7 (Snetterton) — the camera scale
+   takes the road speed when the car is settled.  One body, four circuits, byte for byte (only
    the address differs, which is just where each file's hook region happens to sit).  It is
-   installed over update_camera_and_height's FIRST doubling at $45CB — `ASL A / ROL
+   installed over update_camera_and_height's first doubling at $45CB — `ASL A / ROL
    shared_temp_77`, three bytes replaced by one `JSR` (`disasm/track_hooks.txt`: $45CB-$45CD
    $0A->$20, $26->the entry low byte, $77->$59), so the hook owes the caller that doubling and
    $45CE's second ASL/ROL then runs on what it leaves.
 
-   What it adds: when the byte $45C9 just stored in car_height is ZERO — the settled arm, as
+   What it adds: when the byte $45C9 just stored in car_height is zero — the settled arm, as
    against the $01 and $7F the other two paths store — the term being doubled is replaced by
    the road speed scaled by the track's gradient at Y, and a negative product borrows a unit
    from shared_temp_77.  So on these four circuits a settled car's camera scale follows how fast
@@ -20177,7 +19678,7 @@ void hook_camera_scale_by_gradient(HookRegs *r)
     uint8_t a = r->a;
 
     if (r->z) {                                        /* $59E9 BNE — the settled arm only */
-        /* The SHIM, not the core: this callee's exit V escapes the hook (its negative arm
+        /* The shim, not the core: this callee's exit V escapes the hook (its negative arm
            clears V, its positive arm passes the caller's through) and $45D8's own
            scale_by_track_gradient reads it, so the one place that ABI is written down should
            be the one place it is computed. */
@@ -20201,24 +19702,24 @@ void hook_camera_scale_by_gradient(HookRegs *r)
     r->z           = (uint8_t)(shared_temp_77 == 0u);
 }
 
-/* $59ED (Donington) / $59E8 (Snetterton) — THE SURFACE CAP INHERITS THE LINE BELOW.  One body,
+/* $59ED (Donington) / $59E8 (Snetterton) — the surface cap inherits the line below.  One body,
    two circuits, byte for byte; Brands and Oulton leave this site alone.  It is installed over
    span_cap_line's `LDA view_line_surface,Y` at $2F23 (`disasm/track_hooks.txt`: $2F23-$2F25
    $B9->$20), the descending walk's "is this scan line still unclassified?" test — the one
    operation in the cap whose answer leaves the routine, through Z.
 
-   Silverstone answers from the line itself.  These two look first at the line BELOW (the one
+   Silverstone answers from the line itself.  These two look first at the line below (the one
    the $2F22 DEY just stepped off): if its class is exactly $8B, the answer is "occupied"
    whatever this line holds, so the cap is not stamped here at all.  Any other value and the
    test falls back to reading this line, exactly as the displaced LDA did.
 
-   $8B is a specific CLASS, not a mask, and it decomposes exactly — interp_edge composes the
+   $8B is a specific class, not a mask, and it decomposes exactly — interp_edge composes the
    byte itself ($2C46-$2C57, `code | $80 | math_lo`), so: bit 7 is span_cap_surface_fill's
-   marker (the descending arm, taken when span_swapped is negative), bits 3-5 are the PASS
-   NUMBER and $8B has 001 there, and the low two bits are the style's FILL COLOUR, here 3.
+   marker (the descending arm, taken when span_swapped is negative), bits 3-5 are the pass
+   number and $8B has 001 there, and the low two bits are the style's fill colour, here 3.
    So the line the two circuits refuse to stamp over is "pass 1's fill-capped span, fill
    colour 3" — and that low-bits-both-set case is the same predicate interp_edge
-   uses one page earlier to decide a span needs END MARKERS instead of a solid run, which is why
+   uses one page earlier to decide a span needs end markers instead of a solid run, which is why
    span_cap_line's own flatten at $2F35 is the one arm that leaves the byte untouched.
 
    Entry ABI (the seam at $2F19-$2F22, reproduced by span_cap_line_slot_z): A = span_swapped,
@@ -20246,27 +19747,25 @@ void hook_span_cap_slot_test(HookRegs *r)
     r->z = (uint8_t)(a == 0u);
 }
 
-/* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
-   THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
+/* $56C8 (Snetterton) / $56C4 (the Nurburgring) — the same monotonic-horizon clamp, released
+   through a yaw guard.  The clamp walk is byte-identical to the other three circuits' $56C8
    (these two files' whole hook region is shifted, which is the only reason the Nurburgring's
    copy sits four bytes lower), so both reuse hook_horizon_clamp_core outright.  What differs is
    the exit: where Brands/Donington/Oulton fall straight into `JMP edge_x_offscreen`, these two
    jump to a guard of their own at $53DC / $53E0 — code that exists in no other circuit's file.
 
    The guard: unless the section is turning (|section_yaw| >= $19) or the view is pitched up
-   (view_pitch_offset >= 0), it does NOT push the point off screen — it HALVES shared_temp_76 and
+   (view_pitch_offset >= 0), it does not push the point off screen: it halves shared_temp_76 and
    returns, so on a near-straight section seen from below the horizon these two circuits keep the
    point and narrow it instead of discarding it.  That is how their long flat sight lines stay
    drawn.  Every other case is the engine's own edge_x_offscreen.
 
-   ⚠ AND THE TWO GUARDS ARE NOT THE SAME GUARD.  The Nurburgring's tails into a further test at
-   $5655 — the keep only applies while the player is before segment $30; from there on it goes
-   off screen like everyone else.  A single twin written from Snetterton's body passes on
-   Snetterton and diverges on the Nurburgring for exactly the cases the extra test rejects, which
-   is what the differential caught.  Hence the two entry points below.
+   ⚠ The two guards differ.  The Nurburgring's tails into a further test at $5655: the keep
+   applies only while the player is before segment $30, and from there on the point goes off
+   screen like everyone else's.  Hence the two entry points below.
 
    Entry ABI is the $1946 seam's, exactly as for hook_horizon_clamp.  Exit: X and Y, and mem[].
-   ⚠ V IS DEAD AND DELIBERATELY NOT MODELLED — both seam sites discard it ($1949 `LDY $1F / JMP
+   ⚠ V is dead and not modelled: both seam sites discard it ($1949 `LDY $1F / JMP
    $1977` reloads Y and reads no flag), and reproducing it would mean threading the clamp loop's
    last ADC through the C core for a bit nothing reads.  A and N/Z/C are set anyway because they
    cost nothing here; the fixture declares X,Y. */
@@ -20307,7 +19806,7 @@ void hook_horizon_clamp_guarded_at(HookRegs *r, int segmentGated)
 void hook_horizon_clamp_guarded_snetter(HookRegs *r) { hook_horizon_clamp_guarded_at(r, 0); }
 void hook_horizon_clamp_guarded_nurburg(HookRegs *r) { hook_horizon_clamp_guarded_at(r, 1); }
 
-/* $56AF — RECORD THIS POINT AS THE HORIZON, BUT ONLY CLOSE TO THE CAR (all four expansion
+/* $56AF — record this point as the horizon, but only close to the car (all four expansion
    circuits; byte-identical in each).  Patched in at $261A, over emit_edge_width_offset's own
    `STA horizon_extent / STY horizon_index` pair — and as a JMP, so the hook's RTS returns from
    emit_edge_width_offset itself and the stores are the only thing it replaces.
@@ -20332,14 +19831,14 @@ void hook_record_horizon(HookRegs *r)
 {
     r->c = hook_record_horizon_core(r->a, r->y);
 
-    /* ⚠ N and Z are NOT the compare's.  The 6502 saves A across the compare with PHA/PLA, and
+    /* ⚠ N and Z are not the compare's.  The 6502 saves A across the compare with PHA/PLA, and
        the PLA re-sets them from A — so the flags this hook hands emit_edge_width_offset are
-       the carry from the section count and the sign/zero of the LINE. */
+       the carry from the section count and the sign/zero of the line. */
     r->n = (uint8_t)((r->a >> 7) & 1u);
     r->z = (uint8_t)(r->a == 0u);
 }
 
-/* $56BC — TEN SECTIONS IS ENOUGH SUBDIVIDING (Brands Hatch, Donington, Oulton, Snetterton;
+/* $56BC — ten sections is enough subdividing (Brands Hatch, Donington, Oulton, Snetterton;
    byte-identical in all four).  Patched in at $248B, over road_edge_walk's `BCS $24B8` —
    Silverstone's "this point is off the view axis and the one before it was too, so the side is
    done".  The circuits keep that exit only once the walk already holds ten sections; below
@@ -20361,8 +19860,8 @@ void hook_edge_walk_limit(HookRegs *r)
             return;                                     /* $56C4 — stop, as Silverstone would */
     }
 
-    /* $56C5 — back into the engine's own walk.  The SHIM, not the _native split, and this
-       one is NOT the usual "waste on the ABI path" call: hook_edge_walk_limit is ITSELF a
+    /* $56C5 — back into the engine's own walk.  The shim, not the _native split, and this
+       one is not the usual "waste on the ABI path" call: hook_edge_walk_limit is itself a
        6502-ABI shim, so the harness enters the walk through here with mem[] randomised and the
        relocated wide values stale.  The _native entry skips view_origin/car_heading/
        edge_nearest's marshal-INs, which is sound only for a caller that already holds them —
@@ -20370,7 +19869,7 @@ void hook_edge_walk_limit(HookRegs *r)
     r->x = road_edge_walk_resume_from(r->x);            /* the walk owns the exit X */
 }
 
-/* $55BD — STEP THE WALK BACK, UNLESS A SECTION IS ALREADY QUEUED (Brands Hatch, Donington,
+/* $55BD — step the walk back, unless a section is already queued (Brands Hatch, Donington,
    Oulton, Snetterton).  Patched in at $24F2, over advance_player_section's
    `JSR rebuild_walk_backward`: the circuits gate that call on section_quad_flags' bit 7,
    because the quarter-turn shift register wanting another section built means the walk is
@@ -20391,8 +19890,8 @@ void hook_walk_back_gate(HookRegs *r)
     rebuild_walk_backward_core();                       /* $55C1 */
 }
 
-/* $5772 — MERGE THE TWO ROAD EDGES AT THE VANISHING POINT (Brands Hatch, Oulton Park,
-   Snetterton).  Patched in at $2538 over build_track_geometry's SECOND horizon store
+/* $5772 — merge the two road edges at the vanishing point (Brands Hatch, Oulton Park,
+   Snetterton).  Patched in at $2538 over build_track_geometry's second horizon store
    (`STA edge_y+$28,Y`), so the store is the hook's own first act.
    ⚠ Donington's body at the same address does only that store and returns
    (hook_horizon_store_only), and the Nurburgring's adds an edge_style-clearing arm below
@@ -20400,12 +19899,12 @@ void hook_walk_back_gate(HookRegs *r)
 
    What it computes, after caching the horizon's line as plot_object's object ceiling (the
    `LDX #imm` operand at $1FE9, which each circuit rewrote from `LDX horizon_extent`): over
-   the first nine edge points, wherever the near side's azimuth has fallen BEHIND the far
+   the first nine edge points, wherever the near side's azimuth has fallen behind the far
    side's, the far side is pulled back onto it, and the far side's scan line is copied from
    the near side's throughout.  That is what stops the two road edges from crossing over as
    they converge on the horizon.
 
-   ⚠ The walk runs UPWARD from the entry point and the compare is at the bottom, so an entry
+   ⚠ The walk runs upward from the entry point and the compare is at the bottom, so an entry
    point past 8 runs the body exactly once at that index — the shape that made the $2538
    register handover matter (see the seam's note at build_track_geometry_core).
 
@@ -20443,7 +19942,7 @@ HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
         line = mem[MEM_edge_y + y];                     /* $5793 — and the same line both sides */
         mem[MEM_edge_y + EDGE_HALF + y] = line;
 
-        /* $5799-$57A2, the Nurburgring's alone: over the six points NEAREST the horizon, both
+        /* $5799-$57A2, the Nurburgring's alone: over the six points nearest the horizon, both
            sides' edge_style is wiped — style 0 and, with bit 7 clear, "not yet covered", so
            draw_road's span passes re-cover them from scratch. */
         if (clearStyleBelow6 && y < 0x06u) {
@@ -20474,14 +19973,14 @@ void hook_merge_horizon_edges_at(HookRegs *r, int clearStyleBelow6)
 
 void hook_merge_horizon_edges(HookRegs *r)         { hook_merge_horizon_edges_at(r, 0); }
 
-/* $5772 (the Nurburgring) — the same merge, and it also WIPES THE STYLE of the six points
-   nearest the horizon.  ⚠ The clear sits INSIDE the loop, so it is "every merged point below
+/* $5772 (the Nurburgring) — the same merge, and it also wipes the style of the six points
+   nearest the horizon.  ⚠ The clear sits inside the loop, so it is "every merged point below
    index 6", not a separate pass — which is why it shares the core rather than running after it. */
 void hook_merge_horizon_edges_nurburg(HookRegs *r) { hook_merge_horizon_edges_at(r, 1); }
 
-/* $5772 (Donington Park) — THE DISPLACED STORE AND NOTHING ELSE.  ⚠ Donington's body is the
+/* $5772 (Donington Park) — the displaced store and nothing else.  ⚠ Donington's body is the
    first two instructions of the shared merge and then an RTS: the same address, the same
-   opening bytes, a DIFFERENT routine — which is the trap in grouping hook bodies by normalised
+   opening bytes, a different routine — which is the trap in grouping hook bodies by normalised
    text (docs/faithfulness-seam.md).  So $2538's store happens and the edges are never merged;
    Donington's geometry evidently never crosses them over at the vanishing point.
 
@@ -20493,17 +19992,16 @@ void hook_horizon_store_only(HookRegs *r)
     mem[MEM_edge_y + EDGE_HALF + r->y] = r->a;        /* $5775 — the displaced store */
 }
 
-/* $557F / $5582 — STEP THE TRACK GENERATOR'S CURSOR ONE PLACE ALONG THE DIRECTION OF TRAVEL.
+/* $557F / $5582 — step the track generator's cursor one place along the direction of travel.
    Every expansion circuit has this body, and the only difference between the five copies is
-   WHICH state block it works in: Brands Hatch, Oulton Park and Snetterton keep the cursor at
+   which state block it works in: Brands Hatch, Oulton Park and Snetterton keep the cursor at
    $53F8 (count $53F9, offset $53FD), Donington and the Nurburgring two bytes further up at
    $53FA (count $53FB, offset $53FF).  Same code, same run-length table at $5728, so one core
    takes the block base and the two shims name the halves.  ⚠ Those cells are per-circuit
-   variables whose SLOT ASSIGNMENT differs between circuits — $53FA is this cursor on Donington
-   and the Nurburgring, the generator STATE BLOCK on the other three, and a 24-bit coordinate
-   accumulator on Brands Hatch — so no address here can carry one global reading, and the core
-   takes the base as an argument for that reason and not for tidiness.  Each address now
-   carries a symbols.csv row that DECLARES every tenancy (gen_cursor_place_a/_b,
+   variables whose slot assignment differs between circuits ($53FA is this cursor on Donington
+   and the Nurburgring, the generator state block on the other three, and a 24-bit coordinate
+   accumulator on Brands Hatch), so no address here has one global reading and the core takes
+   the base as an argument.  Each address has a symbols.csv row declaring every tenancy (gen_cursor_place_a/_b,
    gen_cursor_count_a/_b, gen_cursor_offset_a/_b, gen_state_heading_b, gen_cursor_runs), and
    records the race-time tenant, which for $53F8-$53FF is the last eight entries of
    sign_offset_1.
@@ -20515,12 +20013,12 @@ void hook_horizon_store_only(HookRegs *r)
    `track_direction`'s bit 7 is the sense; $557F is the same thing with the engine's own
    segment-direction step in front of it.
 
-   Exit ABI: A and Y are the two values just stored, X passes through, and the FLAGS ARE DEAD —
+   Exit ABI: A and Y are the two values just stored, X passes through, and the flags are dead:
    both call sites are inside circuit code ($54F1's `JSR $5582`, whose next act is
    `LDA section_cursor`, and $5A1B's `JSR $557F / JMP $5472`, whose is `LDA $53FA`), and no
    engine patch site reaches either entry (make track-patch). */
 /* MEM_gen_cursor_runs ($5728): per place, how many offsets it holds.  A per-circuit table,
-   and GENERATION-time only: at race time this page is the across-track normal ($5700). */
+   and generation-time only: at race time this page is the across-track normal ($5700). */
 
 void hook_step_gen_cursor_core(uint16_t block)
 {
@@ -20578,7 +20076,7 @@ void hook_step_dir_gen_cursor_a(HookRegs *r) { hook_step_dir_gen_cursor_at(r, ME
 void hook_step_dir_gen_cursor_b(HookRegs *r) { hook_step_dir_gen_cursor_at(r, MEM_gen_cursor_place_b); }
 
 /* $54F1 (Brands Hatch) / $54EF (Donington, Oulton, Snetterton) / $54EB (the Nurburgring) — the
-   SECTION-CURSOR ADVANCE, installed over the engine's own `CLC / ADC #$03` at $12FB inside
+   section-cursor advance, installed over the engine's own `CLC / ADC #$03` at $12FB inside
    build_road_section (make track-patch: $12FB $18->$20, $12FC $69->$F1/$EF/$EB, $12FD $03->$54).
 
    What it computes: the next section byte cursor, section_cursor + 3, exactly as the unpatched
@@ -20591,7 +20089,7 @@ void hook_step_dir_gen_cursor_b(HookRegs *r) { hook_step_dir_gen_cursor_at(r, ME
    same split $5582 has.  One 6502 body per circuit, structurally identical in all five: only the
    generated self-call's target address differs.
 
-   Exit ABI: A is the new cursor and it is the ONLY thing the call site consumes —
+   Exit ABI: A is the new cursor and the only thing the call site consumes:
    build_road_section's seam reads `cpu.A` and nothing else, and the engine's next act at $12FE is
    `CMP #$78`, which overwrites N/V/Z/C.  Y is nevertheless replayed exactly (the generator step
    leaves the place index in it, and it passes through when the gate is closed) and so are the
@@ -20622,13 +20120,13 @@ static void hook_next_section_cursor_at(HookRegs *r, uint16_t block)
 void hook_next_section_cursor_a(HookRegs *r) { hook_next_section_cursor_at(r, MEM_gen_cursor_place_a); }
 void hook_next_section_cursor_b(HookRegs *r) { hook_next_section_cursor_at(r, MEM_gen_cursor_place_b); }
 
-/* $5472 — THE GENERATOR'S DIRECTION-VECTOR STORE, one 6502 body in all five circuits (only the
+/* $5472 — the generator's direction-vector store, one 6502 body in all five circuits (only the
    self-call's target and the state-block base differ).  Reached from $55C4 (which brackets it
    with its own X save/restore) and, as a tail call, from $5A1B.
 
    The circuit's running 16-bit heading, held in the generator state block, becomes a direction
    vector written into the four per-position tables at the current segment_dir_index.  The
-   heading's top nine bits split into an OCTANT (bits 6..8) and a position INSIDE it (bits 0..5);
+   heading's top nine bits split into an octant (bits 6..8) and a position inside it (bits 0..5);
    the octant picks which of the quarter-turn table pair at $57BF/$58BF supplies which component
    and the signs both carry, and odd octants read the position mirrored ($40 - i) because the
    tables only cover half a quadrant.  Then:
@@ -20640,21 +20138,19 @@ void hook_next_section_cursor_b(HookRegs *r) { hook_next_section_cursor_at(r, ME
    The $5700/$5800 pair is the across-track normal the race reads (symbols.csv calls that its
    second tenant, over ModifyGameCode's address); this is the code that writes it.
 
-   THE SIGN GOES THROUGH THE 6502 STACK, twice.  Both scalings are `PHP / JMP $461B` —
+   The sign goes through the 6502 stack, twice.  Both scalings are `PHP / JMP $461B` —
    scale_by_track_gradient's tail, whose $4621 PLP re-signs the product's high byte from the P
    its caller stacked.  So the macro stays at exactly those two points (hook_scale_by_gradient
    below), and the C and V standing at each PHP are part of the contract: they come off the
    octant's compare chain, and the core returns them rather than hiding them.
 
-   ⚠ FIVE SHIMS, not two: the circuits differ in BOTH parameters, named in src/platform/track.h
-   (TRACK_GEN_ARGS(BRANDS) expands to the pair).  The state block (TRACK_GEN_STATE_*) is $53FA on
+   ⚠ Five shims, not two: the circuits differ in both parameters, named in src/platform/track.h
+   (TRACK_GEN_ARGS(brands) expands to the pair).  The state block (TRACK_GEN_STATE_*) is $53FA on
    Brands Hatch, Oulton and Snetterton, $53FC on Donington and the Nurburgring — bytes +0/+1 the
    heading, +2 the gradient; the gradient multiplier (TRACK_GEN_VSCALE_*) is $88, $80, $84, $86,
-   $9A respectively and is the circuit's overall VERTICAL SCALE.  Reading that constant off one
-   circuit and sharing it is the mistake this hook seam invites, and the byte differential caught
-   it on the second circuit's first case.
+   $9A respectively and is the circuit's overall vertical scale, so it must not be shared.
 
-   ⚠ X IS CLOBBERED (the $5493 TAX), and the engine site that reaches $5A1B — $1289's patched
+   ⚠ X is clobbered (the $5493 TAX), and the engine site that reaches $5A1B — $1289's patched
    `JSR $5A1B` — still has X live at $129C.  $55C4's own save/restore covers its path; the $5A1B
    path is the circuits' business and is reproduced, not corrected. */
 /* The 65-entry octant sine/cosine table of radius 120 that the generator resolves a heading
@@ -20684,7 +20180,7 @@ GenDirVector hook_gen_dir_vector_core(uint16_t block)
        negates as `LDA #0 / SBC`, which agrees with negate8's `EOR #$FF / CLC / ADC #1` in
        result AND in C and V (C set only for 0, V only for $80 — same in both forms). */
     d.c = (uint8_t)(octant >= 4u);                              /* $54A9 CMP #$04 */
-    /* V does NOT come from entry: the swap test at $5496 is a real `CLC / ADC #$01` on the octant,
+    /* V does not come from entry: the swap test at $5496 is a real `CLC / ADC #$01` on the octant,
        and an ADC writes V.  The octant is 0..7 and the carry is clear, so that add can never
        overflow — V is 0 here on every path, and only the negate arms below can set it again. */
     d.v = 0u;
@@ -20708,8 +20204,8 @@ GenDirVector hook_gen_dir_vector_core(uint16_t block)
    bytes of it: `PHP / JMP $461B`.  The macro stays because a flag genuinely escapes: the P
    this pushes is what scale_by_track_gradient_tail's $4621 PLP pulls to re-sign the product, and
    the pushed byte lands in mem[] where the differential can see it. */
-/* ⚠ `g` is threaded, not local: the caller scales TWICE and the second `PHP` stacks the C and V
-   the FIRST call's tail left standing, so the flag file has to survive between them.  N and Z are
+/* ⚠ `g` is threaded, not local: the caller scales twice and the second `PHP` stacks the C and V
+   the first call's tail left standing, so the flag file has to survive between them.  N and Z are
    re-derived from the value each time, which is what the 6502's own `LDA` does at both sites. */
 static uint8_t hook_scale_by_gradient(HookRegs *g, uint8_t value)
 {
@@ -20732,7 +20228,7 @@ static void hook_gen_dir_vector_at(HookRegs *r, uint16_t block, uint8_t scale)
     math_hi = scale;                                       /* $54C7 — both scalings' multiplier */
 
     mem[MEM_track_dir_0 + dir] = d.compA;                      /* $54C9-$54CB */
-    /* The octant chain's closing C and V reach the scaler in a LOCAL register file — they are
+    /* The octant chain's closing C and V reach the scaler in a local register file — they are
        what its `PHP` stacks, and that pushed byte is real memory the differential compares, but
        nothing here has to read them back out of ambient `cpu`. */
     HookRegs g = *r;
@@ -20740,7 +20236,7 @@ static void hook_gen_dir_vector_at(HookRegs *r, uint16_t block, uint8_t scale)
     mem[MEM_track_normal_y + dir] = hook_scale_by_gradient(&g, d.compA);   /* $54CE-$54D1 */
 
     mem[MEM_track_dir_2 + dir] = d.compB;                      /* $54D4-$54D6 */
-    /* ⚠ The second scaling's `PHP` stacks the flags the FIRST one's tail left, NOT the octant
+    /* ⚠ The second scaling's `PHP` stacks the flags the first one's tail left, not the octant
        chain's — $461B closes with mul8 and, on the negative arm, the $4622 abs8's negate — so `g`
        carries them across.  Passing the octant pair to both calls fails ~12% of every circuit's
        cases, which is how this was caught. */
@@ -20765,13 +20261,13 @@ void hook_gen_dir_vector_snetter(HookRegs *r) { hook_gen_dir_vector_at(r, TRACK_
 void hook_gen_dir_vector_doning(HookRegs *r)  { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(DONING)); }
 void hook_gen_dir_vector_nurburg(HookRegs *r) { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(NURBURG)); }
 
-/* $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR
-   Brands Hatch, Donington, Oulton and Snetterton, and the Nurburgring at $55BD — the SAME body
+/* $55C4  hook_gen_step — one step of the track generator
+   Brands Hatch, Donington, Oulton and Snetterton, and the Nurburgring at $55BD — the same body
    seven bytes lower, not the walk-back gate the other four keep at that address.  Reached from
    $5672 and from $5772.
 
-   The generator carries a running HEADING (16-bit) and a running GRADIENT (8-bit) in its state
-   block, and this routine folds ONE segment's turn and climb into them before regenerating the
+   The generator carries a running heading (16-bit) and a running gradient (8-bit) in its state
+   block, and this routine folds one segment's turn and climb into them before regenerating the
    direction vector for the new heading:
 
      turn   = $5428[place]:$5528[place]   the segment's 16-bit heading delta
@@ -20779,17 +20275,17 @@ void hook_gen_dir_vector_nurburg(HookRegs *r) { hook_gen_dir_vector_at(r, TRACK_
      both are signed by track_direction bit 7 — driven the other way round the circuit, every
      turn and every climb reverses — and then added into block+0/+1 and block+2.
 
-   The whole fold is SKIPPED when the place cursor has bit 7 set (the generator has run out of
+   The whole fold is skipped when the place cursor has bit 7 set (the generator has run out of
    places and the heading is final); $5472 still runs, so the vector is regenerated either way.
 
    ⚠ The per-circuit shift again: the place cursor is block-2, i.e. $53F8 on Brands Hatch, Oulton
    and Snetterton and $53FA on Donington, exactly as $5472's block shifts.  Both parameters ride
    through to hook_gen_dir_vector_at, gradient multiplier included.
 
-   ⚠ X is SAVED AND RESTORED here (saved_slot_index), which is what covers $5472's TAX clobber on
+   ⚠ X is saved and restored here (saved_slot_index), which is what covers $5472's TAX clobber on
    this path.  The exit N/Z come from that restoring LDX — from X, not from the gradient $5472 left
    in A — and C/V are whatever $5472 exits with. */
-/* The circuit's own SOURCE geometry, one entry per place, and a generation-time TENANCY of
+/* The circuit's own source geometry, one entry per place, and a generation-time tenancy of
    the three race-time direction pages: from index $28 up they hold the track file's per-segment
    deltas, below it the basis the generator writes.  symbols.csv carries the split on all six
    rows. */
@@ -20835,7 +20331,7 @@ void hook_gen_step_snetter(HookRegs *r) { hook_gen_step_at(r, TRACK_GEN_ARGS(SNE
 void hook_gen_step_doning(HookRegs *r)  { hook_gen_step_at(r, TRACK_GEN_ARGS(DONING)); }
 void hook_gen_step_nurburg(HookRegs *r) { hook_gen_step_at(r, TRACK_GEN_ARGS(NURBURG)); }   /* at $55BD */
 
-/* $5572  hook_seg_advance — ADVANCE THE GENERATOR ONE SEGMENT, IF THIS IS A BOUNDARY
+/* $5572  hook_seg_advance — advance the generator one segment, if this is a boundary
    All five expansion circuits, identical in shape.  cur_segment_flags bit 6 is "this build step
    crossed a segment boundary"; when it did, step the direction index on to the next entry and run
    one generator step to fill it in.  When it did not, the routine is a no-op that returns A = 0.
@@ -20861,14 +20357,14 @@ void hook_seg_advance_snetter(HookRegs *r) { hook_seg_advance_at(r, TRACK_GEN_AR
 void hook_seg_advance_doning(HookRegs *r)  { hook_seg_advance_at(r, TRACK_GEN_ARGS(DONING)); }
 void hook_seg_advance_nurburg(HookRegs *r) { hook_seg_advance_at(r, TRACK_GEN_ARGS(NURBURG)); }
 
-/* $5672  hook_gen_seed — SEED THE GENERATOR AT A SECTION BOUNDARY
+/* $5672  hook_gen_seed — seed the generator at a section boundary
    All five expansion circuits, one body, block-shifted.  Entered with Y = the segment index the
    caller is about to build; it (re)starts the track generator from that segment's own recorded
    state instead of letting the running heading drift on from wherever the last walk left it.
 
    Y indexes two different granularities and that is the whole shape of the routine:
-     - at FULL resolution, $5905[Y] is the direction-basis entry this segment uses;
-     - at one-eighth resolution (Y >> 3 — a SECTION of eight segments), four parallel tables hold
+     - at full resolution, $5905[Y] is the direction-basis entry this segment uses;
+     - at one-eighth resolution (Y >> 3, a section of eight segments), four parallel tables hold
        the generator's saved state at the start of that section:
            $5846[s] : heading low        -> block+0
            $5864[s] : heading high       -> block+1
@@ -20878,12 +20374,12 @@ void hook_seg_advance_nurburg(HookRegs *r) { hook_seg_advance_at(r, TRACK_GEN_AR
    as bit 7 (the "places exhausted" flag hook_gen_step tests), and the bit that falls out — v's
    bit 1 — becomes bit 7 of the byte written to $23B3.
 
-   ⚠ $23B3 IS SELF-MODIFYING CODE, PATCHED HERE AT RACE TIME.  `LDA #$0E / ROR` yields $07 or
+   ⚠ $23B3 is self-modifying code, patched here at race time.  `LDA #$0E / ROR` yields $07 or
    $87, and that byte is the immediate of `$23B2 LDA #$07` inside road_edge_start — the cap that
    stops a stale horizon surviving into this frame.  With bit 7 set the CMP below it never takes
-   and the clamp is OFF, which is the common case on all five circuits.  This is the only runtime
+   and the clamp is off, which is the common case on all five circuits.  This is the only runtime
    SMC site the hooks own besides $1FEA, and `make track-smc` cannot see either because it replays
-   ModifyGameCode, the INSTALLER.  docs/static-map.md §Self-modifying code.
+   ModifyGameCode, the installer.  docs/static-map.md §Self-modifying code.
 
    The within-place offset (block+3) is reset to zero: the generator restarts at the beginning of
    that place.  Then, unless the circuit is being driven in reverse, one generator step runs to
@@ -20929,13 +20425,13 @@ void hook_gen_seed_snetter(HookRegs *r) { hook_gen_seed_at(r, TRACK_GEN_ARGS(SNE
 void hook_gen_seed_doning(HookRegs *r)  { hook_gen_seed_at(r, TRACK_GEN_ARGS(DONING)); }
 void hook_gen_seed_nurburg(HookRegs *r) { hook_gen_seed_at(r, TRACK_GEN_ARGS(NURBURG)); }
 
-/* $5A1B  hook_advance_gen_place — STEP THE GENERATOR'S CURSOR AND REBUILD ITS VECTOR
+/* $5A1B  hook_advance_gen_place — step the generator's cursor and rebuild its vector
    All five expansion circuits, one body: `JSR $557F / JMP $5472`.  It is the pairing of the two
    halves already twinned above — step the segment-direction index and the (place, offset) cursor
    one place along the direction of travel, then regenerate the direction vector and the across-
    track normal for the heading that cursor now names.
 
-   ⚠ TWO blocks are in play and they are two apart: the cursor lives at block-2 (the $557F twin's
+   ⚠ Two blocks are in play and they are two apart: the cursor lives at block-2 (the $557F twin's
    own base) and the generator state at block, exactly as everywhere else in this file.  The shims
    pass the generator block and the circuit's gradient multiplier; hook_step_dir_gen_cursor_{a,b}
    already carries the cursor base, so `a` pairs with $53FA and `b` with $53FC.
@@ -20954,22 +20450,22 @@ void hook_advance_gen_place_snetter(HookRegs *r) { hook_advance_gen_place_at(r, 
 void hook_advance_gen_place_doning(HookRegs *r)  { hook_advance_gen_place_at(r, MEM_gen_state_heading_b, 0x86u); }
 void hook_advance_gen_place_nurburg(HookRegs *r) { hook_advance_gen_place_at(r, MEM_gen_state_heading_b, 0x9Au); }
 
-/* THE THREE CROSS-CIRCUIT ONE-LINE HOOK BODIES
+/* The three cross-circuit one-line hook bodies
    Fourteen (circuit, entry) pairs, three bodies.  Each is one or two 6502 instructions installed
-   over one engine instruction, and each appears at a DIFFERENT address on every circuit — which
+   over one engine instruction, and each appears at a different address on every circuit — which
    is why they read as fourteen singletons in the dispatch and as three routines here.  None takes
    a per-circuit parameter: the bodies are byte-identical, so one twin serves every entry. */
 
 /* $53F0 (Brands Hatch) / $53E8 (Oulton) / $53C8 (Snetterton) / $5555 (the Nurburgring) —
-   THE HORIZON HALF-WIDTH SCALE.  Installed over `JSR abs8 / LSR A` at $2542 inside
+   the horizon half-width scale.  Installed over `JSR abs8 / LSR A` at $2542 inside
    build_track_geometry (make track-patch: $2543 $50->$F0/$E8/$C8, $2544 $34->$53, $2545 $4A->$EA
    — the LSR becomes a NOP), which is where horizon_half_width is computed from the difference
    edge_x_hi[horizon] - edge_x_hi[horizon + 40].
 
-   ⚠ It REPLACES the engine's `|d| / 2` with `d * $CD / 256` — and drops the absolute value with
+   ⚠ It replaces the engine's `|d| / 2` with `d * $CD / 256` — and drops the absolute value with
    it, so a negative difference stays negative through the multiply's high byte.  $CD/256 = 0.801,
    so these four circuits sit their horizon about 60% wider than Silverstone's halving does.
-   Donington patches the same site to its own $57B6, which runs abs8 and then falls INTO this
+   Donington patches the same site to its own $57B6, which runs abs8 and then falls into this
    body — hook_horizon_half_width_abs_doning, just below.
 
    Exit ABI: mul8's — A = the product's high byte, math_lo its low, N/Z from math_lo, C = 0 and V
@@ -20981,16 +20477,16 @@ void hook_horizon_half_width_scale(HookRegs *r)
     mul8_noinit_regs(r);
 }
 
-/* $59D9 (the Nurburgring) — ITS STEERING RESPONSE CURVE, WITH A SECOND ARM.  The fifth and
+/* $59D9 (the Nurburgring) — its steering response curve, with a second arm.  The fifth and
    last member of the $1593 family (see hook_steer_response_brands): the same per-segment scale
    k, but the tail at $56AF asks a question the other four do not.
 
    read_driving_controls wraps the call in its own `PHP ... PLP / BEQ` ($1586/$1596), and this
-   hook PUSHES THE FLAGS AGAIN on entry and pulls them back mid-curve — so the ENGINE's Z at
+   hook pushes the flags again on entry and pulls them back mid-curve — so the engine's Z at
    $1591, not anything the hook computes, chooses between two curves:
 
      Z clear — the shared shape: (reading * k), squared, doubled.
-     Z set   — scale by k a SECOND time instead: (reading * k) * k, and no doubling.
+     Z set   — scale by k a second time instead: (reading * k) * k, and no doubling.
 
    ⚠ The two pushes are real stores to $01FF/$01FE that the differential compares, so the macro
    pair stays (docs/faithfulness-seam.md §Writing one) — everything between them is ordinary C.
@@ -21035,22 +20531,22 @@ void hook_steer_response_nurburg(HookRegs *r)
     }
 }
 
-/* $57B6 (Donington Park) — THE SAME HORIZON SCALE, WITH THE ABSOLUTE VALUE KEPT.  Donington
+/* $57B6 (Donington Park) — the same horizon scale, with the absolute value kept.  Donington
    patches the same $2542 site as the other four, but to a body that runs the engine's own
    `JSR abs8` first and only then falls into the shared `d * $CD / 256` at $53D0.  So its
    horizon width is |d| * 0.801 where the other four carry a negative difference straight
    through the multiply — the one circuit whose horizon cannot come out on the wrong side.
-   ⚠ abs8 tests the CALLER'S N, not bit 7 of A: the flag $2542's SBC left standing. */
+   ⚠ abs8 tests the caller's N, not bit 7 of A: the flag $2542's SBC left standing. */
 void hook_horizon_half_width_abs_doning(HookRegs *r)
 {
     abs8_regs(r);                        /* $57B6 — the engine's own call, kept */
     hook_horizon_half_width_scale(r);    /* $57B9 JMP $53D0 — and then the shared scale */
 }
 
-/* $53E9 (Donington Park) — THE SECTION STEP FORWARD, TWICE WHERE THE ROAD RAN VERY SHORT.
+/* $53E9 (Donington Park) — the section step forward, twice where the road ran very short.
    advance_player_section's forward call at $24DE, which arrives with A = edge_nearest_section
    (the subdivision count, already known below $0C on this arm).  Silverstone builds one
-   section; Donington builds a SECOND when the count is below $0B, so the walk catches up
+   section; Donington builds a second when the count is below $0B, so the walk catches up
    faster on the circuit's shortest sections.
 
    Exit ABI: the CMP's flags stand at the return — build_section_ahead is native and touches no
@@ -21070,11 +20566,11 @@ void hook_section_ahead_doning(HookRegs *r)
 }
 
 /* $54EB (Brands Hatch) / $53D7 (Donington) / $59E1 (Oulton) / $59C1 (Snetterton) /
-   $54FA (the Nurburgring) — SIGN A VALUE BY THE DIRECTION OF TRAVEL, THEN TAKE ITS MAGNITUDE.
+   $54FA (the Nurburgring) — sign a value by the direction of travel, then take its magnitude.
    Installed over the bare `JSR abs8` at $462B (make track-patch: $462C $50->$EB/$D7/$E1/$C1,
    $462D $34->$54/$53/$59), inside the compare that follows `LDA $5E / SEC / SBC $44`.
 
-   The EOR is not a sign test on the difference — it REPLACES the value with `d ^ track_direction`
+   The EOR is not a sign test on the difference — it replaces the value with `d ^ track_direction`
    and abs8 then acts on that, so driving the circuit the other way round both re-signs the
    difference and flips which end of the range it folds about.  The engine's own version has no
    direction term at all.
@@ -21092,13 +20588,13 @@ void hook_abs_by_track_direction(HookRegs *r)
 }
 
 /* $57BB (Brands Hatch) / $54EB (Donington, Oulton, Snetterton) / $555C (the Nurburgring) —
-   SCALE THE VALUE IN A BY THE TRACK GRADIENT, SIGNED BY THE CALLER'S OWN N.  `PHP / JMP $461B`:
+   scale the value in a by the track gradient, signed by the caller's own N.  `PHP / JMP $461B`:
    two instructions, and the first of them is the whole point.
 
-   THE SIGN GENUINELY ESCAPES THROUGH THE 6502 STACK: the PHP stacks the entry P,
+   The sign genuinely escapes through the 6502 stack: the PHP stacks the entry P,
    scale_by_track_gradient_tail's $4621 PLP pulls it back, and its $4622 abs8 re-signs the product
    from that N.  Carrying the sign as a C argument instead computes the right answer and still
-   FAILS the differential — the PHP's byte at $01FF is real memory the oracle writes — so the
+   fails the differential — the PHP's byte at $01FF is real memory the oracle writes — so the
    stack push stays a push.
 
    Exit ABI: A = the re-signed product high byte, math_lo its low byte, math_hi the multiplier the
@@ -21106,12 +20602,12 @@ void hook_abs_by_track_direction(HookRegs *r)
    abs8 does not run) and the negate's when it is negative. */
 void hook_scale_entry_by_gradient(HookRegs *r)
 {
-    /* ⚠ The PHP is not bookkeeping to be optimised away: it is a REAL STORE to $01FF that the
+    /* ⚠ The PHP is not bookkeeping to be optimised away: it is a real store to $01FF that the
        oracle makes and a differential sees, and the P it stacks is what the tail's own PLP pulls
        one routine later.  Writing the flag through as a C argument passes the arithmetic and
        fails the memory compare — so this is the sanctioned macro exception, at its narrowest:
        two macros, no arithmetic, and the tail below is a twin in ordinary C.
        (docs/faithfulness-seam.md §Writing one — where a flag genuinely leaves the routine.) */
-    PHP_REGS(r);                             /* $57BB — the ENTRY P, off the seam's file */
+    PHP_REGS(r);                             /* $57BB — the entry P, off the seam's file */
     scale_by_track_gradient_tail_regs(r);    /* $57BC JMP $461B — its PLP pulls that P back */
 }
