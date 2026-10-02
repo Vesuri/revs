@@ -20,9 +20,6 @@ The simulation is decoupled from painting by default.
 
 ## Smaller performance candidates
 
-- **Renderer driver fold:** design A needs a deletion experiment demonstrating more
-  than roughly 1 ms before implementation. Prior C driver tidying was a null.
-  Preserve hook-written stop slots and row backgrounds.
 - **Model-state output marshal:** recorded at about 0.16 ms. The publish runs once per
   simulation step, so at the 68000's 12.5 Hz step (about 1.1 steps a painted frame) it is
   likely smaller; re-measure before pricing it. Its last native reader is
@@ -78,7 +75,7 @@ Do not repeat these without a changed premise. Detailed measurements remain in
 | Cold hardware fallback moved to `noinline` | +0.73 ms; call barrier increased hot-loop memory traffic |
 | `always_inline` on `view_plant` | +1.04 ms |
 | Branch prediction hint in the gap walk | +1.38 ms; worse loop shape |
-| Sweep driver C tidy-up | About -0.03 ms; instruction counts overstated its price |
+| Sweep driver C tidy-up and renderer driver fold (design A) | Tidy-up about -0.03 ms; the full-block fold was built at -0.16 ms; carve and doubling arms over-read the loop ~10x ([§13c](span-render-plan.md)) |
 | MODE 7 row staging for blitter painting | Staging dominated; blank-run clears are a different mechanism |
 | MODE 7 blank-glyph lookup | Lookup cost outweighed skipped paints |
 

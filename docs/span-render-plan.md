@@ -2698,6 +2698,26 @@ allowed to be wrong) moves ph24 + ph33 by more than ~1 ms.** Proof obligation if
 terminator slot is written only by the chain arms, the chain pages by `view_plant` (chain paths),
 `copy_dash_data` (race bracket only) and — unaudited — any circuit hook; assert per sweep.
 
+✅ **BUILT (2026-10-02) for the full block, and it is worth −0.16 ms (ph24 14.84 → 14.68, frame
+sum 74.15 → 73.83; `PROBEFIELDS=3000 SIMLEGACY=1`, 626 / 628 painted).** `view_own_full`'s
+terrain arm is now a record loop over register copies of the scan-line pair (`scanline_advance`),
+with the `$7EEE` terminator read once — exact without the circuit-hook audit above, because the
+loop body stores to `g_viewRowAddr`/`g_viewRowBg` only and so no `mem[]` byte can change between
+the 6502's per-line reads. The common path went from ~40 instructions a line to ~27. Gate: a
+temporary in-process differential ran the pre-fold loop through the globals from the same entry
+state and compared every record and both exit pointers — 2206 sweeps, 0 mismatches; a flipped
+background byte and a last line moved to `$2D` each failed every sweep. The low block was not
+folded: GCC already keeps its scan-line pair in registers, and its ~35 instructions a line are
+the clip, entry byte and seed fix, which are real work.
+⚠⚠ **Both deletion arms over-read the loop by an order of magnitude, each for its own reason.**
+A carve (repeat sweeps replay cached row addresses and keep last sweep's backgrounds, terminator,
+probe and seed fix) read ph24 −1.56 and ph33 −2.07, but the stale backgrounds let the painter's
+unchanged-line skip fire more often, so part of that was the PAINTER. A doubling arm (each loop
+run twice, the scan-line state rewound — trajectory-neutral) read ph24 +3.17 and ph33 +2.00, but
+the `goto` back-edge made GCC spill the loop's state to the frame, so the second pass was not
+the first pass's cost. ⇒ **A doubling arm prices a loop only if the doubled code compiles to the
+same body; read its objdump before reading its delta.**
+
 **B — PRODUCER-EMITTED EVENTS: ⛔ RE-CLOSED ON THE NEW ARITHMETIC.** The old closure's decisive
 term was the +3.89 ms call barrier in `interp_edge_core`'s C loops, and that term is gone — the
 span pass and walk are asm. But the scan's other half now dominates the comparison: its walk hands
@@ -2715,7 +2735,7 @@ the longword fill plus ~15 instructions an event; the skip already declines 74% 
 
 ### 13d. ⇒ What this means for the plan
 
-- **C + A ≈ −1..−3 ms. The `$3000` structure is SPENT as an incremental lever:** the seam fill is
+- **C + A, built, measured −0.76 and −0.16 ms. The `$3000` structure is SPENT as an incremental lever:** the seam fill is
   classification, the scan is the cheapest way to find ~150 events, the painter is at its store
   floor and the drivers are cheap register code. "The `$3000` intermediate" was three different
   things, and each is now near its floor on its own terms.
@@ -2728,7 +2748,7 @@ the longword fill plus ~15 instructions an event; the skip already declines 74% 
   ≈ −5 ms.** The two facts that stood in its way are now settled — see §13e.
 - **It does not reach the next visible step.** A frame is displayed every `ceil(ms/20)` fields, so
   75 ms shows at 12.5 fps and anything from 41 to 60 ms at 16.7 — **−15 ms to the next step**; C + A
-  supply 1-3 of it and D at best 5. The producers are the other mass (ph11 14.49 at BBC parity,
+  supplied ~0.9 of it, and D, built, lost 16.8 (§13f). The producers are the other mass (ph11 14.49 at BBC parity,
   ph5 9.94 at 2.2× the BBC), and `docs/perf-method.md` §the producers mapped already says what is
   left there: fewer edge points, fewer spans — a visual-fidelity trade, which is the user's call.
 

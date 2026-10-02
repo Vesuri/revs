@@ -781,35 +781,38 @@ static SlotExit edge_runs_asm(uint16_t leftStartSrc, uint16_t rightStartSrc);
 static void view_edge_start_check(void);
 #endif
 
-static unsigned step_scanline(int* carry_out)
+/* The scan-line step on a PAIR OF VALUES, so a caller that owns the sweep can keep both pointers
+   in registers (the record-only drivers below); `step_scanline` is this on the globals. */
+static inline __attribute__((always_inline))
+unsigned scanline_advance(uint16_t* ptr, uint16_t* ptr2, int* carry_out)
 {
-    unsigned next = (plot_ptr_v + 1) & 0xFF;
+    unsigned next = (*ptr + 1) & 0xFF;
 
     if (carry_out) *carry_out = 0;
     if (next & 7) {                              /* still inside this character row */
         /* ⭐ No mask to "preserve the high byte": `next & 7` non-zero means next != 0, so the
            low byte provably did not wrap and this is just an increment of the whole pointer.
            Both pointers share the low byte, so both step by one. */
-        plot_ptr_v++;
-        plot_ptr2_v++;
+        (*ptr)++;
+        (*ptr2)++;
         return next;
     }
 
     /* Crossing into the next character row: ONE 16-bit add of $0138 to plot_ptr (the 6502
        spells it `ADC #$38` on the low byte, which has just been incremented to a multiple of
        8, then `ADC #1` on the high). */
-    unsigned adv   = ((plot_ptr_v & 0xFF00u) | next) + 0x0138u;
+    unsigned adv   = ((*ptr & 0xFF00u) | next) + 0x0138u;
     unsigned advHi = (adv >> 8) & 0xFFu;
     unsigned c2    = adv >> 16;                  /* the carry off the high byte */
 
-    plot_ptr_v = (uint16_t)adv;
+    *ptr = (uint16_t)adv;
 
     /* plot_ptr2 sits one page above, and the 6502 gets there with a SECOND `ADC #1` on the
        high byte it has just stored — so it also picks up that add's carry-out.  Its low byte
        is plot_ptr's, which is why this is a build and not an add. */
     unsigned      hi2 = advHi + 1u + c2;
     unsigned char r2  = (unsigned char)hi2;
-    plot_ptr2_v = (uint16_t)(((unsigned)r2 << 8) | (adv & 0xFFu));
+    *ptr2 = (uint16_t)(((unsigned)r2 << 8) | (adv & 0xFFu));
 
     /* ⚠ `c2` is provably always 0 — it is the carry off $FFFF and the plot pointer's high byte
        lives in $67..$7A — so a sabotage dropping it survives `make validate`.  Kept because the
@@ -818,6 +821,11 @@ static unsigned step_scanline(int* carry_out)
        only two callers overwrite every one of them; docs/native-maintenance.md, Flag helpers and live masks.) */
     if (carry_out) *carry_out = (int)(hi2 >> 8);
     return next;
+}
+
+static unsigned step_scanline(int* carry_out)
+{
+    return scanline_advance(&plot_ptr_v, &plot_ptr2_v, carry_out);
 }
 
 /* THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  The carried byte usually repeats and the
@@ -2607,6 +2615,55 @@ static void view_own_full(ViewState* v)
     /* the group-of-four scan's cache, in locals for the reason `paint_cells` argues at its own */
     unsigned scanGroup = 0xFFFFu, scanLanes = 0;
 
+#ifdef REVS_TERRAIN_SPANS
+    /* ⭐⭐⭐ THE TERRAIN PAINTER'S DRIVER IS A RECORD LOOP, FOLDED (span-render-plan §13c design A).
+       The painter takes the lines straight from their SPAN RECORD (§12) — no group scan, no
+       flat/paint fork, no forty-cell chain — so all this loop does is RECORD each line's frame-
+       buffer address and background byte, two stores a line against a four-argument cross-TU
+       call whose `movem` alone saves eleven registers.  So the loop owns the sweep's state
+       (~40 instructions a line through the globals, ~27 here; MEASURED ph24 14.84 -> 14.68 —
+       the loop was never the ~3 ms its deletion arms read, span-render-plan §13c):
+         * the scan-line pair lives in registers (`scanline_advance` on locals) and is written
+           back once;
+         * ⭐ the `$7EEE` terminator is read ONCE, which is exact here and only here: the body
+           stores to `g_viewRowAddr`/`g_viewRowBg` and nothing else, so no `mem[]` byte can change
+           between the 6502's per-line reads.  `RTS` (or a trapped opcode) ends the sweep after
+           its first line, exactly where the per-line test did; `CPX #imm` runs to line $2C. */
+    {
+        const unsigned op    = mem[MEM_view_chain_end_slot];
+        const unsigned last  = (op == OP_CPX_IMM) ? 0x2Cu : line;  /* the last full-width line */
+        uint16_t       ptr   = plot_ptr_v, ptr2 = plot_ptr2_v;
+        const uint8_t* colour  = mem + MEM_surface_colours;
+        const uint8_t* surface = mem + MEM_view_line_surface;
+        (void)scanGroup; (void)scanLanes;
+
+        for (;;) {
+            PROBE_VIEW_LINE();
+            PROBE_SHAPE_VIEW_LINE();
+            (void)scanline_advance(&ptr, &ptr2, (int*)0);
+            byte = colour[surface[line] & 3u];
+            PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40, ptr);
+            SPAN_SCAN_CHECK(line);
+            VIEW_FULL_CHECK();
+            g_viewRowAddr[line] = ptr;
+            g_viewRowBg[line]   = (unsigned char)byte;
+            SPAN_EMIT_STAT(g_spanEmitPaints++);
+            if (line == last) break;
+            /* ⭐ A BYTE DECREMENT, so the 68000 can use `.b` arithmetic (see the chain arm's). */
+            line = (unsigned char)(line - 1u);
+        }
+        plot_ptr_v = ptr; plot_ptr2_v = ptr2;
+        if (op != OP_RTS && op != OP_CPX_IMM) platform_smc_unhandled(MEM_view_chain_end_slot, op);
+    }
+    /* ⭐⭐ ONE CALL A SWEEP.  `line` is where the loop stopped, so the recorded rows are
+       `line..VIEW_TERRAIN_HI` — the terminator can end the sweep early and the painter must not
+       paint a row the driver never reached. */
+    REVS_PLOT_TERRAIN(VIEW_TERRAIN_HI, line);
+    v->byte = (unsigned char)byte;
+    v->line = (unsigned char)line;
+    v->cell = 0x38u;                    /* unit 39's cell, as a full line leaves it */
+    (void)cell;
+#else
     for (;;) {
         /* the `advance_first` prologue: the scan-line step and the line's background byte */
         PROBE_VIEW_LINE();
@@ -2617,21 +2674,6 @@ static void view_own_full(ViewState* v)
         SPAN_SCAN_CHECK(line);
         VIEW_FULL_CHECK();
 
-#ifdef REVS_TERRAIN_SPANS
-        /* ⭐⭐⭐ THE TERRAIN PAINTER — the line straight from its SPAN RECORD (§12).
-           No group scan, no flat/paint fork, no forty-cell chain: `view_span_line` says where the
-           colour changes and `view_scan_events` has already found (and consumed) the handful of
-           cells a producer composed.  Both arms this replaces are gone, not selected between. */
-        {
-            /* ⭐ RECORD, DO NOT PAINT — see the sweep record above.  Two stores a line against a
-               four-argument cross-TU call whose `movem` alone saves eleven registers. */
-            g_viewRowAddr[line] = (unsigned short)plot_ptr_v;
-            g_viewRowBg[line]   = (unsigned char)byte;
-            SPAN_EMIT_STAT(g_spanEmitPaints++);
-            cell = 0x38;                /* unit 39's cell, as a full line leaves it */
-        }
-        (void)scanGroup; (void)scanLanes;
-#else
         {
             const unsigned g = line & ~3u;
             if (g != scanGroup) { scanGroup = g; scanLanes = view_group_sources(g); }
@@ -2658,7 +2700,6 @@ static void view_own_full(ViewState* v)
             }
             cell = 0x38;                /* unit 39's cell, as a full line leaves it */
         }
-#endif /* REVS_TERRAIN_SPANS */
 
         {                               /* $7EEE — the sweep's own terminator */
             unsigned op = mem[MEM_view_chain_end_slot];
@@ -2675,15 +2716,10 @@ static void view_own_full(ViewState* v)
         line = (unsigned char)(line - 1u);
     }
 
-#ifdef REVS_TERRAIN_SPANS
-    /* ⭐⭐ ONE CALL A SWEEP.  `line` is where the loop stopped, so the recorded rows are
-       `line..VIEW_TERRAIN_HI` — the terminator can end the sweep early and the painter must not
-       paint a row the driver never reached. */
-    REVS_PLOT_TERRAIN(VIEW_TERRAIN_HI, line);
-#endif
     v->byte = (unsigned char)byte;
     v->line = (unsigned char)line;
     v->cell = (unsigned char)cell;
+#endif /* REVS_TERRAIN_SPANS */
 }
 #endif /* REVS_VIEW_OWN_FULL */
 
