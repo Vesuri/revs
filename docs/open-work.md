@@ -10,8 +10,8 @@ sources for explicit unfinished-work markers. Naming questions live in
 The latest recorded windows, both `SIMLEGACY=1` (one step a frame), are practice
 73.83 ms (after the driver fold) and race 94.99 ms (`QUICKQUAL=1`, after the shape-scaling
 assembly). The shipping build's 12.5 Hz step gave 74.44 ms a painted frame in practice
-and 98.29 ms in a race, both measured before the fold. Practice omits the other cars and must not stand in for a race. These are
-different workloads, not a paired comparison. See [measurement method](perf-method.md).
+and 98.29 ms in a race, both measured before the fold. Practice omits the other cars and
+must not stand in for a race. These are different workloads, not a paired comparison. See [measurement method](perf-method.md).
 
 The default renderer uses dual playfields, tyre sprites, needle sprites and low
 row ownership. The old per-frame BBC framebuffer conversion is now a cold-start
