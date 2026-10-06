@@ -3106,7 +3106,7 @@ producer and the same-cell composition rule, and only per-circuit `viewdiff` can
 - `make EXTRA_DEFINES+=…` on the command line REPLACES the Makefile's own `+=` list, so the build
   loses every default flag.
 Census on the way: ~43 patterned runs a sweep at a mean 1.1 cells (single boundary cells), and
-0.27 a sweep longer than four cells. The code is `tmp/blitter_terrain.patch`.
+0.27 a sweep longer than four cells. The code is `docs/patches/blitter_terrain.patch`.
 
 ## Lessons — measurement
 

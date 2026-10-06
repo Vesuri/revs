@@ -400,7 +400,7 @@ $(TARGET): $(OBJS) | build
 # still computes what it computed, not a fixture with independent authority.  Ground truth
 # for behaviour is still the BBC (`make refloop`).
 DET_FRAME  ?= 300
-DET_REF    := tmp/determinism/ref.mem
+DET_REF    := baselines/determinism/ref.mem
 DET_RUN    := tmp/determinism/run
 
 determinism-record: $(TARGET)
@@ -408,6 +408,7 @@ determinism-record: $(TARGET)
 	@rm -f $(DET_RUN)*
 	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RUN) REVS_SCREEN_FRAME=$(DET_FRAME) \
 	  REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 ./$(TARGET) >/dev/null 2>&1
+	@mkdir -p $(dir $(DET_REF))
 	@cp $(DET_RUN).mem.$(DET_FRAME) $(DET_REF)
 	@echo "determinism: recorded frame $(DET_FRAME) -> $(DET_REF)"
 
@@ -439,7 +440,7 @@ determinism: $(TARGET)
 # this Makefile tracks no build flag, so anything cheaper would eventually compare a DRIVE
 # reference against a stale default binary — the exact failure this project has hit twice.
 # Two full builds per invocation is the price of not inventing that trap again.
-DET_DRIVE_REF   := tmp/determinism/ref_drive.mem
+DET_DRIVE_REF   := baselines/determinism/ref_drive.mem
 DET_DRIVE_RUN   := tmp/determinism/drive
 DET_DRIVE_FRAME ?= 300
 
@@ -451,6 +452,7 @@ determinism-drive-record:
 	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_DRIVE_RUN) \
 	  REVS_SCREEN_FRAME=$(DET_DRIVE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
 	  ./$(TARGET) >/dev/null 2>&1
+	@mkdir -p $(dir $(DET_DRIVE_REF))
 	@cp $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) $(DET_DRIVE_REF)
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
@@ -559,7 +561,7 @@ determinism-drive:
 # Same build as determinism-drive (STRAIGHT_TO_RACE + HOLD_THROTTLE); only the frame differs.
 # ⚠ Like determinism-drive it cleans/builds/runs then rebuilds the default, for the same
 # no-build-flag-tracking reason; two full builds is the price of not comparing against a stale one.
-DET_CRASH_REF   := tmp/determinism/ref_crash.mem
+DET_CRASH_REF   := baselines/determinism/ref_crash.mem
 DET_CRASH_RUN   := tmp/determinism/crash
 DET_CRASH_FRAME ?= 1500
 
@@ -571,6 +573,7 @@ determinism-crash-record:
 	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_CRASH_RUN) \
 	  REVS_SCREEN_FRAME=$(DET_CRASH_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
 	  ./$(TARGET) >/dev/null 2>&1
+	@mkdir -p $(dir $(DET_CRASH_REF))
 	@cp $(DET_CRASH_RUN).mem.$(DET_CRASH_FRAME) $(DET_CRASH_REF)
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
@@ -608,7 +611,7 @@ determinism-crash:
 # why this is the one determinism target built RELEASE=1: at -O0 the run does not finish in any
 # tolerable time, and both the record and the check use the same flags, so the comparison is
 # still like for like.
-DET_RACE_REF   := tmp/determinism/ref_race.mem
+DET_RACE_REF   := baselines/determinism/ref_race.mem
 DET_RACE_RUN   := tmp/determinism/race
 DET_RACE_FRAME ?= 13000
 
@@ -620,6 +623,7 @@ determinism-race-record:
 	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RACE_RUN) \
 	  REVS_SCREEN_FRAME=$(DET_RACE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
 	  ./$(TARGET) >/dev/null 2>&1
+	@mkdir -p $(dir $(DET_RACE_REF))
 	@cp $(DET_RACE_RUN).mem.$(DET_RACE_FRAME) $(DET_RACE_REF)
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
@@ -659,7 +663,7 @@ determinism-race:
 # runs on the slow tick once a painted frame covers several simulation steps.
 # ⚠ The frame is a property of the autorun script: if the script changes, re-find the window
 # (start_light_state $6D bit 7 set, with session_is_race $6C = $80) before re-recording.
-DET_LIGHTS_REF   := tmp/determinism/ref_lights.mem
+DET_LIGHTS_REF   := baselines/determinism/ref_lights.mem
 DET_LIGHTS_RUN   := tmp/determinism/lights
 DET_LIGHTS_FRAME ?= 3375
 
@@ -673,6 +677,7 @@ determinism-lights-record:
 	  ./$(TARGET) >/dev/null 2>&1
 	@python3 -c "import sys; b=open('$(DET_LIGHTS_RUN).mem.$(DET_LIGHTS_FRAME)','rb').read(); \
 	  sys.exit(0 if b[0x6C]==0x80 and b[0x6D]&0x80 else 'determinism-lights: frame $(DET_LIGHTS_FRAME) is not inside the light sequence — re-find the window')"
+	@mkdir -p $(dir $(DET_LIGHTS_REF))
 	@cp $(DET_LIGHTS_RUN).mem.$(DET_LIGHTS_FRAME) $(DET_LIGHTS_REF)
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
@@ -711,7 +716,7 @@ determinism-lights:
 #
 # Same build as determinism-drive; the STEERING KEY is a run-time knob (src/platform/autorun.cpp
 # holds KEY_L beside the throttle), so no third build configuration is involved.
-DET_STEER_REF   := tmp/determinism/ref_steer.mem
+DET_STEER_REF   := baselines/determinism/ref_steer.mem
 DET_STEER_RUN   := tmp/determinism/steer
 DET_STEER_FRAME ?= 300
 
@@ -723,6 +728,7 @@ determinism-steer-record:
 	REVS_FIXED_RNG=1 REVS_HOLD_STEER=l REVS_SCREEN_DUMP=$(DET_STEER_RUN) \
 	  REVS_SCREEN_FRAME=$(DET_STEER_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
 	  ./$(TARGET) >/dev/null 2>&1
+	@mkdir -p $(dir $(DET_STEER_REF))
 	@cp $(DET_STEER_RUN).mem.$(DET_STEER_FRAME) $(DET_STEER_REF)
 	@$(MAKE) --no-print-directory clean >/dev/null
 	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
@@ -920,8 +926,8 @@ dist: engine-image
 # engine's own unpack.  This builds that image from each supported disc down the same path and
 # requires all 64 KB to equal disasm/revs_runtime.bin, then requires a flipped REVS2 byte and a
 # missing REVS2 to be REFUSED — and the 1985 discs ('!' = must refuse) too, when present.
-ENGINE_DISCS ?= revs.ssd $(wildcard tmp/discs/DiscA15-RevsPlusRevs4Tracks.ssd tmp/discs/DiscA16-RevsHack.ssd) \
-                $(addprefix !,$(wildcard tmp/discs/Disc015-Revs.ssd tmp/discs/Disc063-Revs4Tracks.ssd))
+ENGINE_DISCS ?= revs.ssd $(wildcard DiscA15-RevsPlusRevs4Tracks.ssd DiscA16-RevsHack.ssd) \
+                $(addprefix !,$(wildcard Disc015-Revs.ssd Disc063-Revs4Tracks.ssd))
 ENGINE_IMAGE_OBJS := src/platform/engine_image.o src/gen/revs_tracks.o tools/engine_image_test.o
 engine-image: $(ENGINE_IMAGE_OBJS) | build
 	$(CC) $(CFLAGS) -o build/engine_image_test $(ENGINE_IMAGE_OBJS)

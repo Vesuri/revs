@@ -40,7 +40,7 @@ def main():
     p.add_argument('--rom13', type=Path, default=BIOS / 'kick34005.A500')
     p.add_argument('--rtb', type=Path, default=Path.home() / 'Documents/amiberry/whdboot/save-data/Kickstarts/kick34005.A500.RTB')
     p.add_argument('--host-rom', type=Path, default=BIOS / 'kick31.rom')
-    p.add_argument('--workbench', type=Path, default=Path.home() / 'Documents/Vette/tmp/Workbenchv2.04rev37.67Workbench.adf')
+    p.add_argument('--workbench', type=Path, default=Path.home() / '.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf')
     p.add_argument('--cpu', default=None, help='default: 68010 for run (WHDLoad\'s TIMEOUT needs a movable VBR), else 68000')
     p.add_argument('--ticks', type=int, default=1500, help='WHDLoad timeout in PAL fields (run mode)')
     p.add_argument('--seconds', type=int, default=400, help='host safety ceiling')

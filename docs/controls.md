@@ -3,7 +3,7 @@
 **Sources, in order of authority:**
 
 1. **The printed handbook** — *Acornsoft Revs: Formula 3 Driver's Handbook* (the Revs + 4 Tracks
-   edition; a scan is at `tmp/Acornsoft_Revs_Formula_3_Drivers_Handbook.pdf`, git-ignored).
+   edition; a scan is at `Acornsoft_Revs_Formula_3_Drivers_Handbook.pdf` in the repository root, git-ignored).
    Chapter 3 *The Controls* and chapter 4 *Practice Laps and Qualifying Times*.
 2. **`REVINST`** — the instructions program on the disc itself, which carries the full SHIFT-key
    list the printed handbook does not (CAS and the volume keys are 1986 additions). Detokenise it

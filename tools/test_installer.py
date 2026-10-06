@@ -198,7 +198,7 @@ def main():
     p.add_argument('--installer', type=Path, default=Path.home() / 'Documents/Stunt Car Racer/data/Installer43_3/Installer')
     p.add_argument('--whdload', type=Path, default=Path.home() / '.local/share/amiga/WHDLoad/C/WHDLoad')
     p.add_argument('--host-rom', type=Path, default=BIOS / 'kick40068.A1200')
-    p.add_argument('--workbench', type=Path, default=Path.home() / 'Documents/Vette/tmp/Workbenchv2.04rev37.67Workbench.adf')
+    p.add_argument('--workbench', type=Path, default=Path.home() / '.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf')
     p.add_argument('--screenshot', action='store_true', help='on a hang, capture the host screen to <fixture>/screen.png')
     p.add_argument('--trace', action='store_true', help='log checkpoints through the script to DH2:trace')
     p.add_argument('--seconds', type=int, default=240, help='host ceiling per scenario')
