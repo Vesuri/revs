@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 . "${FSUAE_COMMON:-$HOME/.local/share/amiga/fsuae_common.sh}"
 FSUAE="${FSUAE:-fs-uae}"
 GDB="${GDB:-m68k-amiga-elf-gdb}"
-ROM="${KICKSTART:-$HOME/Documents/RetroPie/BIOS/kick31.rom}"
+ROM="${KICKSTART:-$HOME/.local/share/amiga/Kickstarts/kick40063.A600}"
 DELAY="${1:-14}"
 # Emulated machine.  Default A500+ (the target, + ECS Denise for BPLCON3 border-blanking).
 # $AMIGA_MODEL=A1200 re-runs the same probe on a 68020 to expose beam-timing races that a

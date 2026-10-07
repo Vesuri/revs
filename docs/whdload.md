@@ -61,6 +61,24 @@ from a directory drive, which is why that row is 3.1; the Kickstart 1.3 run is t
 The slave asks for `CHIPMEMSIZE` 400 KB + `FASTMEMSIZE` 512 KB + the 256 KB 1.3 image, so like
 RoF's the WHDLoad install needs a **2 MB** machine; the plain exe does not.
 
+## Shared Amiga inputs
+
+ROMs, the Workbench disk, WHDLoad and the Installer are local inputs read from the shared
+`~/.local/share/amiga`, never from this repository. Each has an environment override:
+
+| Variable | Default | Used by |
+|---|---|---|
+| `KICKSTART` | `~/.local/share/amiga/Kickstarts/kick40063.A600` (KS 3.1) | `amiga/env.sh`, `run.sh`, `debug.sh`, `diag_run.sh`; `test_whdload.py` host ROM |
+| `KICKSTART_A1200` | `~/.local/share/amiga/Kickstarts/kick40068.A1200` | `test_installer.py` host ROM (not `KICKSTART`, which `env.sh` exports as the A600's) |
+| `WORKBENCH_ADF` | `~/.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf` | both tests |
+| `INSTALLER43` | `~/.local/share/amiga/Installer43/Installer` | `test_installer.py` |
+| `WHDLOAD_BIN` | `~/.local/share/amiga/WHDLoad/C/WHDLoad` | both tests (`WHDLOAD` is the makefile's SDK directory) |
+| `FSEMU_SCREENSHOTS_DIR` | the repo's untracked `tmp/screenshots` | `run.sh` |
+
+`test_whdload.py` also takes the 1.3 image and its relocation file from
+`~/.local/share/amiga/Kickstarts/kick34005.A500{,.RTB}` (`--rom13`, `--rtb`). Every default can
+also be overridden by the script's command-line option.
+
 ## The WHDLoad tests (`tools/test_whdload.py`, WHDLoad 19.2, 2 MB A500, 2026-09-30)
 
 | Mode | CPU | Result |

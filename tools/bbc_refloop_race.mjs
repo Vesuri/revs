@@ -2127,8 +2127,8 @@ if (watchAddr !== null || watchLo !== null) {
 
 if (dumpDir && frames > 0) {
     // ⚠ Paths inside these scripts are relative to the SCRIPT, not the cwd, because they must
-    // be run from tools/jsbeeb — "../tmp" is the repo's tmp, "../../tmp" silently writes into
-    // ~/Documents/tmp and the run still looks successful.
+    // be run from tools/jsbeeb — "../tmp" is the repo's tmp, "../../tmp" silently writes
+    // outside the repository and the run still looks successful.
     const dir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", dumpDir);
     fs.mkdirSync(dir, { recursive: true });
     const tag = String(frames).padStart(6, "0");

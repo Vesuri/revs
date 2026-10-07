@@ -27,7 +27,13 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-BIOS = Path.home() / 'Documents/RetroPie/BIOS'
+AMIGA = Path.home() / '.local/share/amiga'
+KICKSTARTS = AMIGA / 'Kickstarts'
+# Shared Amiga inputs from ~/.local/share/amiga; each has an environment override (docs/whdload.md).
+WHDLOAD = Path(os.environ.get('WHDLOAD_BIN', AMIGA / 'WHDLoad/C/WHDLoad'))
+WORKBENCH_ADF = Path(os.environ.get('WORKBENCH_ADF', AMIGA / 'Workbenchv2.04rev37.67Workbench.adf'))
+# The host machine's KS 3.1; amiga/env.sh exports the same default.
+KICKSTART = Path(os.environ.get('KICKSTART', KICKSTARTS / 'kick40063.A600'))
 
 
 def main():
@@ -36,11 +42,11 @@ def main():
     p.add_argument('--exe', type=Path, default=ROOT / 'amiga/out/Revs.exe')
     p.add_argument('--slave', type=Path, default=ROOT / 'whdload/Revs.slave')
     p.add_argument('--disc', type=Path, default=ROOT / 'revs.ssd')
-    p.add_argument('--whdload', type=Path, default=Path.home() / '.local/share/amiga/WHDLoad/C/WHDLoad')
-    p.add_argument('--rom13', type=Path, default=BIOS / 'kick34005.A500')
-    p.add_argument('--rtb', type=Path, default=Path.home() / 'Documents/amiberry/whdboot/save-data/Kickstarts/kick34005.A500.RTB')
-    p.add_argument('--host-rom', type=Path, default=BIOS / 'kick31.rom')
-    p.add_argument('--workbench', type=Path, default=Path.home() / '.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf')
+    p.add_argument('--whdload', type=Path, default=WHDLOAD)
+    p.add_argument('--rom13', type=Path, default=KICKSTARTS / 'kick34005.A500')
+    p.add_argument('--rtb', type=Path, default=KICKSTARTS / 'kick34005.A500.RTB')
+    p.add_argument('--host-rom', type=Path, default=KICKSTART)
+    p.add_argument('--workbench', type=Path, default=WORKBENCH_ADF)
     p.add_argument('--cpu', default=None, help='default: 68010 for run (WHDLoad\'s TIMEOUT needs a movable VBR), else 68000')
     p.add_argument('--ticks', type=int, default=1500, help='WHDLoad timeout in PAL fields (run mode)')
     p.add_argument('--seconds', type=int, default=400, help='host safety ceiling')

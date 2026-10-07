@@ -29,7 +29,14 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / 'whdload' / 'Revs Install'
-BIOS = Path.home() / 'Documents/RetroPie/BIOS'
+AMIGA = Path.home() / '.local/share/amiga'
+KICKSTARTS = AMIGA / 'Kickstarts'
+# Shared Amiga inputs from ~/.local/share/amiga; each has an environment override (docs/whdload.md).
+WHDLOAD = Path(os.environ.get('WHDLOAD_BIN', AMIGA / 'WHDLoad/C/WHDLoad'))
+WORKBENCH_ADF = Path(os.environ.get('WORKBENCH_ADF', AMIGA / 'Workbenchv2.04rev37.67Workbench.adf'))
+INSTALLER43 = Path(os.environ.get('INSTALLER43', AMIGA / 'Installer43/Installer'))
+# An A1200 ROM, not $KICKSTART: amiga/env.sh exports that as the A600's and would change the machine.
+KICKSTART_A1200 = Path(os.environ.get('KICKSTART_A1200', KICKSTARTS / 'kick40068.A1200'))
 
 # name: (seed, ssd-keep answer, drawer-delete answer, expect ssd asked, expect file asked,
 #        expect installed image ('old' | 'new'), expect the old drawer's marker file kept)
@@ -195,10 +202,10 @@ def main():
     p.add_argument('--only', choices=sorted(SCENARIOS))
     p.add_argument('--exe', type=Path, default=ROOT / 'amiga/out/Revs.exe')
     p.add_argument('--slave', type=Path, default=ROOT / 'whdload/Revs.slave')
-    p.add_argument('--installer', type=Path, default=Path.home() / 'Documents/Stunt Car Racer/data/Installer43_3/Installer')
-    p.add_argument('--whdload', type=Path, default=Path.home() / '.local/share/amiga/WHDLoad/C/WHDLoad')
-    p.add_argument('--host-rom', type=Path, default=BIOS / 'kick40068.A1200')
-    p.add_argument('--workbench', type=Path, default=Path.home() / '.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf')
+    p.add_argument('--installer', type=Path, default=INSTALLER43)
+    p.add_argument('--whdload', type=Path, default=WHDLOAD)
+    p.add_argument('--host-rom', type=Path, default=KICKSTART_A1200)
+    p.add_argument('--workbench', type=Path, default=WORKBENCH_ADF)
     p.add_argument('--screenshot', action='store_true', help='on a hang, capture the host screen to <fixture>/screen.png')
     p.add_argument('--trace', action='store_true', help='log checkpoints through the script to DH2:trace')
     p.add_argument('--seconds', type=int, default=240, help='host ceiling per scenario')

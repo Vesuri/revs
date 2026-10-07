@@ -741,7 +741,7 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
   Q16 `mulu.w` at the scaled sites. Game time is therefore real time.
 - **Clock:** lap times stay **comparable with the original's**. `add_frame_time` runs bit-exact on a
   slow tick that fires every 93.6 ms of game time.
-- Precedent: the user's Stunt Car Racer port (`~/Documents/Stunt Car Racer`, CLAUDE.md §Frame Rate
+- Precedent: the user's Stunt Car Racer port (Stunt Car Racer `CLAUDE.md` §Frame Rate
   Conversion) runs one step per elapsed vertical blank and draws on the last one.
 
 **The design** — review of an outside proposal, verified against the code 2026-09-25.

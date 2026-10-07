@@ -103,8 +103,11 @@ make
 ./run.sh
 ```
 
-`env.sh` uses the local toolchain under `~/.local` and allows `KICKSTART` to
-override its default ROM path. Clean before changing defines or build modes.
+`env.sh` uses the local toolchain under `~/.local`. `KICKSTART` overrides its default ROM,
+`~/.local/share/amiga/Kickstarts/kick40063.A600` (KS 3.1); the other shared Amiga inputs and
+their variables are listed in [whdload.md](whdload.md#shared-amiga-inputs). `run.sh` screenshots
+go to the untracked `tmp/screenshots` unless `FSEMU_SCREENSHOTS_DIR` is set. Clean before
+changing defines or build modes.
 Use `./debug.sh` for interactive debugging and `./diag_run.sh` for headless runs;
 see [the FS-UAE guide](headless-fsuae.md). The normal front end is rendered;
 `STRAIGHT_TO_RACE=1` is an optional shortcut for diagnostics.

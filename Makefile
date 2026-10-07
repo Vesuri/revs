@@ -1246,7 +1246,7 @@ dashcode:
 #
 # ⚠ jsbeeb resolves its ROMs against cwd, so it MUST be run from inside tools/jsbeeb, and
 # output paths inside the script are relative to the SCRIPT — "../tmp" is this repo's tmp;
-# "../../tmp" silently writes into ~/Documents/tmp and the run still looks successful.
+# "../../tmp" silently writes outside the repository and the run still looks successful.
 # ⚠ Needs Node >= 24.15 (jsbeeb's own engines field); this machine's default Volta node is
 # older, hence `volta run`.  Full write-up: docs/bbc-reference-loop.md.
 FRAMES ?= 200
