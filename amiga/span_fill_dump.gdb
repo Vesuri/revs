@@ -3,7 +3,7 @@
 #
 # The reasoning that built it is right about one thing — `g_vbiCount` is wall clock, so it is the
 # wrong trigger — and wrong about the fix.  `g_phaseFrames` pins the MAIN LOOP's iteration count,
-# but the game's 50 Hz body is drained on WALL CLOCK (CLAUDE.md: the body runs at the engine's own
+# but the game's 50 Hz body is drained on WALL CLOCK (AGENTS.md: the body runs at the engine's own
 # frame hook, 50 fires a second whatever the framerate does).  So at the same game frame a FASTER
 # build has taken FEWER body ticks per frame and the simulation has already diverged: measured,
 # frame 40 was vbi=556 in the control and vbi=574 under SPANFILL=1.  Different scene, different

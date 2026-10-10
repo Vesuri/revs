@@ -151,7 +151,7 @@ static uint8_t  s_dividerBuilt = 0;
 static void build_divider_table(void)
 {
     /* Walked rather than divided: `p % 48` / `p / 48` on an `unsigned` are a 32-bit divide, which
-       the 68000 does not have and amiga/Makefile's muldiv-audit rejects outright (CLAUDE.md). */
+       the 68000 does not have and amiga/Makefile's muldiv-audit rejects outright (AGENTS.md). */
     unsigned p, idx = 0, oct = 0;
     for (p = 0; p < 256; p++) {
         s_dividerOfPitch[p] = (uint16_t)(kMosPitchDivider[idx] >> oct);

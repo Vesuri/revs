@@ -491,7 +491,7 @@ carries it all the way to the hardware.
   exactly sprite resolution — one sprite pixel per display pixel, no halving.
 - ✅ **The beam timing is easy for once.** The dashboard is **band 4, display lines 166-208** — the
   bottom of the field — so its sprite data can be updated long after vblank without racing the beam.
-  ⚠ But `SPRxPT` *in the copper list* is read at **scanline 16** (CLAUDE.md), so the pointers
+  ⚠ But `SPRxPT` *in the copper list* is read at **scanline 16** (AGENTS.md), so the pointers
   themselves still belong in the VBI; only the sprite data words are late-safe.
 - ⚠ **Width is the real limit, and it is unmeasured.** Eight sprites is **128 px per scanline** out
   of 320, and the whole dashboard sits in one 42-line band, so vertical sprite reuse — the usual way
@@ -560,7 +560,7 @@ The fill's whole measured history is now consistent, and every step of it was co
 
 | build | µs/frame | cyc per 8 B | what was wrong |
 |---|---:|---:|---|
-| generic `revs_plot_run`, original loop | +5470 | 185 | the loop re-derived its advancing pointer and re-read lo4/hi4/limit out of three loop-invariant stack slots every turn — CLAUDE.md's frame-slot class |
+| generic `revs_plot_run`, original loop | +5470 | 185 | the loop re-derived its advancing pointer and re-read lo4/hi4/limit out of three loop-invariant stack slots every turn — AGENTS.md's frame-slot class |
 | ...loop fixed | +4050 | 56 | the loop was at the floor; the **preamble** (variable count to split, alignment step, byte tail, two synthesised broadcasts, an 8-register `movem`) was bigger than the stores |
 | **specialised `revs_plot_span`** | **+1630** | **27** | nothing left above the store floor |
 
@@ -594,7 +594,7 @@ per-line driver, 57% of the bracket — and **that fit is withdrawn.** It assume
 across all 1440 units, and the units are not uniform: the 834 deleted ones are *by construction*
 the all-clean ones at 42 cyc, while the 606 survivors carry the dirty arm (+80 cyc each) and
 average ~72. With `NOUNITS=2`'s independently measured 905 cyc/line driver the parked numbers close
-exactly on that split. **This is the underidentified line/run fit that CLAUDE.md already records
+exactly on that split. **This is the underidentified line/run fit that AGENTS.md already records
 from the run-entry specialisation, made a second time on the same routine** — a two-parameter fit
 on two points has no residual to warn you with, so it always looks like it worked.
 
@@ -641,7 +641,7 @@ that **§10e sized stage A as "stores deleted" when the bracket is driver + stor
 reaches only the stores.** That was already published when §10e was written — `NOUNITS=2` puts phase 1
 at 29% driver / 71% units and the whole sweep at **61% driver/entry** — and §10e simply did not apply
 it. ⇒ **Size a hook-in against the differential for the part it can actually delete, never against a
-census of stores.** (CLAUDE.md already carries the general form: *price a skip scheme with TWO
+census of stores.** (AGENTS.md already carries the general form: *price a skip scheme with TWO
 numbers — visits deleted, and what one visit of the NEW shape costs.* The missing third number is
 **what survives**.)
 
@@ -817,7 +817,7 @@ producer is still true and still means it cannot simply be sequenced after; it i
 
 ⭐⭐ **And the audit itself was asked as a MEASUREMENT, which is why it closes.** A code read cannot
 close a reader audit on this project — the readers include the transliteration an expansion circuit's
-hook re-enters (CLAUDE.md: "a `region_*` name is SHIPPING code until proven otherwise"), and no scan
+hook re-enters (AGENTS.md: "a `region_*` name is SHIPPING code until proven otherwise"), and no scan
 of the native surface can see those. So `REVS_FB_POISON=<first>-<last>` (`shape_fb_poison`, hooked
 right after `view_paint_lines()` returns) **inverts** every `mem[]` byte of the named display lines —
 `^= 0xFF`, not a constant, so every poisoned byte provably differs from the pixels the sweep just
@@ -874,7 +874,7 @@ exactly the consecutive descending order a group-of-four accumulator wants. Alig
 not a hope — the group base is `line & ~3`, and `MEM_view_src_blocks` (`$3000`) and `cell << 7` are
 both multiples of 4, so an odd-address fault cannot arise. That is `SPANFILL=4`.
 
-⚠⚠ **The longword read is the ONE argued exception to CLAUDE.md's endianness rule, and it is gated
+⚠⚠ **The longword read is the ONE argued exception to AGENTS.md's endianness rule, and it is gated
 by a counter rather than by the argument.** The longword is never a *value*: it is four independent
 byte lanes whose only operation is OR, which is per-byte and lane-order-independent. What *is*
 endian-dependent is the lane→line map, so that is written out per target (`VIEW_SCAN_LANE` under
@@ -915,7 +915,7 @@ entirely the field-bounded window's doing (`PROBEFIELDS`, `docs/perf-method.md`)
 1. ⛔⛔ **The dirty map is dead a third time, and now by a margin 97× the noise floor.** It buys the
    *largest* phase-24 saving of the three — −3.40 ms, because marking also catches lines whose only
    write was a zero — and still loses by 2.92 ms, the tax landing as +1.81 on `draw_road` and +2.94
-   on `fill_dash_edge_columns`. This reproduces the inline-bloat mechanism (CLAUDE.md §writer-
+   on `fill_dash_edge_columns`. This reproduces the inline-bloat mechanism (AGENTS.md §writer-
    maintained dirty maps) at 100× the resolution the original verdict was reached at. It will not be
    proposed again.
 2. ⭐⭐ **The stateless predicate is FREE in the producers: +0.22 ms across all four producer phases**,
@@ -1079,7 +1079,7 @@ subtraction, and the split's 4.5% over-sum lands disproportionately on its SMALL
 `view_stop_from` calls, and the objdump's main body is ~200 instructions at ~20 cyc each **because
 nearly every operand is an indexed `mem[]` byte or a stack slot**. ⚠ The spills are NOT the cause:
 the line loop's back-edge is at `128a6` with both inline runs on pads *past* it, so only 15 of the
-35 invariant-slot touches are in the body (~240 cyc/line) — CLAUDE.md's counterweight case, a
+35 invariant-slot touches are in the body (~240 cyc/line) — AGENTS.md's counterweight case, a
 stack slot serving many out-of-line pads. ⇒ **Nothing local fixes 3358 cyc/line. Doing less per
 line does, and that is the pipeline change this plan exists for.**
 
@@ -1604,7 +1604,7 @@ count the writers' stores *outside* the candidate block too.
 #### ⛔ And there is no third place to put the hook — the two placements lose by two DIFFERENT mechanisms
 
 1. **At the store, inside the writers' loops** (the first build): a cross-TU call in a hot loop is
-   an **aliasing barrier**, so the loop spills — the CLAUDE.md rule that closed the `noinline`
+   an **aliasing barrier**, so the loop spills — the AGENTS.md rule that closed the `noinline`
    `bus_write` escape, here worth **+3.45 ms**.
 2. **Batched after the loops** (the second build, the one measured above): the hook moves out of
    the loop and the loops keep their register allocation, but the flush must **walk the undo list a
@@ -1621,7 +1621,7 @@ objdump says why: inlined, GCC peels the flush's trip count and unrolls it ~8 wa
 copies of the body — each with its own `jsr (a5)` to `revs_plot_byte` — inside
 `undraw_plot_lines_core`** (332 instructions against 206 without the hook), which then pushes that
 routine's inlined `bus_write` back out of line. `noinline` restored the control's shape exactly
-(undraw 206→204 insns / 7 `jsr`, octant 319→334, mirror 118→129). This is CLAUDE.md's
+(undraw 206→204 insns / 7 `jsr`, octant 319→334, mirror 118→129). This is AGENTS.md's
 "a bounded loop over a short list is a code-size trap" in its second instance, and the tell is the
 same: **count `jsr <hot-leaf>` in the objdump after any size-changing edit.**
 
@@ -1728,7 +1728,7 @@ Rank an ownership domain by stores per row, ascending.**
 mechanism that costs +3.45 ms on its own** — placement 1, the hook at the store site inside the
 writers' loops, where a cross-TU call in a hot loop is an aliasing barrier and the loop spills. A
 true retarget would have to beat that by inlining the plane work into `plot_line_octant`'s DDA
-loop across a TU boundary, in the routine CLAUDE.md's unrolling/hoisting rule is most afraid of —
+loop across a TU boundary, in the routine AGENTS.md's unrolling/hoisting rule is most afraid of —
 to collect at most −2.18 ms on the one block that clears its break-even. ⇒ **Row ownership stops
 here. Domain A ships; nothing else on the screen pays.**
 
@@ -1988,7 +1988,7 @@ predicts. It is a **table** read that shares one address, not a source-byte read
 
 #### ⚠⚠ CLASS C — the one reader outside the view pipeline, and the named guess was wrong about it
 
-**`copy_dash_data` reads and writes the live source span — not the tails.** CLAUDE.md describes it
+**`copy_dash_data` reads and writes the live source span — not the tails.** AGENTS.md describes it
 as assembling `$7B00-$7FFF` "from the tails of 41 `$80`-spaced blocks", and that one line is
 imprecise: the twin's loop is `y = $4F` counting **down to `dash_block_starts[b]`**, i.e. exactly
 `[start+1, $4F]`. The `tails` arm shows it absent and the `blocks` arm shows it reading offsets
@@ -2015,7 +2015,7 @@ Both must be retargeted with the producers. `make determinism-race` is the traje
 the first one. Everything else in the generated corpus is clean: **every literal `$3000..$43FF`
 access in `revs_gen.c` is a tail byte or a dead-below-start byte, and `revs_native.c`,
 `revs_native_abi.c` and `revs_track_hooks.c` contain none at all.** `region_23d8` — the walk body
-every expansion circuit re-enters at `$2490`, the one CLAUDE.md warns can never be cleared by a
+every expansion circuit re-enters at `$2490`, the one AGENTS.md warns can never be cleared by a
 Silverstone run — touches no `$3xxx`/`$4xxx` literal, no `plot_ptr` and no bus access in its 351
 lines.
 
@@ -2406,7 +2406,7 @@ a one-time paint.
 in 31 frames — while its real range is the whole of `plot_line_octant`'s column. So the needle
 rectangle in `s_cockDyn` is **derived from `REVS_NEEDLE_Y0` / `_C0` / `_CELLS`**, the bound the
 DDA is clipped to, and not from this census: a hand-written 129..157 × 16..23 read off the map
-was short on both axes against the painter's 128..191 × 12..27. CLAUDE.md's rule is *enumerate a
+was short on both axes against the painter's 128..191 × 12..27. AGENTS.md's rule is *enumerate a
 footprint, never sample it*; a census taken on a trajectory that does not exercise the thing is
 still a sample.
 
@@ -2570,7 +2570,7 @@ Three pieces, each small, and the last two were free:
    restore per rebase and no new expansion path.
 
 ⭐⭐ **THE GATE IS THE IN-PROCESS ORACLE, NOT THE PICTURE** — and I had to be reminded of
-CLAUDE.md's own rule after diffing two builds' frames: a render-speed change moves the painted
+AGENTS.md's own rule after diffing two builds' frames: a render-speed change moves the painted
 moment, so two arms are never on the same scene. Two runs of the SAME build are bit-identical
 (0 pixels), which makes a cross-build diff look trustworthy right up to the point it isn't.
 `LOWOWNCHECK=1` reads **22656 checks, 0 mismatches** — every cell of both runs, boundary cells
@@ -2582,7 +2582,7 @@ that found the furniture hole in the first place is kept for the non-DUALPF arm.
 
 ⭐⭐⭐ **AND THE WRITER SET IS COMPLETE AFTER ALL — THE OBJECT PLOTTER IS A *PRODUCER*, NOT A
 FRAME-BUFFER WRITER.** The census that licenses this whole block (§12a) was taken on a *practice*
-lap, alone on track, so `move_and_draw_cars` cannot appear in it — and CLAUDE.md's own warning
+lap, alone on track, so `move_and_draw_cars` cannot appear in it — and AGENTS.md's own warning
 says the baseline trajectory decides which code exists at all, which makes "what draws an opponent
 into 117..157 in a RACE?" the obvious next question. The answer is in the plotter's own addresses:
 `draw_track_object` → `plot_object_core` → `fill_object_gap` compose into the forty `$80`-spaced
@@ -2689,10 +2689,10 @@ list decided once with the drivers as the precondition's dead arm) would replace
 ⚠⚠ **But a partial version of exactly this is already ⛔ CLOSED at −0.03 ms** (`docs/open-work.md`
 §CLOSED, "the sweep drivers' C": the scan-line pair in locals, the `$7EEE` terminator hoisted). The
 2.6k instructions are mostly REGISTER code — `step_scanline` is 11% memory operands — so counting
-them at the frame's average ~10 cycles an instruction over-reads (CLAUDE.md §Rule 1b). By cycles
+them at the frame's average ~10 cycles an instruction over-reads (AGENTS.md §Rule 1b). By cycles
 the whole fold's ceiling is ~1.5-2 ms, less the ~0.6k instructions that must remain. (The
 "~6.0 ms of per-line drivers" noted on 2026-09-25 was ph24 + ph33 minus the carved painters minus
-the scan — a RESIDUAL, CLAUDE.md's rule, not a price.) ⇒ **Build it
+the scan — a RESIDUAL, AGENTS.md's rule, not a price.) ⇒ **Build it
 only if a carve arm (the drivers skipped, the rows' background bytes precomputed, the picture
 allowed to be wrong) moves ph24 + ph33 by more than ~1 ms.** Proof obligation if it is built: the
 terminator slot is written only by the chain arms, the chain pages by `view_plant` (chain paths),

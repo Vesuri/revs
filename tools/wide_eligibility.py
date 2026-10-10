@@ -17,7 +17,7 @@ scan was done by hand (docs/wide-value-cleanup.md):
      by C FUNCTION, parsed from the generated source, so there is no address arithmetic
      to get wrong.
   3. A `region_*` / `FUN_*` name is SHIPPING code until proven otherwise — an expansion
-     circuit's hook can re-enter the transliteration (CLAUDE.md, the FOURTH eligibility
+     circuit's hook can re-enter the transliteration (AGENTS.md, the FOURTH eligibility
      test).  Nothing here is excluded for looking dead on Silverstone.
 
 Calibration (re-run these if the tool is changed — each was a real bug once):

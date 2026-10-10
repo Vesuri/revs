@@ -1412,7 +1412,7 @@ each invisible to every other gate:
   A500 (~120 on an A1200) — `view_low_build` failed and retried there, and the scan's per-cell floor
   `s_lowConsume` was `$FF` until it succeeded, a value from when the scan covered the low block
   alone that also skipped phase 1 once it covered 0..79. `SCANCHECK` could not see it (asm and C
-  read the same floor — a SHARED INPUT, CLAUDE.md §sabotage). ⭐ **The target-side gate is cheap:**
+  read the same floor — a SHARED INPUT, AGENTS.md §sabotage). ⭐ **The target-side gate is cheap:**
   break at `revs_plot_terrain`, dump `g_viewEv` / `g_viewRowBg` / `g_viewRowAddr` and the displayed
   buffer, rebuild each row from its events and diff it against the HOST's frame buffer at the same
   frame (`REVS_SCREEN_COUNT` + `REVS_MEM_DUMP`, which the lockstep has proven equal to a real BBC's).

@@ -306,7 +306,7 @@ endif
 # ⭐⭐ `make SPANSCAN=1` — THE GROUP-OF-FOUR SCAN'S LANE MAP, CHECKED ON THIS HOST.
 # The §10p takeover's fast predicate reads FOUR of a cell's source lines as one longword and
 # treats it as four independent byte lanes (docs/span-render-plan.md §10p; the one argued
-# exception to CLAUDE.md's "never alias mem[] as uint32_t*").  Only the lane->line map is
+# exception to AGENTS.md's "never alias mem[] as uint32_t*").  Only the lane->line map is
 # endian-dependent, and a WRONG one is invisible by inspection — it answers "flat" about a
 # NEIGHBOURING line, which paints a plausible picture.  So every sweep line asks both the group
 # scan and a plain forty-byte scan and the two are compared: g_spanScanMismatch must be 0 over
@@ -1054,7 +1054,7 @@ build:
 # have shown three unhonoured patch bytes and showed none, because track.o had been compiled
 # against the previous revs_smc_bytes.h and nothing told make to rebuild it.  A generated header
 # whose consumer is not rebuilt does not fail — it answers the OLD question, confidently.
-# (Same class as the Amiga Makefile's `make clean` warning in CLAUDE.md, which stays: that build
+# (Same class as the Amiga Makefile's `make clean` warning in AGENTS.md, which stays: that build
 # tracks neither headers nor PROBES.)
 DEPFLAGS := -MMD -MP
 
@@ -1117,7 +1117,7 @@ FATSCAN_DIR  := build/fatscan
 # The window is the first DRIVE: the car moves from frame 10 and hits the barrier at 221 (the reset
 # then replays the same ~222-frame drive), so 20..220 is 200 frames of driving with no reset in it
 # — the tool refuses a window in which race_resume_point ran.  ⚠ A PRACTICE session: no other car
-# is on track, so the object plotter's car arm is absent (CLAUDE.md §the baseline trajectory).
+# is on track, so the object plotter's car arm is absent (AGENTS.md §the baseline trajectory).
 FATSCAN_FROM ?= 20
 FATSCAN_TO   ?= 220
 FATSCAN_DEFS := --coverage -DREVS_FATSCAN -DREVS_STRAIGHT_TO_RACE -DREVS_HOLD_THROTTLE

@@ -79,7 +79,7 @@ volatile unsigned long g_probeFrozenLines[3] = {0, 0, 0};   /* g_viewLines there
  * beam tick of the race start once it has opened (so 0 in a PROBERACE build means "not yet"). */
 volatile unsigned long g_probeRaceOpenedAt = 0;
 
-/* ⭐⭐⭐ THE BUILD'S OWN A/B STATE, AS A NUMBER THE PROBE SCRIPT PRINTS — CLAUDE.md's
+/* ⭐⭐⭐ THE BUILD'S OWN A/B STATE, AS A NUMBER THE PROBE SCRIPT PRINTS — AGENTS.md's
  * "an A/B switch must PRINT its own state", made structural rather than per-flag.
  *
  * ⚠⚠ IT EXISTS BECAUSE A NO-OP FLAG READS AS A NULL RESULT, NOT AS A MISTAKE.  `VIEWOWN=1`

@@ -54,7 +54,7 @@ void revs_plot_target(unsigned char* planeBase);
  * repaints them.
  * ⚠⚠ That is the general rule and it is measured, not aesthetic: a mirrored painter whose state
  * is CROSS-FRAME must write BOTH plane buffers; "the back buffer is enough" holds only for a
- * painter that repaints a whole row (CLAUDE.md, docs/span-render-plan.md §11b). */
+ * painter that repaints a whole row (AGENTS.md, docs/span-render-plan.md §11b). */
 void revs_plot_planes(unsigned char* planeA, unsigned char* planeB);
 
 /* ⭐⭐⭐ §12f-iv — ONE BYTE ONTO THE COCKPIT'S PLAYFIELD, for a writer inside display lines
@@ -281,7 +281,7 @@ void revs_plot_own_reset(void);
  *      the first sweep it has planes and a band record.  An owned row is nearly all cells that
  *      nothing rewrites within a frame, so a delta painter is only valid once the planes already
  *      hold that static base.  ⛔ This is a buffer-INITIALISATION flag, not a dirty map —
- *      nothing per cell, nothing per frame, nothing the writers maintain (CLAUDE.md §writer-
+ *      nothing per cell, nothing per frame, nothing the writers maintain (AGENTS.md §writer-
  *      maintained dirty maps).  `deltaBaseStale` re-lays it only when an owned row's MODE moves.
  *   2. THE DELTA.  `revs_plot_byte` from the writer's own store site, into both buffers.  It
  *      filters by display line, so a writer whose range straddles the edge needs no bounds test
@@ -298,7 +298,7 @@ void revs_plot_own_reset(void);
  * gate — `REVS_FB_POISON` is owed only by the step that DELETES the stores — so `make validate`
  * and every `determinism` trajectory are untouched by this, and `undraw_plot_lines`' own saved
  * bytes keep coming out of mem[].  The prize is the decode's, not the store's: a row the decode
- * stops converting is worth ~0.09 ms and the store flip is a wash (CLAUDE.md, §10n). */
+ * stops converting is worth ~0.09 ms and the store flip is a wash (AGENTS.md, §10n). */
 void revs_plot_byte(unsigned short addr, unsigned char value);
 #define REVS_PLOT_BYTE(a, v)  revs_plot_byte((unsigned short)(a), (unsigned char)(v))
 #ifdef REVS_SPAN_STATS

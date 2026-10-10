@@ -29,7 +29,7 @@
 #
 # ⚠⚠ `painted` IS PRINTED FOR LIVENESS AND IS NOT A FRAMERATE.  The conditional breakpoints
 # below halt the emulated machine to evaluate their condition, which is precisely the defect
-# that made fps_seg.gdb read 0.02 where the truth was 0.78 (CLAUDE.md §Performance).  Quote a
+# that made fps_seg.gdb read 0.02 where the truth was 0.78 (AGENTS.md §Performance).  Quote a
 # framerate from fps_series.gdb or from nothing.
 set pagination off
 set confirm off

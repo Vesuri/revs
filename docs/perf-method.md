@@ -84,7 +84,7 @@ Four things that are already handled — do not go looking for them again:
    `AUTORUN_HOLD_THROTTLE`, `src/platform/autorun.cpp`). You do NOT need `FPSCOUNT=1` (it disables
    the probes) or `HOLD_THROTTLE=1` (redundant). `STRAIGHT_TO_RACE=1` is what boots into the race;
    without it the run profiles the menu.
-2. **`make clean` is mandatory before any PROBES build** (CLAUDE.md) — the Amiga Makefile tracks
+2. **`make clean` is mandatory before any PROBES build** (AGENTS.md) — the Amiga Makefile tracks
    neither defines nor the PROBES toggle, so a partial rebuild links a working-but-wrong binary.
 3. **Read `amiga/.run/gdb-out.log`, never the terminal.** `diag_run.sh` ends with `tail -40`, which
    silently drops the header — the accounted-% sanity line, phase 0, `body ticks/field`, and phases
@@ -340,7 +340,7 @@ comparable. `amiga/isr_split.gdb` reads it. Two things make its numbers trustwor
   1.974 ms) in the tail slot. It read **2001 µs above the floor: 0.6% error**, which validates the
   whole beam-tick → µs chain, not just this table. ⚠ `ISRCAL` changes `EXTRA_DEFINES` and the Amiga
   Makefile does not track those — **`make clean` when you turn it off**, or the burn stays linked in
-  and the tail row reads ~2 ms of nothing (it happened; CLAUDE.md's stale-build rule, again).
+  and the tail row reads ~2 ms of nothing (it happened; AGENTS.md's stale-build rule, again).
 - ⚠ The first bracket **must open BELOW `PROBE_VBI()`**: that advances `g_beamEpoch` by a whole
   display frame, so a bracket straddling it reads ~10 ms of pure artefact.
 
@@ -383,7 +383,7 @@ fields, so its cost belongs to the painted frame (~2.3 ms of a ~220 ms frame), n
    reads. Measured with `-DREVS_SND_STAT_OFF`, which leaves the brackets in and takes the counters
    out. ⚠ The counter DEFINITIONS stay unconditional — `PROBE_SYMS` lists them on every link.
 5. `noteVbiEntry` is a pure diagnostic (two chip reads, 37 µs/field) and is now `#ifdef REVS_PROBE`.
-   `g_beamPresentsLate`, the one CLAUDE.md requires to stay 0, is recorded in `vbiUpdate()` on the
+   `g_beamPresentsLate`, the one AGENTS.md requires to stay 0, is recorded in `vbiUpdate()` on the
    present path and is unaffected.
 
 ⭐ **The generalisation, and it is not about sound:** a `volatile` counter in a 50 Hz path costs
@@ -565,7 +565,7 @@ code-shape defect, and it was worth −4.79 ms. See the next two subsections.
 ⭐⭐⭐ **49 IS THE LOAD-BEARING PART, AND IT MEASURES THE INSTRUMENT'S FLOOR AT 107 µs (758 cycles)
 PER TRANSITION.** Its bracket contains *nothing*, so its ticks ARE the probe's own cost at this
 rate; correcting every row by `instances × 107 µs` drives the control itself to **−0.4 ms ≈ 0**,
-which is the verification (and it agrees with CLAUDE.md's documented 92 µs ISRSPLIT floor).
+which is the verification (and it agrees with AGENTS.md's documented 92 µs ISRSPLIT floor).
 ⚠⚠ **So no ROADSPLIT row may be quoted raw**: adding brackets inflated the pass from 42 to 65 ms
 and the raw rows over-read by 2.8 / 8.9 / 6.4 ms. And ⚠ **`ROAD_COUNT` is not free either** — each
 one is a `volatile unsigned long` RMW, ~40 cycles, and the step counter fires 232 times a frame, so
@@ -600,7 +600,7 @@ after the deltas, the four-iteration colour-pattern loop, both cap surfaces and 
 clamp — while `block` derives only from `shared_temp_7e`, which is known right after step 2. It
 looks like ~5 ms of wasted setup and it is worth ZERO, because it never fires.** ⚠ Do not delete
 either zero-count test: Silverstone practice is one trajectory, an expansion circuit's hook
-re-enters this subtree, and CLAUDE.md's rule is that a body no scenario drives is *unproven*, not
+re-enters this subtree, and AGENTS.md's rule is that a body no scenario drives is *unproven*, not
 dead.
 ⇒ **The correction that matters: both non-walking exits leave after step 2, so the ~1 900 cyc
 setup is paid by the ~24 spans that WALK, not by 43 — i.e. ~3 400 cycles of setup per drawn span,
@@ -782,7 +782,7 @@ subtraction error is a fixed number of cycles and the block is not.** An 815 cyc
 taken off a block whose true cost is ~280 cyc/line is dominated by the subtraction; the 4.5%
 over-sum is real but it does not distribute proportionally, it piles onto the small rows. **Read a
 split's BIG rows as sizings and check every small one against a count** — and the count is cheap,
-because CLAUDE.md already licenses host counters as a proxy for call counts. This is the
+because AGENTS.md already licenses host counters as a proxy for call counts. This is the
 "when a win's per-call price comes out implausibly cheap, doubt the denominator" rule running in
 reverse: *implausibly expensive* is the same tell.
 
@@ -1466,7 +1466,7 @@ plants are, is what makes the attribution safe without a second instrument.
 ⭐⭐ **The rule to carry forward: a bounded loop over a short list is a code-size trap, and that
 is how a call gets paid.** `docs/m68k-optimisation.md` §the third case has the general form.
 
-⚠⚠ **And `always_inline` on `view_plant` — which CLAUDE.md's constant-parameter rule asks for,
+⚠⚠ **And `always_inline` on `view_plant` — which AGENTS.md's constant-parameter rule asks for,
 since `page` and `opcode` are literals at every call site — measured +1.04 ms/frame** (phase 3
 +1.18), and +1.01 with the list walks additionally forced out of line (phase 3 +1.44). Phase 2's
 bracket gained both times and phase 3's lost more: the core grows 757 → **995** instructions and
@@ -1696,7 +1696,7 @@ Reading the objdump of `paint_cells` for a different reason turned this up: **~1
 `PROBE_VIEW_RUN` sit inside the per-run set-up itself** — the `g_viewPhaseIdx` load, two
 `add.l d1,d1`, a `lea g_viewUnits`, a `move.l #323644,52(sp)` and an 8-instruction indexed-long
 RMW pair. At ~200 raw cycles × 118 runs a frame that is **~5.3 ms/frame**, i.e. essentially all of
-CLAUDE.md's "~3% PROBES overhead" lands *inside* the view-sweep brackets rather than spread over
+AGENTS.md's "~3% PROBES overhead" lands *inside* the view-sweep brackets rather than spread over
 the frame.
 
 What this does and does not invalidate:
@@ -1855,7 +1855,7 @@ picture legitimately differs.
    twice in this session's reasoning before the arm contradicted it.
 2. ⭐⭐ **Phase 1's driver is ~145 µs/line and that is exactly what its ~40 instructions should
    cost**, so the "both drivers are 2500 cyc/line" reading — obtained by subtracting a modelled
-   painter from a measured bracket — was the residual error CLAUDE.md records three times, in its
+   painter from a measured bracket — was the residual error AGENTS.md records three times, in its
    fourth instance.  The arm cost one build and settled it.
 3. `plotDeltaBase` is **not** in the loop: `amiga/dbase_probe.gdb` reads `deltaBases=1` over 331
    sweeps (and `deltaBytes=80`), so `revs_plot_own_reset` is the 208-byte claim clear plus a
@@ -1887,7 +1887,7 @@ cells over ~200 segment entries a frame, so nearly every entry pays the peel's a
 reaches the unrolled core: 164 cycles per byte STORED where the loop body is ~52. With `unroll 1`
 the fill is **24 instructions** and `view_paint_lines_core` 2026 → 1922.
 ⚠ **The static delta over-reads as usual** — 127 → 24 instructions paid 1.96 ms, not the ~6 the
-count suggests (CLAUDE.md §Rule 1b). `unroll 1` here is load-bearing, not a hint.
+count suggests (AGENTS.md §Rule 1b). `unroll 1` here is load-bearing, not a hint.
 
 ⭐ What remains in phase 33's 14.16 ms is the runs' OUTER loop and the boundary composites — ~5
 segment entries a line — not the fill. The fill is now ~5.2 of the 14.
@@ -1904,7 +1904,7 @@ the transposed scan. Measured against HEAD (frame **172 → 186**):
 | 18 — `edge_run_flat`'s 136 notes | 5.93 | 7.21 | +1.29 |
 | 33 — source-zeroing + list reset | 14.16 | 16.05 | +1.89 |
 
-⭐⭐⭐ **The two producer rows price CLAUDE.md's call-boundary rule at 40× on the same five lines
+⭐⭐⭐ **The two producer rows price AGENTS.md's call-boundary rule at 40× on the same five lines
 of code, and that is the result worth keeping.** The identical note costs **67 cycles** at
 `edge_run_flat`'s site (1.29 ms / 136 notes, inline in a loop we own) and **~2700 cycles** inside
 `interp_edge_core` (15.28 ms / ~40 notes), because there it is a `jsr` in `draw_road`'s hot loops
@@ -1948,7 +1948,7 @@ Both halves are at the floor, and the objdump closes to ~10%:
 ⇒ **the scan's 10 ms is the REPRESENTATION, not the code**, and the only thing that deletes it is
 producer-emitted events. ⚠⚠ **That hook is a real risk, not a formality:** a complete one needs
 `plot_store_resync`, which is inlined **nine times** inside `interp_edge_core` — the same shape
-CLAUDE.md records at **+4.9 ms** when a marking leaf was inlined into `seam_write`, and the damage
+AGENTS.md records at **+4.9 ms** when a marking leaf was inlined into `seam_write`, and the damage
 would land on `draw_road`, the frame's biggest row. The producer census (176 stores to 161 events,
 1.09:1) says the arithmetic works; the codegen risk is what has to be decided.
 ⭐ One small piece of real slack found and left: the four lanes' `g_viewEvEnd` slots are 4 bytes
@@ -1999,7 +1999,7 @@ queue's sizings imply, so read it before building anything here.
 | `draw_road` (ROADSPLIT) | 34.3 | **66** | **+31.7** | ⛔ ms unusable — read the COUNTS |
 
 ⚠ ROADSPLIT's own empty bracket (49) is **10.4% of its 66 ms**, and it transitions 45 000+ times a
-frame. CLAUDE.md §an instrument whose cost exceeds what it measures: its *shares* are indicative,
+frame. AGENTS.md §an instrument whose cost exceeds what it measures: its *shares* are indicative,
 its milliseconds are not, and its **counts** are the finding.
 
 #### ⭐⭐⭐ THE COUNTS — the whole reason this section exists
@@ -2039,7 +2039,7 @@ from unrelated passes.
 
 ⚠⚠ **That is the documented trap, not a finding about geometry: `$0084`/`$0085` carry a SECOND
 TENANCY as `shared_temp_84`/`shared_temp_85`**, so the reader count counts TENANTS
-(CLAUDE.md §rank a candidate pair by ops-per-marshal). The audit's per-offset column is what
+(AGENTS.md §rank a candidate pair by ops-per-marshal). The audit's per-offset column is what
 separates them — offsets 0, 1, 6, 7 have 1-3 readers each and are candidates; offsets 2, 3, 4, 5
 have 8-11 and are not. ⇒ **a value pipeline here is a per-CELL audit with a mostly negative
 answer, not a pass-level rewrite.**
@@ -2140,7 +2140,7 @@ reaches the grid. **But it re-ranks the object plotter from "0.9% available" to 
 race's frame, which is the same order as `fill_dash_edge_columns` was before it was flattened.**
 
 ⭐⭐ **THE GENERAL LESSON, and it applies to every number in `docs/perf-method.md`: THE BASELINE
-TRAJECTORY DECIDES WHICH CODE EXISTS, not just how hot it is.** CLAUDE.md already records the
+TRAJECTORY DECIDES WHICH CODE EXISTS, not just how hot it is.** AGENTS.md already records the
 weaker form ("size a road-pass routine while DRIVING, not parked — it is 8x"). This is the stronger
 one: a whole subsystem can read as 0.1% of the frame because the chosen session never populates its
 inputs, and no amount of care with the instrument can see it.
@@ -2169,7 +2169,7 @@ it appends; a producer stores in DDA order, so it must search and shift). So:
 (`docs/span-render-plan.md` §12b class B), a scoped `set_ignore`, a `determinism` re-record and
 per-circuit `viewdiff` gating. **Not worth building. Do not re-open without a new number here.**
 
-⭐⭐⭐ **AND THE ERROR IS THE FAMILY CLAUDE.md ALREADY RECORDS, IN ITS FIFTH INSTANCE: I PRICED THE
+⭐⭐⭐ **AND THE ERROR IS THE FAMILY AGENTS.md ALREADY RECORDS, IN ITS FIFTH INSTANCE: I PRICED THE
 PRIZE AGAINST THE WHOLE MEASURED BRACKET WHEN ONLY PART OF IT WAS DELETABLE.** My reported figure
 was "−10 (scan) − 0.75 (stores) + 1.66 (notes) = −9.1". The missing number is the one §10n named:
 **what survives.** Same shape as the span hook-in that deleted 58% of phase 1's units and netted
@@ -2203,7 +2203,7 @@ emitted a **constprop clone**, so every call reads `jsr <view_ev_note_addr.const
 grep for `<name>` matched none of them. Four calls sat in `interp_edge_core` in every arm.
 
 ⇒ ⭐⭐⭐ **AN OBJDUMP CHECK FOR A CALL MUST MATCH THE CLONE SUFFIXES — `.constprop.N`, `.isra.N`,
-`.part.N` — SO GREP THE PREFIX `<name`, NEVER `<name>`.** This inverts a check CLAUDE.md tells you
+`.part.N` — SO GREP THE PREFIX `<name`, NEVER `<name>`.** This inverts a check AGENTS.md tells you
 to run: "count `jsr <hot-leaf>` in the objdump and require 0" reads 0 just as happily when the leaf
 is being called under a clone name, which is the failure it exists to catch.
 
@@ -2368,7 +2368,7 @@ so the return costs nothing, and those 1176 instructions are the six arms' COLD 
 running per cell.  The pack is real HOT-path work: the 68000 has no byte-insert, so `class << 8` is
 an `lsl.l #8` (24 cycles) plus an `or.l`, and the unpack an `lsr.l #8`.
 ⇒ **AN INSTRUCTION COUNT CANNOT SEE DEAD-CODE ELIMINATION INSIDE AN INLINED CALLEE**, so an
-`always_inline` struct return is already free and its apparent size is cold arms.  CLAUDE.md
+`always_inline` struct return is already free and its apparent size is cold arms.  AGENTS.md
 §packing is not free, second instance, and the discriminator is the same: one pack per CALL loses,
 one pack serving a long loop wins.
 
@@ -2569,7 +2569,7 @@ of this C.
 #### ⭐⭐ THE FRAME-SLOT DEFECT CLASS IS EXHAUSTED OUTSIDE THE DECODE — A NEGATIVE RESULT (2026-09-13)
 
 The decode's +8.1% came from a hot loop re-reading two loop-invariant stack slots per cell, and
-CLAUDE.md turned that into a standing rule. So the whole native surface was scanned for the same
+AGENTS.md turned that into a standing rule. So the whole native surface was scanned for the same
 shape: SCCs of every hot `_core`'s objdump, ranked by stack-slot operands in the cyclic region.
 **Nothing survived, and the reason generalises.**
 
@@ -2676,7 +2676,7 @@ for the C walk + plot + guard — the plan's 60-80. The rest of a real `interp_e
 ⚠ **The estimate was ~8-10 ms and the phase table paid −4.49.** The asm hit its instruction
 target, so the gap is the DENOMINATOR: "×42 calls a frame" counted every call as a walk, and
 the trace shows 8 of 24 calls are publish-only (61-65 instructions, no walk at all). ⇒ price a
-per-call saving by the calls that take the path — CLAUDE.md's "check how many times it RUNS",
+per-call saving by the calls that take the path — AGENTS.md's "check how many times it RUNS",
 once more.
 
 **How it was gated — and the two holes the game alone would have left.**
@@ -3814,7 +3814,7 @@ replaced:
   landing in the same cell. "The producer already knows every byte it writes" is true per STORE and
   false per CELL, so the replacement representation must carry the composition. **This is the real
   constraint on the item and it is a design question, not an audit one.**
-- `copy_dash_data` reads the **live span**, not the tails as CLAUDE.md says — but it brackets the
+- `copy_dash_data` reads the **live span**, not the tails as AGENTS.md says — but it brackets the
   race (assemble in, stow out) and never interleaves, so it does not block.
 - Two producers the practice-session window cannot reach go with the rest: `draw_starting_lights`
   (`$42C0`) and `paint_fence_backdrop`.
@@ -3832,7 +3832,7 @@ without a new number.** Two sub-ideas died with it: bounding the scan by `dash_b
 worth exactly ZERO (`s_lowConsume[cell] == dash_block_starts[cell] + 1` on all forty cells — the
 scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
 
-⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
+⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected AGENTS.md on
 `copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
 #### 2d. ✅ ROWS 158..191 — THE DASHBOARD, DONE AND NOW **DEFAULT ON** (`NEEDLE ?= 1`)

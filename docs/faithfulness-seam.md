@@ -197,7 +197,7 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    ⭐⭐ TWINS #40-#43 close the VIEW/DASHBOARD SEAM — everything `fill_dash_edge_columns`
    reaches (`surface_colour_at`, `column_gap_walk`, `fill_column_gaps`, `fill_edge_column_run`)
    is real C.  Three things they add:
-   * ⚠⚠ **HOISTING A POINTER OUT OF A LOOP IS A CORRECTNESS QUESTION FIRST.**  CLAUDE.md says to
+   * ⚠⚠ **HOISTING A POINTER OUT OF A LOOP IS A CORRECTNESS QUESTION FIRST.**  AGENTS.md says to
      lift the `bus_*` range test to where the pointer is known, and that is right — but the 6502
      re-reads the zero-page PAIR at every `STA (zp),Y`, and `column_gap_walk`'s own stores can
      land on the cells that drive it: a randomised boundary-table pointer of `$005D` makes the
@@ -275,7 +275,7 @@ in one case in six.
 
 ⭐ **The rule: when writing a twin, treat every `platform_mos_call` in the subtree as clobbering
 A, X and Y unless the OS entry's contract says otherwise.**  It is the opposite of the interrupt
-contract (where a real BBC preserves all three across an engine-context IRQ, `CLAUDE.md`) and it
+contract (where a real BBC preserves all three across an engine-context IRQ, `AGENTS.md`) and it
 is invisible in the 6502 listing, because the clobber happens two or three `JSR`s down.  Read a
 register out of `cpu` at the point of use, not into a local at the point it was set — and if you
 do cache it, the thing that catches you is the differential, so never cache it without a fixture
@@ -306,7 +306,7 @@ read.** Here three neighbours settle it beyond doubt: `$1941 STY span_end_index`
 `$1944 STY math_hi`, so `Y = endCursor - 1`. (`$1949 LDY horizon_extent` then discards the hook's
 exit `Y`, which is why the walk below re-seeds from `horizon_extent` — the *entry* obligation and
 the *exit* one are separate questions.) This is the same lesson as the interrupt contract in
-`CLAUDE.md` — an ISR shim must reproduce the OS entry's side effects, not just call the handler —
+`AGENTS.md` — an ISR shim must reproduce the OS entry's side effects, not just call the handler —
 and it fails the same way: silently, plausibly, and invisibly to every existing gate.
 
 ⚠ **Why no gate caught it.** Every `make validate` fixture races Silverstone, so a seam's
@@ -574,7 +574,7 @@ per-circuit hook file, and it is what keeps the 6502 ABI alive at the seam.** No
 not the twins. So "get rid of the cpu-struct stuff that only validation needs" has no work left in
 it; the work is **twinning `revs_track_hooks.c`**, whose gate already exists and is green —
 `make viewdiff`, every circuit's race view byte-exact over display lines 82..166. ⚠ And it is the
-one campaign where the CLAUDE.md hook-seam rule bites hardest: these bodies run on four of the five
+one campaign where the AGENTS.md hook-seam rule bites hardest: these bodies run on four of the five
 circuits and nothing but `viewdiff` can see them compute wrongly.
 
 ### …and the SOURCE-SIDE audit that finishes it: all 22 `_core` bodies, 2026-09-10
@@ -596,7 +596,7 @@ EOF
 
 | Class | Functions | Why it stays |
 |---|---|---|
-| **Hook / SMC seam** — hands a circuit's own 6502 code the whole register file | `emit_edge_width_offset_core`, `build_track_geometry_core`, `horizon_half_width_at_core`, `fill_line_attr_core`, `load_section_from_segment_core`, `rebuild_walk_reversed_core`, `read_driving_controls_core` | CLAUDE.md's hook-seam rule: the register set comes from the *surrounding instructions*, and an expansion circuit's hook reads registers Silverstone's callee does not. Gated only by `make viewdiff` |
+| **Hook / SMC seam** — hands a circuit's own 6502 code the whole register file | `emit_edge_width_offset_core`, `build_track_geometry_core`, `horizon_half_width_at_core`, `fill_line_attr_core`, `load_section_from_segment_core`, `rebuild_walk_reversed_core`, `read_driving_controls_core` | AGENTS.md's hook-seam rule: the register set comes from the *surrounding instructions*, and an expansion circuit's hook reads registers Silverstone's callee does not. Gated only by `make viewdiff` |
 | **SED/CLD at a sanctioned BCD site** — `adc_value` reads `cpu.D` | `add_tally_to_lap_total_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tally_bcd_column_core` | Decimal mode is inventoried in `docs/static-map.md` §Decimal mode; these are five of the eight `SED` sites and the flag is the mode, not a value |
 | **An OS-call register contract the harness compares** | `shift_key_commands_core`, `kbd_test_key_core` | A/X/Y reach the MOS inside `sound_stop_all`, and the harness compares registers at every OS-call boundary. ⚠ `shift_key_commands_core`'s `cpu.X` at `$0F57` is genuinely ambient — the pause spin's own `kbd_test_key` leaves `$FF` in it on any frame that paused |
 | **The frame driver's live ambient register file** | `race_main_loop_core` | MEASURED, see below |
@@ -633,7 +633,7 @@ observe — including scratch cells, unless they are *proven* dead (no reader be
 write).  Proven-dead cells go in the fixture's ignore list with the proof in a comment, never
 just to make a test pass.
 
-See `docs/validation-harness.md` for what the harness guarantees, and `CLAUDE.md` §Transpiler
+See `docs/validation-harness.md` for what the harness guarantees, and `AGENTS.md` §Transpiler
 for the mechanical steps of making a function native.
 
 ## ⭐⭐ THE FRAME-RATE-INDEPENDENT SIMULATION — a written departure from the BBC (2026-09-25)
@@ -741,7 +741,7 @@ argument (`docs/faithfulness-seam.md`), because it is a departure from the BBC.
   Q16 `mulu.w` at the scaled sites. Game time is therefore real time.
 - **Clock:** lap times stay **comparable with the original's**. `add_frame_time` runs bit-exact on a
   slow tick that fires every 93.6 ms of game time.
-- Precedent: the user's Stunt Car Racer port (Stunt Car Racer `CLAUDE.md` §Frame Rate
+- Precedent: the user's Stunt Car Racer port (Stunt Car Racer `AGENTS.md` §Frame Rate
   Conversion) runs one step per elapsed vertical blank and draws on the last one.
 
 **The design** — review of an outside proposal, verified against the code 2026-09-25.
@@ -859,5 +859,5 @@ workload (84.80 → 85.39 bracketed, while the displayed rate fell 16%).
    airtime, AI lap times) plus sabotages.
 4. The per-frame-change thresholds and the written holding argument.
 5. The Amiga rate choice, and probes for steps a frame and dropped steps.
-6. Docs (CLAUDE.md's GAME SPEED rule).
+6. Docs (AGENTS.md's GAME SPEED rule).
 7. The user play-tests it.

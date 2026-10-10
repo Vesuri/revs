@@ -294,7 +294,7 @@ void shape_view_line(void);
 /* ── ⭐⭐⭐ THE TAKEOVER'S FLAT-LINE COUNT (`docs/span-render-plan.md` §10p step 1) ──────────
  * ⭐⭐ THE ONE NUMBER THE PHASE-1 TAKEOVER IS SIZED ON, and it costs no emulator run.  §10p
  * puts a flat line at ~980 cycles against ~2300 for a changed one, so the FLAT FRACTION is the
- * whole difference between a -8 ms and a -11 ms result.  CLAUDE.md licenses exactly this: count
+ * whole difference between a -8 ms and a -11 ms result.  AGENTS.md licenses exactly this: count
  * it on the host, where the view sweep's 36/16/25 line split already reproduces the target's.
  *
  * ⭐ THE PREDICATE IS THE WHOLE OF IT, AND IT IS STATELESS AND EXACT.  `view_consume` is RLE
@@ -418,7 +418,7 @@ void shape_frame_delta(void);
  * of `mem[]` for display rows 81..101, does anything in the game read those `mem[]` bytes back?**
  * §10i's RESULTS rule makes that a WRITTEN READER AUDIT, and a code read cannot close it — the
  * readers include the transliteration an expansion circuit's hook re-enters, which no scan of the
- * native surface can see (CLAUDE.md: "a `region_*` name is SHIPPING code until proven otherwise").
+ * native surface can see (AGENTS.md: "a `region_*` name is SHIPPING code until proven otherwise").
  *
  * ⭐⭐ SO ASK IT AS A MEASUREMENT INSTEAD, AND LET THE GAME ANSWER.  Immediately after the sweep
  * returns, invert every `mem[]` byte of the display lines named by `REVS_FB_POISON=<first>-<last>`.

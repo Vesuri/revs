@@ -9,7 +9,7 @@ work belongs in one queue; completed development logs are available in Git histo
 - [Toolchain and source generation](toolchain.md)
 - [Controls](controls.md)
 - [Release packaging and installer](whdload.md)
-- [Working rules](../CLAUDE.md)
+- [Working rules](../AGENTS.md)
 - [Open work](open-work.md) and [unresolved names](rename.md)
 
 ## Architecture and fidelity

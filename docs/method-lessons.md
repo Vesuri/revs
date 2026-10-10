@@ -290,7 +290,7 @@ What works is an SCC decomposition that strips each component's header set and r
 the leaves. ⭐ But the transferable half is the failure shape: **a static analysis that is wrong
 still produces a table, and a table of numbers reads as a measurement** — there is no error
 message, no empty output, nothing that feels like a failed run. Sabotage a new *analysis* the way
-CLAUDE.md already requires for a new *instrument*: point it at a known-good case (here, a loop
+AGENTS.md already requires for a new *instrument*: point it at a known-good case (here, a loop
 whose shape is already documented) and require it to agree before believing a new ranking.
 
 ⚠ And the ranking metric was wrong independently of the detector: on a register-poor target a

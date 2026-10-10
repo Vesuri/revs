@@ -297,7 +297,7 @@ static void scout_store(unsigned dst, unsigned value, unsigned x)
 {
     /* ⚠⚠ `revs_divu16`/`revs_modu16`, NOT `/` and `%`: a bare `off % BBC_SCREEN_BPR` promotes
        to int and emits `__umodsi3`, which the 68000 does not have — `amiga/make`'s muldiv-audit
-       fails the link (CLAUDE.md §NEVER emit a 32-bit software mul/div).  `off` is < 8320, so a
+       fails the link (AGENTS.md §NEVER emit a 32-bit software mul/div).  `off` is < 8320, so a
        32/16 DIVU is exact. */
     unsigned off  = (dst - BBC_SCREEN_BASE) & 0xFFFFu;
     unsigned cell = (off >= BBC_SCREEN_BYTES) ? 0xFFu
@@ -431,7 +431,7 @@ void scout_report(void)
      breakpoints +3 cells       88.31%   27176   2.1x
      breakpoints +1 cell        92.29%   12719   1.0x  <- argued, see below
 
-   ⚠⚠ The +1 arm prints a carry-miss BYTE-IDENTICAL to the control, which is CLAUDE.md's named
+   ⚠⚠ The +1 arm prints a carry-miss BYTE-IDENTICAL to the control, which is AGENTS.md's named
    tell for a stale object file.  It is not one (MATCH and runs/line both moved, and the build
    rm's its objects), and the asymmetry against the -1 arm is the proof: `surface_colour_at_core`
    selects on `position >= edge`, so an interval starts AT `e`.  Shifting +1 therefore
@@ -705,7 +705,7 @@ volatile unsigned long g_shapeMarkPerUnmarked[128];
 }
 
 /* ⭐⭐⭐ THE TWO NUMBERS THAT DECIDE WHETHER A PRODUCER-EMITTED EVENT LIST CAN BEAT THE
-   TRANSPOSED SCAN (CLAUDE.md §price a skip scheme with TWO numbers).  The scan's cost is a
+   TRANSPOSED SCAN (AGENTS.md §price a skip scheme with TWO numbers).  The scan's cost is a
    fixed ~800 longword tests a sweep plus one body per EVENT; a producer-emitted list pays one
    body per STORE.  So the whole question is the ratio of producer STORES to real EVENTS, and
    nothing in the project had ever counted the first one.  Host only, SHAPE only. */
@@ -1018,7 +1018,7 @@ void shape_view_flat(unsigned line, int fullRun, unsigned screenPtr)
    byte of the display lines `REVS_FB_POISON=<first>-<last>` names, right after the sweep wrote
    them.  Diff a fixed trajectory's 64 KB against an unpoisoned run: if every difference lies
    inside the poisoned rows, nothing in the game read them back.
-   ⭐ An A/B switch must PRINT its own state (CLAUDE.md) — a build that parsed nothing reads
+   ⭐ An A/B switch must PRINT its own state (AGENTS.md) — a build that parsed nothing reads
    exactly like a game that ignores the rows, which is the answer we are trying to establish. */
 void shape_fb_poison(void)
 {

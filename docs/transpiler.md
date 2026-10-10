@@ -2,7 +2,7 @@
 
 > **Read this when working on `tools/transpile.py`, or when the shape of generated `revs_gen.c`
 > surprises you.**  The everyday parts — the file table, the native-twin seam, and which file a
-> twin belongs in — are in `CLAUDE.md` §Transpiler and `docs/faithfulness-seam.md`.
+> twin belongs in — are in `AGENTS.md` §Transpiler and `docs/faithfulness-seam.md`.
 >
 > ✅ **The port is done** (Phase 3).  `tools/transpile.py` emits `revs_*`, knows the BBC's
 > address ranges, intercepts MOS calls, and emits the self-modifying code as runtime dispatch

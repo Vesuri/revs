@@ -23,7 +23,7 @@ A ranked scanner for the fat the object-plotter cleanup removed by hand (docs/pe
 
 ⭐⭐ RANKED BY WHAT THE TARGET PAYS PER FRAME, never by raw count.  Two measured inputs:
   - executions: a --coverage HOST build driving STRAIGHT_TO_RACE + HOLD_THROTTLE, counters
-    zeroed at the window's first frame (`make fatscan` builds and runs it).  CLAUDE.md licenses
+    zeroed at the window's first frame (`make fatscan` builds and runs it).  AGENTS.md licenses
     a host counter for COUNTING, never for timing, and this uses it for nothing else.
   - instructions: the plain Amiga ELF (`objdump -dl --inlines`).  Every target instruction is
     credited with its OWN share of its line's host count — an inlined copy gets the share its
@@ -607,7 +607,7 @@ class Model:
                 q, _ = up(p)
                 if q is not None and q.get('kind') == 'CallExpr' and callee_name(q) == 'revs_track_hook_regs':
                     # ⚠ THE CIRCUIT-HOOK SEAM hands every register to an expansion circuit's hook
-                    # (CLAUDE.md §a hook seam) — live on four circuits, and no Silverstone run
+                    # (AGENTS.md §a hook seam) — live on four circuits, and no Silverstone run
                     # can say otherwise; `make viewdiff` is the gate that can.
                     out.append(('read', f"{g['name']}: circuit-hook seam (revs_track_hook_regs)")); continue
             out.append(('read', f'struct {r.get("referencedDecl", {}).get("name")} used whole'))

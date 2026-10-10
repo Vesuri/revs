@@ -2,7 +2,7 @@
 
 Names and cells that contradict what they do, or have no name yet.  Applied entries are DELETED
 from this file in the same commit that applies them; `disasm/symbols.csv` carries the name and its
-evidence afterwards.  The conventions that govern this queue are in `CLAUDE.md` §Working
+evidence afterwards.  The conventions that govern this queue are in `AGENTS.md` §Working
 conventions, not here.
 
 ⚠ **Cite an entry by its SUBJECT, never by a number.**  The entries used to be numbered and every

@@ -10,7 +10,7 @@
 >
 > **Read this before optimising any hot function or writing an asm twin.** The two rules that
 > must not be violated even without reading this file (RAM is uniformly slow; never emit a
-> 32-bit software mul/div) are stated in `CLAUDE.md` §Hard rules.
+> 32-bit software mul/div) are stated in `AGENTS.md` §Hard rules.
 > Companions: `docs/perf-method.md` (how to get a number you can trust),
 > `docs/amiga-lessons.md`, `docs/method-lessons.md`.
 
@@ -242,7 +242,7 @@ fix.** "More hoisted values than there are registers" is the intuitive story, it
 a hoist regressing, and it is **retracted** — the hot loop's stack references had gone *down*, not
 up. A plausible cycle-accounting story is not evidence. ⭐ **When a size-changing edit regresses,
 count the `jsr`s to the hot leaves BEFORE reasoning about register pressure** — it is one grep, and
-it is the same trap CLAUDE.md already documents as `jsr <sub_from>` with a different callee.
+it is the same trap AGENTS.md already documents as `jsr <sub_from>` with a different callee.
 
 ⚠⚠ **And the framing error that sent this pass at the wrong target: divide by the right
 denominator.** "24 ms in the span walk / 49 DDA scan lines = ~3 500 cycles per scan line" made the

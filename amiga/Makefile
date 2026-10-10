@@ -1277,7 +1277,7 @@ PROBE_SYMS_TERRAIN = g_viewEvents
 # game frames instead of 314.  The ladder predates the low block.  Use level 1 (scan kept, phase
 # 1's painting carved) to price the painter, and `TERRAINLOW=0 TERRAINCARVE=3` if the scan itself
 # has to be priced.  ⭐ The tell was the FRAME total not resembling the baseline at all
-# (CLAUDE.md §prove the flags reached the build) — 1130 against 182.
+# (AGENTS.md §prove the flags reached the build) — 1130 against 182.
 # ⚠⚠ `TERRAINCARVE=1|2|3` — PICTURE WRONG BY CONSTRUCTION, the cost ladder.  Each level deletes
 # one more part while still CLAIMING the line, so the decode's share is constant and ph24 alone
 # moves: 1 = no fill and no overlay, 2 = ...and no `view_span_line`, 3 = ...and no source scan.
@@ -1491,7 +1491,7 @@ endif
 # read-modify-write cannot be coalesced) plus two more per LINE in the sweep (g_spanEmitLines /
 # g_spanEmitPaints, ~44 cycles x 36).  Parked that is ~0.9 ms a frame — a quarter of what deleting
 # 851 chain units bought — so the counting build's span price is NOT the shipping price, and this
-# is the instrument that separates them.  Same class as SND_STAT() in the VERTB ISR (CLAUDE.md:
+# is the instrument that separates them.  Same class as SND_STAT() in the VERTB ISR (AGENTS.md:
 # a volatile diagnostic counter is 13% of snd_tick).
 # ⚠ Default ON: both span oracles and every committed span .gdb script read these.  A SPANSTAT=0
 # build therefore has NO span probe symbols at all, and running a span script against one is a
@@ -1863,7 +1863,7 @@ obj/%.o : %.c
 # ⚠ -O2 and NOT $(NATIVE_OPT): fastmem.c's loops are ALREADY unrolled eight ways by hand, and
 # -funroll-loops peels them four times MORE — ~20 instructions of trip-count-modulo dispatch
 # ahead of the first store, which is pure loss on the 79-208 byte fills this port actually does
-# (CLAUDE.md §a bounded loop over a short list is a code-size trap).
+# (AGENTS.md §a bounded loop over a short list is a code-size trap).
 # ⚠⚠ -fno-tree-loop-distribute-patterns IS LOAD-BEARING AND ITS ABSENCE IS AN INFINITE LOOP.
 # GCC recognises fastmem.c's own small byte loops as the memset/memcpy idiom and emits a CALL to
 # memset — which --wrap then redirects back into __wrap_memset with the identical arguments, so
@@ -1891,7 +1891,7 @@ obj/fastmem.o : CORE_CFLAGS += -fno-unroll-loops -fno-tree-loop-distribute-patte
 #     per segment out of swap/clr.w/lsl.l/or.l, an alignment head and a byte tail — and the extra
 #     live values push `view_paint_lines_core` over its register budget, so the two EXPANSION
 #     TABLE ADDRESSES get spilled into the frame and reloaded per run.  ph33 24.63 -> 17.08 with
-#     it off, i.e. the widening cost 7.55 ms.  (CLAUDE.md §a hot loop's state lives in memory.)
+#     it off, i.e. the widening cost 7.55 ms.  (AGENTS.md §a hot loop's state lives in memory.)
 # ⚠ Neither flag costs the control anything: the mem[] arm re-measured 162.07 against 162.32.
 obj/revs_native.o : CORE_CFLAGS += $(NATIVE_OPT) -fno-tree-loop-distribute-patterns -fno-tree-loop-vectorize
 obj/revs_native_seam.o : CORE_CFLAGS += $(NATIVE_OPT)

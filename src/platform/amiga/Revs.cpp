@@ -309,7 +309,7 @@ void Revs::vbi()
     /* ⚠ PURE DIAGNOSTIC, and it costs two chip-register reads in a handler that runs 50 times a
        second whatever the framerate does — measured at ~37 us a field, which is 0.19% of ALL wall
        clock spent on a counter nobody reads in a shipping build.  g_beamPresentsLate (the one
-       CLAUDE.md requires to stay 0) is recorded in vbiUpdate(), on the present path, and is
+       AGENTS.md requires to stay 0) is recorded in vbiUpdate(), on the present path, and is
        unaffected: this is the ENTRY record, which only ever answered "would a swap moved to the
        top of the handler be in the blank?".  Kept for PROBES builds; compiled out otherwise. */
 #ifdef REVS_PROBE

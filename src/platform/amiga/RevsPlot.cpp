@@ -89,7 +89,7 @@ uint32_t g_bbcExpand4[256][2];
    Each one is a `volatile` RMW on an absolute address — 32..50 cycles that cannot be coalesced —
    and there are six of them per span, ~220 cycles, which is 0.65 ms a frame over 21 spans.  That
    is a quarter of what deleting 851 chain units bought, so a span price quoted from a counting
-   build is not the shipping price.  Same class as `SND_STAT()` in the VERTB ISR (CLAUDE.md).
+   build is not the shipping price.  Same class as `SND_STAT()` in the VERTB ISR (AGENTS.md).
    ⚠ The oracles and every committed .gdb script READ these, so the default is ON; SPANSTAT=0 is
    the instrument that prices them and it drops PROBE_SYMS_PLOT with them. */
 #ifdef REVS_SPAN_STATS
@@ -205,7 +205,7 @@ extern "C" void revs_plot_run(unsigned short addr, unsigned char value, unsigned
            1: move.l a0,d1 / movea.l d1,a3 / move.l 28(sp),(a3)+ / move.l a3,d1
               move.l 32(sp),(a2)+ / cmpa.l 36(sp),a3 / bne.s 1b
        — 185 cycles per eight bytes written.  Measured on the span path (`SPANFILL=1` minus
-       `SPANFILL=2`, parked) that was +5.47 ms/frame for 420 longword pairs; CLAUDE.md's
+       `SPANFILL=2`, parked) that was +5.47 ms/frame for 420 longword pairs; AGENTS.md's
        frame-slot defect class exactly (the decode's own 38 -> 22 ms).  The fix below makes the
        ADVANCING pointers the only copies: the count is taken apart first, the byte tail
        continues from where the longword loop left off, and nothing else is live across the back
@@ -276,7 +276,7 @@ typedef char revs_plot_own_size_check[(sizeof g_plotOwn == 208) ? 1 : -1];
      - the broadcasts are a table lookup now (g_bbcExpand4), not ~128 cycles of shift synthesis.
      - `off` dies before the first store, so the fill's only live values are the pointer and the
        two longwords — all in the call-clobbered set, so there is no movem and no stack slot.
-       (CLAUDE.md: a hot loop's state lives in memory if anything keeps it alive across it.)
+       (AGENTS.md: a hot loop's state lives in memory if anything keeps it alive across it.)
 
    ⚠⚠ movem.l WAS COSTED AND REJECTED, on paper, and the arithmetic is worth keeping because the
    instinct is strong: `movem.l d0-d7/a2-a3,(a0)` writes forty bytes in 8+8*10 = 88 cycles, i.e.
@@ -439,7 +439,7 @@ static void terrain_check_line(unsigned off, unsigned background, const ViewSpan
         /* ⚠ FROM THE SAVED HEAD — the group macros advance `ev`, so reading the parameter here
            starts at the sentinel and compares every line against a flat background.  That first
            version read 32% mismatch on a correct painter, which is the oracle failing its own
-           sabotage test by accident (CLAUDE.md §verify the instrument). */
+           sabotage test by accident (AGENTS.md §verify the instrument). */
         const ViewSpan* e = evHead;
         unsigned        v = background, c;
 #ifdef REVS_TYRE_SPRITES
@@ -796,7 +796,7 @@ extern "C" void revs_plot_planes(unsigned char* planeA, unsigned char* planeB)
    line, not eighty, and the common cell is a `tst.b d16(a0)` and two `move.b Dn,(An)+`.
 
    ⚠ THE TWO POINTERS ADVANCE AND NOTHING ELSE IS LIVE ACROSS THE BACK EDGE — the same discipline
-   `revs_plot_span`'s note records, and for the same measured reason (CLAUDE.md §a hot loop's state
+   `revs_plot_span`'s note records, and for the same measured reason (AGENTS.md §a hot loop's state
    lives in memory if anything takes its address).  `srcp` is bumped once per four cells and the
    four source reads are displacements off it, because `d16(An)` is 4 cycles where an `addq`+`lea`
    pair is 8.  Four, not eight: the plane stores want a register-indirect-postincrement that a
@@ -940,7 +940,7 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
    180 cyc/line, which would make a pure-fill group 52 cycles instead of 236) AND a free producer,
    and the line still models to ~2487 against the chain's 2329 — a wash, because what is left is
    the FLOOR: 5.57 events a line (measured in a CONSUMING build — the host composite model
-   predicted 1.95) and forty cells whose two plane stores nothing deletes.  ⇒ This is CLAUDE.md's
+   predicted 1.95) and forty cells whose two plane stores nothing deletes.  ⇒ This is AGENTS.md's
    published result arriving a second time down a different road: A BITPLANE PAIR COSTS WHAT THE
    `mem[]` BYTE COST, THE PAINTER IS A WASH, AND THE DECODE IS THE PRIZE (§11).
    ⚠ The 74% wholesale rate is NOT the disappointment: it was measured at 74% in a consuming build
@@ -1167,7 +1167,7 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
    Why these 34 rows, which routine mirrors into them and why the mem[] stores all stay:
    revs_plot.h.  Here is only the mechanism. */
 
-/* The two blocks, [first, end).  ⭐ Per DISPLAY LINE, not per character row (CLAUDE.md): 0..17 is
+/* The two blocks, [first, end).  ⭐ Per DISPLAY LINE, not per character row (AGENTS.md): 0..17 is
    the two MODE 4 text rows plus the two lines of row 2 that the band boundary at 18.0 puts above
    the sky, and 192..207 is the two MODE 5 text rows under the dashboard.  Both are
    `vdu_char_emit`'s, at ~3.7 stores a frame between them.
@@ -1270,7 +1270,7 @@ static int deltaKindRebuild(void)
    all cells that no routine rewrites within a frame, so the delta painter is only valid once the
    planes already hold them.
    ⚠ Shifts, never a multiply: `row * 320` and `y * 80` with a runtime operand emit __mulsi3 and
-   the 68000 has none (CLAUDE.md, and `make muldiv-audit` fails the link). */
+   the 68000 has none (AGENTS.md, and `make muldiv-audit` fails the link). */
 static void plotDeltaBaseRow(unsigned y, unsigned kind)
 {
     const unsigned row    = y >> 3;
@@ -1306,7 +1306,7 @@ static void plotDeltaBaseRow(unsigned y, unsigned kind)
    still stands: the first decode back skips the owned rows in whichever buffer it gets, so the
    re-base must lay down both.  A `STRAIGHT_TO_RACE` oracle never leaves the race and so cannot
    reach it — which is a statement of the oracle's scope, not a reason to drop the write.
-   ⭐ The SIBLING case is what settles it (CLAUDE.md): the DELTA's two-buffer write is the same
+   ⭐ The SIBLING case is what settles it (AGENTS.md): the DELTA's two-buffer write is the same
    claim and it fires at 6888. */
 static void plotDeltaBase(void)
 {
@@ -1341,7 +1341,7 @@ static void plotDeltaBase(void)
    ⚠⚠ THE RECTANGLES ARE MEASURED, NOT GUESSED, AND ONE OF THEM IS INVISIBLE IN PRACTICE.
    `make fbwrites FILL=117-207` on a real BBC gives the first four directly.  The WING MIRRORS do
    not appear in it at all — a `STRAIGHT_TO_RACE`/refloop lap is a PRACTICE session with an empty
-   track, so nothing is ever reflected (CLAUDE.md §the baseline trajectory decides which code
+   track, so nothing is ever reflected (AGENTS.md §the baseline trajectory decides which code
    EXISTS).  Their footprint is derived instead from the game's own six-segment tables
    (`mirror_seg_addr_lo/hi`, `mirror_seg_start_row`, `mirror_seg_end_row`) walked exactly as
    `mirror_draw_car_core` walks them: 118 bytes, display lines 154..178, cells 0..2 and 37..39 —
@@ -1392,7 +1392,7 @@ static void plotDynRects(void)
             const unsigned kind = s_deltaKind[y];
             const unsigned row  = y >> 3;
             /* ⚠ Shifts, never a multiply — `__mulsi3` does not exist on a 68000 and
-               `make muldiv-audit` fails the link (CLAUDE.md). */
+               `make muldiv-audit` fails the link (AGENTS.md). */
             const unsigned rowOff = (y << 6) + (y << 4);                   /* y * 80 */
             MEM_QUAL uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6))
                                   + (y & 7u) + (c0 << 3);                  /* + cell * 8 */
@@ -1429,7 +1429,7 @@ static void plotDynRects(void)
    `plotDeltaCheck` compares BOTH buffers because a per-byte delta delivers only what changed; a
    rectangle is repainted in full every painted frame, so "the buffer being drawn is complete on
    its own" IS the invariant, and checking the other buffer would fail by construction on a
-   correct build.  (CLAUDE.md: state an oracle's scope AT the oracle.)
+   correct build.  (AGENTS.md: state an oracle's scope AT the oracle.)
 
    ⚠⚠ AND ITS SCOPE LIMIT, stated rather than left to be discovered: a rectangle for a writer
    that never FIRES in the measured trajectory is unfalsifiable here.  `STRAIGHT_TO_RACE` is a
@@ -1548,7 +1548,7 @@ static void plotDeltaCheck(void)
    both buffers' planes.  Called from `vdu_char_emit_core`'s single store site, which is where
    every race-view glyph, space and text-script character reaches the screen.
    ⚠ It hooks THAT call site and explicitly NOT `seam_write`: growing that header choke point made
-   164 inlined copies of a marking leaf and cost +4.9 ms in the producers (CLAUDE.md). */
+   164 inlined copies of a marking leaf and cost +4.9 ms in the producers (AGENTS.md). */
 extern "C" void revs_plot_byte(unsigned short addr, unsigned char value)
 {
     const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
@@ -1947,7 +1947,7 @@ extern "C" void revs_plot_own_reset(void)
 #endif
 #ifdef REVS_PLOT_DELTA
     /* ⭐ THE CLAIM, and it is asserted HERE rather than in present() for a hard reason: basing 34
-       rows is ~10 000 stores, and work in the vblank ISR is capped at one frame (CLAUDE.md).
+       rows is ~10 000 stores, and work in the vblank ISR is capped at one frame (AGENTS.md).
        This is main-loop context (phase 24), once per sweep, and the decode reads the claim on the
        frame after — which is the same one-sweep lag the span emitter's claim already has. */
     if (s_bandCount && s_plane[0] && s_plane[1]) {

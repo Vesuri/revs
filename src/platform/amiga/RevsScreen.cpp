@@ -302,7 +302,7 @@ volatile uint16_t      g_cockpitMismatchAt = 0xFFFFu;   /* (line << 8) | cell of
    amiga/dualpf_dump.gdb).  [line - 117][cell] counts the painted frames in which that cell's
    eight source bytes moved.  Which cells of 117..157 are NOT static decides how much of the car
    PF2 can own and which painters have to be retargeted before `LOWOWN=1` can claim these rows —
-   and a 41-frame `fbwrites` census is exactly the instrument CLAUDE.md warns cannot answer it
+   and a 41-frame `fbwrites` census is exactly the instrument AGENTS.md warns cannot answer it
    (a needle ROTATES; a sample of a moving thing is not its range).
    ⚠ A PRACTICE SESSION STILL CANNOT SEE THE WING MIRRORS — an empty track reflects nothing.
    That one rectangle comes from the game's own six-segment tables, as it does for DASHCHECK. */
@@ -361,7 +361,7 @@ volatile uint16_t g_ttAllocFailed = 0;      /* bit 0 = bitmap, bit 1 = copper li
 
 /* ⭐⭐ WHERE THE BEAM ACTUALLY IS when the copper list and the bitplane pointers are rewritten.
  *
- * ⚠ THE RULE (docs/amiga-lessons.md, CLAUDE.md): bitplane POINTER swaps happen in the VBI,
+ * ⚠ THE RULE (docs/amiga-lessons.md, AGENTS.md): bitplane POINTER swaps happen in the VBI,
  * never mid-frame.  vbiUpdate() IS called from the VERTB handler, which is why the rule looked
  * satisfied by construction — but "in the VERTB handler" and "in the vertical blank" are the
  * same thing only while the handler is SHORTER THAN A FRAME.  Here it is not: Revs::vbi() runs
@@ -1363,7 +1363,7 @@ void RevsScreen::shutdown()
    §DECODESPLIT carves it).  A band boundary is not 4-aligned, so head and tail bytes stay
    per-byte and only the middle widens; `m_lineMode` is `aligned(4)`, which is what makes the
    middle a legal `move.l` at all.
-   ENDIAN-OK, and it is the documented exception to the mem[]-aliasing rule (CLAUDE.md): all
+   ENDIAN-OK, and it is the documented exception to the mem[]-aliasing rule (AGENTS.md): all
    four bytes of the written longword are the SAME value, so byte order cannot be observed. */
 static inline void revs_fill_modes(unsigned char* p, int a, int b, unsigned char v)
 {

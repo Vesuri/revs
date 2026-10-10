@@ -29,7 +29,7 @@
  * reachable as `__real_*` and nothing needs them.
  *
  * ⚠ THE ALIASING RULE IS NOT BROKEN HERE, and the two operations satisfy it for DIFFERENT reasons
- * (CLAUDE.md §mem[] is little-endian):
+ * (AGENTS.md §mem[] is little-endian):
  *   - memset widens a value whose every byte is the SAME, which is the one case the rule allows.
  *   - memcpy/memmove move bytes to bytes; no value is ever interpreted, so byte order cannot be
  *     observed.  They need only preserve the ORDER of the bytes, which they do.

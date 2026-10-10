@@ -15,7 +15,7 @@
  *     Paula period = 3546895 / 250000 * divider = 14.1875 * divider
  *
  * and it is computed as `divider*14 + divider*3/16` — exact to 0.005% and, deliberately, all in
- * 16 bits, because the 68000 has no 32-bit multiply or divide (CLAUDE.md).
+ * 16 bits, because the 68000 has no 32-bit multiply or divide (AGENTS.md).
  *
  *   3 tone channels   a 2-sample square (+127/-127), so one wave cycle per two samples: the
  *                     played frequency is 125000/divider Hz, which is the chip's own tone.

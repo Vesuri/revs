@@ -4947,7 +4947,7 @@ void check_car_pair__t6502(void);
    and a seventh of cases plant a non-$C9 opcode at $2771 so the trap-and-return unwind is compared
    too (equal trap counts asserted by diff_run; nonzero total checked below).
    ⚠ SCOPE: this fixture CANNOT see a defect in ring_gap — the oracle's car_gap calls reach the same
-   ring_gap through the shim, a SHARED INPUT (CLAUDE.md §sabotage).  Measured: the near/wrapped
+   ring_gap through the shim, a SHARED INPUT (AGENTS.md §sabotage).  Measured: the near/wrapped
    test put back on D's raw high byte passes here and in stage_nearby_car, and fails car_gap_tail,
    whose oracle is the independent $27AB transliteration.  car_gap / car_gap_tail gate ring_gap. */
 static int test_check_car_pair(void)

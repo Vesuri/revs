@@ -70,14 +70,14 @@ static int runGame(const char* image) {
        possible moment.  See docs/m68k-optimisation.md. */
 
 #if defined(REVS_VIEWSKIP) && !defined(REVS_PLATFORM_AMIGA)
-    /* ⭐ An A/B switch must PRINT its own state (CLAUDE.md §Performance) — a build measured
+    /* ⭐ An A/B switch must PRINT its own state (AGENTS.md §Performance) — a build measured
        against a control that silently had the switch in the same position measures nothing.
        On the Amiga the same fact is read off g_viewSkipLines through gdb. */
     revs_announce_viewskip();
 #endif
 #if defined(REVS_SPAN_SCANCHECK) && !defined(REVS_PLATFORM_AMIGA)
     /* ⭐ Same rule, and here it is load-bearing twice over: an oracle that silently did not run
-       reads exactly like an oracle that found nothing (CLAUDE.md §an A/B switch must print its
+       reads exactly like an oracle that found nothing (AGENTS.md §an A/B switch must print its
        own state; `revs_verify_the_instrument`). */
     revs_announce_spanscan();
 #endif
