@@ -10,10 +10,10 @@
 #   ROF_EXE=Revs-asm.exe ./run.sh      vs      ROF_EXE=Revs-cmixer.exe ./run.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-. "${FSUAE_COMMON:-$HOME/.local/share/amiga/fsuae_common.sh}"
+. ./env.sh
+. "$FSUAE_COMMON"
 
-FSUAE="${FSUAE:-fs-uae}"
-ROM="${1:-${KICKSTART:-$HOME/.local/share/amiga/Kickstarts/kick40063.A600}}"
+ROM="${1:-$KICKSTART}"
 [ -f "$ROM" ] || { echo "Kickstart ROM not found: $ROM  (pass as \$1 or set \$KICKSTART)"; exit 1; }
 EXE="${REVS_EXE:-out/Revs.exe}"
 # Emulated machine: A500+ by default (the target; ECS Denise for BPLCON3 border-blanking).
@@ -46,21 +46,16 @@ mkdir -p "$SHOTS"
 export FSEMU_SCREENSHOTS_DIR="$SHOTS"
 
 # This one stays AUDIBLE: it is the by-ear A/B script and it runs at real speed, where the
-# game's sound is the point.  `FSUAE_SILENT=1 ./run.sh` mutes it the way the debug scripts are
-# muted by default (the `dummy` SDL audio driver opens no device — see diag_run.sh).
-AUDIO_ARGS=""
-if [ "${FSUAE_SILENT:-0}" = 1 ]; then AUDIO_ARGS="--audio_driver=dummy"; fi
+# game's sound is the point.  `FSUAE_SILENT=1 ./run.sh` (or SOUND=0) mutes it the way the debug
+# scripts are muted by default (the `dummy` SDL audio driver opens no device — see diag_run.sh).
+# Sound, window, warp and the rest: fsuae_options in the shared fsuae_common.sh.
+if [ "${FSUAE_SILENT:-0}" = 1 ]; then SOUND=0; fi
 
+AMIGA_MODEL="$MODEL" KICKSTART="$ROM" CHIP_KB=1024 FAST_KB=8192
+fsuae_options
 fsuae_stop_previous
-# After the exec this shell IS fs-uae, so record $$ as the emulator pid.
-fsuae_track_self
-exec "$FSUAE" \
-  --amiga_model="$MODEL" \
-  --chip_memory=1024 --fast_memory=8192 \
-  --kickstart_file="$ROM" \
+fsuae_exec \
   --hard_drive_0="$DH0" --hard_drive_1="$DH1" \
   --joystick_port_0=none --joystick_port_1=none \
-  $AUDIO_ARGS \
-  --automatic_input_grab=0 --fullscreen=0 --window_width=720 --window_height=568 \
-  --ntsc_mode=0 --state_dir="$RUN/state" \
+  --window_width=720 --window_height=568 --state_dir="$RUN/state" \
   --screenshots_output_dir="$SHOTS"

@@ -18,9 +18,10 @@ make clean && make -j4 PROBES=1
 ./diag_run.sh 25                # or: GDBSCRIPT=fps_seg.gdb ./diag_run.sh 200
 ```
 
-- **`. ./env.sh` must be sourced in the SAME shell command as the run.**  It puts both
-  `fs-uae` (`~/.local/fs-uae`) and `m68k-amiga-elf-gdb` on PATH.  A separate `. env.sh` call does
-  not persist between tool invocations, so `fs-uae` will look "not found".
+- **`env.sh`** (the shared environment AmigaXDev installs) puts both `fs-uae` (`~/.local/fs-uae`)
+  and `m68k-amiga-elf-gdb` on PATH.  `run.sh`, `debug.sh` and `diag_run.sh` source it themselves;
+  other tools need `. ./env.sh` in the SAME shell command, since a separate call does not persist
+  between tool invocations.
 - **`amiga/diag_run.sh [delay]`** is the batch harness: boots `out/Revs.exe` under the FS-UAE gdb
   stub, runs `[delay]` seconds, SIGINTs gdb (breaking its `continue`), runs the print commands in
   **`amiga/diag_timing.gdb`**, and writes everything to `amiga/.run/gdb-out.log` (echoing a
@@ -125,8 +126,10 @@ script with no gdb stop inside the window.
 
 ## ⭐ HEADLESS RUNS ARE SILENT, and `--volume=0` is not what does it
 
-`diag_run.sh` and `debug.sh` pass **`--audio_driver=dummy`** (`FSUAE_SOUND=1` puts the audio back
-for an audio bug that has to be heard).  A warp run is ~4.9× speed, so the game's sound comes out
+`diag_run.sh` and `debug.sh` pass **`--audio_driver=dummy`** (the shared `fsuae_options` does this
+for every debug or warp run, and opens their window behind the others; `FSUAE_SOUND=1` or
+`SOUND=1` puts the audio back for an audio bug that has to be heard, `WINDOW=front|none` changes
+the window).  A warp run is ~4.9× speed, so the game's sound comes out
 as a screech, and no probe this project takes reads the sound hardware.  `run.sh` stays audible —
 it runs at real speed and is the by-ear A/B script — with `FSUAE_SILENT=1` to mute it.
 

@@ -9,7 +9,7 @@ dropped (boot and front end).
   python3 tools/pcsample_report.py [log] [--from-field=N] [--fn=name --lines]
 """
 import re, subprocess, sys, collections, bisect, os, shutil
-BIN = os.path.expanduser('~/.local/opt/bin')
+BIN = os.path.join(os.environ.get('AMIGA_TOOLCHAIN') or os.path.expanduser('~/.local/opt'), 'bin')
 tool = lambda n: shutil.which(n) or os.path.join(BIN, n)
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 opt = dict(a[2:].split('=', 1) if '=' in a else (a[2:], '1') for a in sys.argv[1:] if a.startswith('--'))

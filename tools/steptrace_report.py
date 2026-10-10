@@ -8,7 +8,7 @@ counts memory-operand instructions (anything addressing mem[], the stack or an a
 line that is all byte traffic stands out.  Relocation as tools/pcsample_report.py (the OFF line).
 """
 import re, subprocess, sys, collections, os, shutil, bisect
-BIN = os.path.expanduser('~/.local/opt/bin')
+BIN = os.path.join(os.environ.get('AMIGA_TOOLCHAIN') or os.path.expanduser('~/.local/opt'), 'bin')
 tool = lambda n: shutil.which(n) or os.path.join(BIN, n)
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 opt = dict(a[2:].split('=', 1) if '=' in a else (a[2:], '1') for a in sys.argv[1:] if a.startswith('--'))

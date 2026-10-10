@@ -103,7 +103,8 @@ make
 ./run.sh
 ```
 
-`env.sh` uses the local toolchain under `~/.local`. `KICKSTART` overrides its default ROM,
+`env.sh` sources the shared environment that AmigaXDev installs (`~/.local/share/amiga/env.sh`:
+the toolchain under `~/.local`, FS-UAE, Kickstarts). `KICKSTART` overrides its default ROM,
 `~/.local/share/amiga/Kickstarts/kick40063.A600` (KS 3.1); the other shared Amiga inputs and
 their variables are listed in [whdload.md](whdload.md#shared-amiga-inputs). `run.sh` screenshots
 go to the untracked `tmp/screenshots` unless `FSEMU_SCREENSHOTS_DIR` is set. Clean before

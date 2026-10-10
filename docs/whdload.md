@@ -64,7 +64,8 @@ RoF's the WHDLoad install needs a **2 MB** machine; the plain exe does not.
 ## Shared Amiga inputs
 
 ROMs, the Workbench disk, WHDLoad and the Installer are local inputs read from the shared
-`~/.local/share/amiga`, never from this repository. Each has an environment override:
+`~/.local/share/amiga` (installed by AmigaXDev), never from this repository. Each has an
+environment override:
 
 | Variable | Default | Used by |
 |---|---|---|
@@ -72,7 +73,7 @@ ROMs, the Workbench disk, WHDLoad and the Installer are local inputs read from t
 | `KICKSTART_A1200` | `~/.local/share/amiga/Kickstarts/kick40068.A1200` | `test_installer.py` host ROM (not `KICKSTART`, which `env.sh` exports as the A600's) |
 | `WORKBENCH_ADF` | `~/.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf` | both tests |
 | `INSTALLER43` | `~/.local/share/amiga/Installer43/Installer` | `test_installer.py` |
-| `WHDLOAD_BIN` | `~/.local/share/amiga/WHDLoad/C/WHDLoad` | both tests (`WHDLOAD` is the makefile's SDK directory) |
+| `WHDLOAD_BIN` | `~/.local/share/amiga/WHDLoad/C/WHDLoad` | both tests (`WHDLOAD` is the makefile's SDK directory; `amiga/env.sh` sets it to WHDLoad 19.2) |
 | `FSEMU_SCREENSHOTS_DIR` | the repo's untracked `tmp/screenshots` | `run.sh` |
 
 `test_whdload.py` also takes the 1.3 image and its relocation file from

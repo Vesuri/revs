@@ -76,7 +76,7 @@ def main():
             raise SystemExit(f'refusing to package: {name} contains {hits} blocks of REVS2')
     print(f'audit: no member contains any of REVS2\'s {len(blocks)} 256-byte blocks')
 
-    lha = shutil.which(os.environ.get('LHA', str(Path.home() / '.local/opt/lha/bin/lha')))
+    lha = shutil.which(os.environ.get('LHA', str(Path.home() / '.local/share/amiga/lha-compressor/src/lha')))
     if not lha:
         raise SystemExit('native LHa compressor not found; set LHA=/path/to/lha (lhasa is extract-only)')
     out = ROOT / 'dist'

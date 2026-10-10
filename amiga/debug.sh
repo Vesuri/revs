@@ -5,11 +5,11 @@
 # HOME/XDG_CACHE_HOME must be set for gdb; connect to 127.0.0.1 (not localhost).
 set -uo pipefail
 cd "$(dirname "$0")"
-. "${FSUAE_COMMON:-$HOME/.local/share/amiga/fsuae_common.sh}"
+. ./env.sh
+. "$FSUAE_COMMON"
 
-FSUAE="${FSUAE:-fs-uae}"
 GDB="${GDB:-m68k-amiga-elf-gdb}"
-ROM="${1:-${KICKSTART:-$HOME/.local/share/amiga/Kickstarts/kick40063.A600}}"
+ROM="${1:-$KICKSTART}"
 [ -f "$ROM" ] || { echo "Kickstart ROM not found: $ROM  (pass as \$1 or set \$KICKSTART)"; exit 1; }
 [ -f out/Revs.elf ] || { echo "build first: make"; exit 1; }
 
@@ -21,8 +21,8 @@ ROM="${1:-${KICKSTART:-$HOME/.local/share/amiga/Kickstarts/kick40063.A600}}"
 # FIXME ("Set volume not implemented yet"), and FS-UAE echoes any option you pass it (including
 # a misspelt one) into its log, so the config dump is not evidence an option DID anything.
 # FSUAE_SOUND=1 puts the audio back, for an audio bug that has to be heard.
-AUDIO_ARGS="--audio_driver=dummy"
-[ "${FSUAE_SOUND:-0}" = 1 ] && AUDIO_ARGS=""
+# (fsuae_options makes every debug run silent this way.)
+if [ "${FSUAE_SOUND:-0}" = 1 ]; then SOUND=1; fi
 
 RUN=.run; DH0="$RUN/dh0"; DH1="$RUN/dh1"; GDBHOME="$RUN/gdbhome"
 mkdir -p "$DH0/s" "$DH1" "$RUN/state" "$GDBHOME"
@@ -33,17 +33,14 @@ cp -f out/Revs.exe "$DH1/Revs"
 cp -f "${REVS_DISC:-../revs.ssd}" "$DH1/revs.ssd"
 
 fsuae_claim_port
-"$FSUAE" \
-  --amiga_model=A500+ --chip_memory=1024 --fast_memory=8192 \
-  --kickstart_file="$ROM" \
+DEBUG=1 AMIGA_MODEL=A500+ KICKSTART="$ROM" CHIP_KB=1024 FAST_KB=8192
+FSUAE_LOG="$RUN/fsuae-dbg.log"
+fsuae_options
+fsuae_launch \
   --hard_drive_0="$DH0" --hard_drive_1="$DH1" \
-  --automatic_input_grab=0 --fullscreen=0 --window_width=720 --window_height=568 \
-  $AUDIO_ARGS \
-  --remote_debugger=20 --remote_debugger_port="$DEBUG_PORT" --remote_debugger_trigger=Revs \
-  --ntsc_mode=0 --state_dir="$RUN/state" > "$RUN/fsuae-dbg.log" 2>&1 &
-FSUAE_PID=$!
-fsuae_track "$FSUAE_PID"
-echo "FS-UAE (gdb stub) pid=$FSUAE_PID; waiting for stub..."
+  --window_width=720 --window_height=568 \
+  --remote_debugger_trigger=Revs --state_dir="$RUN/state"
+echo "waiting for stub..."
 
 for i in $(seq 1 60); do
   kill -0 "$FSUAE_PID" 2>/dev/null || { echo "FS-UAE exited early; see $RUN/fsuae-dbg.log"; exit 1; }

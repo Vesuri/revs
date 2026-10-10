@@ -1141,7 +1141,7 @@ fatscan: $(FATSCAN_DIR)/revs
 	REVS_FIXED_RNG=1 REVS_FATSCAN_FROM=$(FATSCAN_FROM) REVS_FATSCAN_TO=$(FATSCAN_TO) \
 	  ./$(FATSCAN_DIR)/revs >/dev/null 2>&1
 	@FATSCAN_CFLAGS="$(CFLAGS) -DREVS_FATSCAN -DREVS_STRAIGHT_TO_RACE -DREVS_HOLD_THROTTLE" \
-	  PATH="$$HOME/.local/opt/bin:$$PATH" python3 tools/fatscan.py --objdir=$(FATSCAN_DIR) --frames=$$(( $(FATSCAN_TO) - $(FATSCAN_FROM) )) $(FATSCAN_ARGS)
+	  PATH="$${AMIGA_TOOLCHAIN:-$$HOME/.local/opt}/bin:$$PATH" python3 tools/fatscan.py --objdir=$(FATSCAN_DIR) --frames=$$(( $(FATSCAN_TO) - $(FATSCAN_FROM) )) $(FATSCAN_ARGS)
 
 # ⭐⭐ THE BLOCK-OP DIFFERENTIAL.  src/platform/amiga/fastmem.c replaces the toolchain's
 # byte-loop memset/memcpy/memmove on the shipping Amiga binary, so a defect in it is a wrong
