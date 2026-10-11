@@ -180,6 +180,9 @@ static void apply(uint8_t pch, uint32_t ptr, uint16_t len, uint16_t per, uint16_
    the stack arrays between them for it, ~300 instructions a reprogram in the VERTB ISR. */
 static SndChip s_applied;
 static uint8_t s_appliedValid = 0;
+/* Last chip generation actually delivered to Paula, including changes made by
+   main-loop MOS flushes before the next VBI starts. */
+static unsigned long s_appliedGeneration = 0;
 
 static void program_paula(void)
 {
@@ -219,6 +222,7 @@ static void program_paula(void)
                   kVolume[c->vol[0] & 15]);
     }
     s_applied = *c;
+    s_appliedGeneration = snd_generation();
     s_appliedValid = 1;
 }
 
@@ -277,6 +281,10 @@ extern "C" __attribute__((noinline)) void revs_audio_restart_marker(void)
 {
     __asm__ volatile ("" ::: "memory");
 }
+extern "C" __attribute__((noinline)) void revs_audio_stop_marker(void)
+{
+    __asm__ volatile ("" ::: "memory");
+}
 static void restart_test(void)
 {
     static unsigned field;
@@ -290,12 +298,16 @@ static void restart_test(void)
     }
     if (field == 110) snd_sound(crash);
     if (field == 127) revs_audio_restart_marker();
+    /* Like sound_stop_all after a stall: flushes happen before the VBI ticks.
+       Mark the audible steady state, then the completed silence update. */
+    if (field == 160 || field == 162) revs_audio_stop_marker();
+    if (field == 161)
+        for (uint8_t channel = 0; channel < 4; channel++) snd_flush_channel(channel);
 }
 #endif
 
 void revs_audio_vbi(void)
 {
-    unsigned long gen;
     if (!s_ready) return;
 #ifdef REVS_AUDIO_RESTART_TEST
     restart_test();
@@ -303,16 +315,15 @@ void revs_audio_vbi(void)
 #ifdef REVS_PROBE
     g_audioTicks += 2;      /* a volatile 32-bit RMW every field: diagnostics builds only */
 #endif
-    /* ⭐ Both ticks provably change nothing (sound.c's quiet flag), so neither can the reprogram
-       behind them — the common field, and it is paid 50 times a second forever. */
-    if (snd_quiet()) return;
-    gen = snd_generation();
+    /* Quiet only promises that scheduler ticks do nothing. A main-loop flush
+       can already have changed the chip state, and must still reach Paula. */
+    if (snd_quiet() && s_appliedValid && snd_generation() == s_appliedGeneration) return;
     PROBE_ISR_SPLIT(PROBE_ISR_SNDTICK);
-    /* Two ticks: the MOS schedules sound at 100 Hz and this is a 50 Hz interrupt.  Paula is
-       programmed once, from the state after both — see RevsAudio.h for what that quantises. */
+    /* Two ticks: the MOS schedules sound at 100 Hz and this is a 50 Hz interrupt.
+       Compare against the last applied state, not the state on entry to this VBI. */
     snd_tick();
     snd_tick();
-    if (snd_generation() != gen) {
+    if (!s_appliedValid || snd_generation() != s_appliedGeneration) {
         PROBE_ISR_SPLIT(PROBE_ISR_PAULA);
         program_paula();
         REVS_DIAG(g_audioUpdates++);

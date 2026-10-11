@@ -409,3 +409,27 @@ reads) with `--uae_cpu_memory_cycle_exact=true --uae_cpu_cycle_exact=true
 --uae_cachesize=0` added to the above options. Without cycle-exact tracing, this
 emulator configuration produced no audio DMA records and was rejected by the
 checker; a register shadow alone was not accepted as evidence.
+
+
+## Amiga sound flushes between display updates
+
+A stalled engine eventually lowers `engine_note` below `$1C`, where
+`engine_sound_update_core` calls `sound_stop_all_core`. Its MOS buffer flushes
+immediately mute the shared chip model. Those writes happen outside the audio
+VBI's two scheduler ticks. Comparing the chip generation only before and after
+those ticks missed a flush that had already happened: the scheduler became
+quiet while Paula kept playing its last infinite engine waveform.
+
+The backend now remembers the generation last delivered by `program_paula`.
+A quiet scheduler skips the VBI only if that generation also matches. Otherwise
+pending chip changes, including flushes, reach Paula on the next display update.
+The game retains its original note decay before it issues the stop command.
+
+With `AUDIORESTARTTEST=1`, run
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=audio_stop.gdb ./diag_run.sh 40` from
+`amiga/`. The fixture starts the real periodic engine commands, checks that both
+engine channels are audible, flushes all four MOS channels before the VBI ticks,
+and checks the completed update. The old A500+ build failed with chip attenuation
+`15,15,15,15` but Paula volume shadows `0,0,20,20`; the corrected build passes with
+`0,0,0,0`. The A1200/68040 run passes the same check. These shadows record writes to Paula's write-only volume registers.
+The shared BBC sound fixtures also pass, but cannot detect a lost backend update.
