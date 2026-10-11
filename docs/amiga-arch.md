@@ -113,8 +113,13 @@ from the Amiga executable; host reference validation retains it.
 (40,000 bytes: each row has five 40-byte planes, least-significant index bit first),
 a big-endian RGB4 `.pal`, and an embedding header. RGB channels round to the nearest
 4-bit value. These generated files and the source PNG remain local/untracked.
-The executable embeds both arrays and copies the planes into a dedicated 40 KB
-Chip RAM bitmap at initialization. Its fixed copper list sets five planes, modulo
+The executable embeds both arrays. At initialization it copies the planes into
+one 40,960-byte Chip RAM allocation shared with the needle sprite cache.
+`tm_begin()` is called once, before `engine_main()`: the title precedes every
+needle render, and the intervening circuit menu has its own bitmap. Each needle
+image overwrites all its sprite words before presentation. The title must never
+be shown again after gameplay starts. The bitmap is a non-owning view of this
+allocation; screen shutdown frees it once. Its fixed copper list sets five planes, modulo
 160, 32 colours and empty sprites. Display switches occur in the VBI, including
 the return to the 320×250 circuit menu; the title bitmap is never teletext-painted.
 
@@ -124,3 +129,21 @@ All 64,000 indices from the displayed bitmap matched the source PNG; the copper
 contained the expected RGB4 palette and both 160-byte modulos. Executable byte
 checks confirmed the new planes and palette are embedded and the old 1 KB title
 array is absent. These checks inspect target buffers/lists, not raster capture.
+
+The original separate splash allocation exhausted WHDLoad's fixed 400 KB Chip
+RAM budget: a release core dump showed the needle pool pointer and capacity both
+zero, silently hiding both dashboard indicators. With the shared allocation,
+the same WHDLoad configuration has a valid 40,960-byte needle pool, initially
+byte-identical to the 40,000-byte splash. This restores the pre-splash pool size
+without raising the slave's memory request. Merely finding the loaded engine in
+a WHDLoad dump does not test this allocation or the visible indicators.
+
+`amiga/splash_needles.gdb` gates the shared pointer and full pool capacity during
+the real title display, then traverses the menus using `TAPTEST` and checks the
+rendered indicators and copper colours. Build with `PROBES=1 NOAUTORUN=1 TAPTEST=1
+NEEDLECHECK=1`; do not combine this gate with `NEEDLEVERIFY`, which disables the
+sprite cache. An A1200/68040 run passed 1,982 sprite comparisons and ten colour
+checks with zero mismatches and zero pool failures. The separate BBC plot check
+completed 1,991 comparisons with zero mismatches; it does not present sprites.
+The gate rejected deliberate null-pool and undersized-pool defects; both were
+removed before rebuilding the release.

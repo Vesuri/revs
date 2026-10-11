@@ -150,6 +150,9 @@ private:
        real BBC tears here too — the MOS writes screen RAM while the beam is scanning it.  A
        second 250-line 3-plane buffer would cost 30 KB of chip RAM to hide an artefact the
        original hardware shows. */
+    /* One allocation: title pixels at startup, then the needle sprite cache.
+       m_splashBitmap is a non-owning view; shutdown frees m_startupChip. */
+    void*       m_startupChip;
     /* Startup-only 320x200, five-plane bitmap and fixed 32-colour list. */
     Bitmap*     m_splashBitmap;
     CopperList* m_splashCopper;

@@ -138,6 +138,11 @@ static const uint16_t kTtPlaneGap = (kTtW / 8);                   /* 40: plane s
 #define TT_LIST_LENGTH   (IDX_TT_PAL + 8 + 1)
 #define IDX_SPLASH_PAL   (IDX_TT_BPL + 10)
 #define SPLASH_LIST_LENGTH (IDX_SPLASH_PAL + 32 + 1)
+/* The one-shot title precedes every needle image. Reuse the needle pool's Chip
+   RAM for its 40,000 bytes; WHDLoad's 400 KB budget cannot hold both buffers. */
+static const unsigned long kNeedlePoolWords = 20480u;
+static const unsigned long kStartupChipBytes = kNeedlePoolWords * 2u;
+static_assert(sizeof kSplashData <= kStartupChipBytes, "title must fit the needle pool");
 
 /* The SAA5050's palette, and there is nothing to choose: the chip drives one RGB line per
    primary, so every teletext colour is fully saturated and the pen index IS the colour code
@@ -679,7 +684,10 @@ void RevsScreen::initialize()
     if (!m_ttBitmap) REVS_DIAG(g_ttAllocFailed |= 1u);
     if (!m_ttCopper) REVS_DIAG(g_ttAllocFailed |= 2u);
 
-    m_splashBitmap = Bitmap::allocate(320, 200, 5, /*interleaved*/true);
+    m_startupChip = AllocMem(kStartupChipBytes, MEMF_CHIP | MEMF_CLEAR);
+    if (!m_startupChip) return;
+    m_splashBitmap = new Bitmap(m_startupChip, 320, 200, 5, /*interleaved*/true,
+                               /*takeOwnership*/false);
     m_splashCopper = CopperList::allocate(SPLASH_LIST_LENGTH);
     if (!m_splashBitmap || !m_splashCopper) return;
     memcpy(m_splashBitmap->data, kSplashData, sizeof kSplashData);
@@ -709,15 +717,11 @@ void RevsScreen::initialize()
         m_copper->showSprite(IDX_SPRITES + s * 2, (uint16_t)s, *m_nullSprite);
 
 #ifdef REVS_NEEDLE_PLANES
-    /* ⭐ THE NEEDLE IMAGES' CHIP POOL, allocated HERE and never inside a frame (a chip-RAM
-       allocation mid-race is a multi-second freeze).  ~233 images over every input the game can
-       produce, the largest a 32 x 29 pair: 20 K words covers them with room, and
-       `g_needlePoolFull` counts an image that did not fit (it is then not shown). */
-    {
-        const unsigned long words = 20480u;
-        unsigned short* pool = (unsigned short*)AllocMem(words * 2u, MEMF_CHIP | MEMF_CLEAR);
-        revs_needle_pool(pool, pool ? words : 0u);
-    }
+    /* tm_begin() runs only once, before engine_main(). No needle image is built
+       during TM_TITLE; the intervening circuit menu uses its own bitmap. Once
+       the engine begins, ndlRender overwrites each used sprite completely.
+       Never re-show the splash after this pool has been used by the needles. */
+    revs_needle_pool((unsigned short*)m_startupChip, kNeedlePoolWords);
 #endif
 #ifdef REVS_TYRE_SPRITES
     /* ⭐ TWO CHANNELS, TWO IMAGES EACH.  A channel shows one horizontal position per line and the
@@ -1370,6 +1374,11 @@ void RevsScreen::shutdown()
 {
     delete m_splashCopper; m_splashCopper = 0;
     delete m_splashBitmap; m_splashBitmap = 0;
+#ifdef REVS_NEEDLE_PLANES
+    revs_needle_pool(0, 0);
+#endif
+    if (m_startupChip) FreeMem(m_startupChip, kStartupChipBytes);
+    m_startupChip = 0;
     delete m_ttCopper;    m_ttCopper   = 0;
     delete m_ttBitmap;    m_ttBitmap   = 0;
     delete m_copper;      m_copper     = 0;

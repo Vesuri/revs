@@ -60,6 +60,11 @@ from a directory drive, which is why that row is 3.1; the Kickstart 1.3 run is t
 
 The slave asks for `CHIPMEMSIZE` 400 KB + `FASTMEMSIZE` 512 KB + the 256 KB 1.3 image, so like
 RoF's the WHDLoad install needs a **2 MB** machine; the plain exe does not.
+The startup bitmap shares the existing 40,960-byte needle sprite pool: a separate
+40 KB splash allocation made that pool fail under the slave's 400 KB Chip RAM
+limit, even on hosts with more physical Chip RAM. The shared allocation was
+verified in release core dumps with the unchanged slave memory request; see
+[startup bitmap ownership](amiga-arch.md#startup-bitmap).
 
 ## Shared Amiga inputs
 
