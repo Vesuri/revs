@@ -88,6 +88,6 @@ public:
     void sampleMouse();
 
 private:
-    uint8_t m_steer;        /* 0..255, $80 = centre; what channel 1 reports */
+    uint16_t m_steerHalfSteps; /* 0..510 half-ADC steps, 256 = centre */
     uint8_t m_lastMouseX;
 };

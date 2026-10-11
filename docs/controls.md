@@ -59,7 +59,10 @@ map did not carry. ⚠ → therefore has two jobs on the Amiga (steer right, and
 The BBC had no such overlap. Quitting wins, which is the harmless order.
 
 **Steering with the mouse** replaces the BBC's uPD7002 analogue joystick (user decision). Select it
-the same way the BBC selects a joystick: **SHIFT+F2**.
+the same way the BBC selects a joystick: **SHIFT+F2**. Mouse sensitivity is half
+the original port setting: two mouse counts move the analogue reading one step.
+Fractional movement is retained between samples, so slow movement still responds;
+full steering lock remains available with twice the mouse travel.
 
 **Quitting the program is CTRL-Q** (user decision; the BBC had no quit, only BREAK). It is polled
 from every spin-wait, so it works on every page. Under WHDLoad on a 68010 or better the WHDLoad

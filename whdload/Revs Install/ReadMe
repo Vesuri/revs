@@ -79,6 +79,7 @@
  version 0.92 (12.10.2026):
  - new 320x200, 32-colour startup picture
  - fixed brief noise when restarting the engine after a crash
+ - halved mouse steering sensitivity
 
  version 0.91 (02.10.2026):
  - faster on 68000 Amigas, most noticeably when racing

@@ -374,7 +374,7 @@ static uint32_t keyboardHandler()
 
 bool RevsInput::initialize()
 {
-    m_steer      = 0x80;      /* dead centre */
+    m_steerHalfSteps = 256;   /* dead centre, including the fractional bit */
     m_lastMouseX = (uint8_t)(*joy0datPointer & 0xFFu);
     /* Built HERE, before the engine runs, so keyDown() — seven polls a race frame — need not ask
        whether it exists.  pressBbcKey (the autorun harness) keeps the lazy check. */
@@ -504,15 +504,14 @@ void RevsInput::sampleMouse()
     int8_t  delta = (int8_t)(MOUSE_X_SIGN * (int)(int8_t)(now - m_lastMouseX));
     m_lastMouseX  = now;
 
-    /* ⚠ SENSITIVITY IS A FEEL DECISION AND IT IS PROVISIONAL.  The game's own response
-       curve is real logic ($503F biases the reading to $80 = centre and hands the caller a
-       magnitude plus a direction; SPACE quarters it), so this only has to deliver a
-       faithful axis — one mouse count per ADC step, clamped, self-centring not applied
-       because a real analogue wheel does not spring back either. */
-    int pos = (int)m_steer + (int)delta;
+    /* Two mouse counts per ADC step: half the original sensitivity. Keep the
+       fractional bit between samples so slow one-count movements accumulate.
+       Clamp the accumulator itself so movement past full lock adds no backlog.
+       The game's steering curve and SPACE fine control remain unchanged. */
+    int pos = (int)m_steerHalfSteps + (int)delta;
     if (pos < 0)   pos = 0;
-    if (pos > 255) pos = 255;
-    m_steer = (uint8_t)pos;
+    if (pos > 510) pos = 510;
+    m_steerHalfSteps = (uint16_t)pos;
 
     /* ⭐ ONE POTINP read, not two.  mouseButton(1) and mouseButton(2) both read the same
        register; this runs in the VERTB ISR, which is a fixed 50 Hz tax on wall clock rather than
@@ -534,7 +533,7 @@ uint16_t RevsInput::axis(uint8_t channel) const
         /* Channel 1 = steering.  $503F uses ONLY the high byte, biased so $80 is centre
            ($1587 -> $158E).  ⭐ Polarity is [DERIVED]: high byte >= $80 leaves adc_read's
            X = 1, which is ;/+ = RIGHT.  The mouse's own sign lives in MOUSE_X_SIGN. */
-        return (uint16_t)((unsigned)m_steer << 8);
+        return (uint16_t)(((unsigned)m_steerHalfSteps >> 1) << 8);
     }
     if (channel == 2) {
         /* Channel 2 = throttle/brake ($163F -> $1646).  There is no second mouse axis
