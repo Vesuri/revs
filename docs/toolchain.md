@@ -94,6 +94,10 @@ The host executable is `build/revs` and has no renderer. Fixture targets such as
 `mode7`, `sound` and `trackmenu` need their separately recorded BBC fixtures;
 see [validation](validation-harness.md) and [the reference loop](bbc-reference-loop.md).
 
+The Amiga startup artwork also requires the local `revs-32color.png` (320×200,
+32 indexed colours) and Python Pillow. The build converts and embeds it automatically;
+see [startup bitmap format](amiga-arch.md#startup-bitmap).
+
 For the Amiga:
 
 ```sh

@@ -2,6 +2,9 @@
    src/platform/bbc_screen.h; this file only re-hosts it. */
 #define ECS_SPECIFIC
 #include <hardware/custom.h>
+extern "C" {
+#include <string.h>
+}
 #include "../diag.h"
 #include <hardware/dmabits.h>
 #include <graphics/display.h>
@@ -9,6 +12,8 @@
 #include <exec/memory.h>
 
 #include "RevsScreen.h"
+#include "../trackmenu.h"
+#include "splash_data.h"
 #include "framework/AmigaHardware.h"
 #include "framework/Bitmap.h"
 #include "framework/CopperList.h"
@@ -131,6 +136,8 @@ static const uint16_t kTtPlaneGap = (kTtW / 8);                   /* 40: plane s
 #define IDX_TT_BPL       (IDX_TT_PLAYFIELD + 3) /* 3 interleaved planes           (6) */
 #define IDX_TT_PAL       (IDX_TT_BPL + 6)       /* COLOR00..07                    (8) */
 #define TT_LIST_LENGTH   (IDX_TT_PAL + 8 + 1)
+#define IDX_SPLASH_PAL   (IDX_TT_BPL + 10)
+#define SPLASH_LIST_LENGTH (IDX_SPLASH_PAL + 32 + 1)
 
 /* The SAA5050's palette, and there is nothing to choose: the chip drives one RGB line per
    primary, so every teletext colour is fully saturated and the pen index IS the colour code
@@ -671,6 +678,18 @@ void RevsScreen::initialize()
     m_ttCopper = CopperList::allocate(TT_LIST_LENGTH);
     if (!m_ttBitmap) REVS_DIAG(g_ttAllocFailed |= 1u);
     if (!m_ttCopper) REVS_DIAG(g_ttAllocFailed |= 2u);
+
+    m_splashBitmap = Bitmap::allocate(320, 200, 5, /*interleaved*/true);
+    m_splashCopper = CopperList::allocate(SPLASH_LIST_LENGTH);
+    if (!m_splashBitmap || !m_splashCopper) return;
+    memcpy(m_splashBitmap->data, kSplashData, sizeof kSplashData);
+    for (unsigned sp = 0; sp < 8; sp++)
+        m_splashCopper->showSprite(IDX_TT_SPRITES + sp * 2, (uint16_t)sp, *m_nullSprite);
+    m_splashCopper->setPlayfield(IDX_TT_PLAYFIELD, 320, 200, 5, true);
+    m_splashCopper->showBitmap(IDX_TT_BPL, *m_splashBitmap, 1, 1, 0, 0, 5);
+    for (unsigned pen = 0; pen < 32; pen++)
+        m_splashCopper->data()[IDX_SPLASH_PAL + pen] =
+            copperMove(color00 + (pen << 1), kSplashPalette[pen]);
 
     setConstantRegisters();
 
@@ -1293,7 +1312,7 @@ static unsigned char s_copperBandsStale = 1u;
 
 int RevsScreen::applyMode()
 {
-    const unsigned char want = tt_active() ? 1u : 0u;
+    const unsigned char want = tt_active() ? (tm_phase() == TM_TITLE ? 2u : 1u) : 0u;
 
     /* ⚠ CROSS-CHECK, not a second source of truth.  `$64` is the GAME's own mode flag, written
        only by $16E1 (clear, entering the race) and $4F3B (set, in irq1v_release).  This port
@@ -1301,17 +1320,27 @@ int RevsScreen::applyMode()
        writes — so the two derivations are independent and a disagreement means one of them is
        wrong.  Counted rather than resolved here, because guessing which to believe is how an
        assumption calcifies; the counter says whether there is anything to resolve. */
-    if ((unsigned char)((mem[0x64] & 0x80u) ? 1u : 0u) != want) REVS_DIAG(g_ttModeDisagree++);
+    if ((unsigned char)((mem[0x64] & 0x80u) ? 1u : 0u) != (want != 0)) REVS_DIAG(g_ttModeDisagree++);
 
     if (want == m_ttOnScreen) return 0;
     /* ⚠ VALIDATE BEFORE LATCHING.  Latching m_ttOnScreen first and then bailing on a missing
        bitmap would record a switch that never happened and never retry it — the display would
        stay on the race list for the whole run with no counter moving.  Cost me a target run. */
-    if (want && (!m_ttCopper || !m_ttBitmap)) return 0;
+    if (want == 1 && (!m_ttCopper || !m_ttBitmap)) return 0;
+    if (want == 2 && (!m_splashCopper || !m_splashBitmap)) return 0;
     m_ttOnScreen = want;
 
-    setDisplayWindow(want ? kTtH : kH);
-    if (want) {
+    setDisplayWindow(want == 2 ? 200 : (want ? kTtH : kH));
+    if (want == 2) {
+        REVS_DIAG(g_screenCopperAddr = (uint32_t)m_splashCopper->data());
+        REVS_DIAG(g_screenCopperWords = SPLASH_LIST_LENGTH);
+        REVS_DIAG(g_screenFrontAddr = (uint32_t)m_splashBitmap->data);
+        REVS_DIAG(g_screenBytes = sizeof kSplashData);
+        REVS_DIAG(g_screenPlanes = 5);
+        REVS_DIAG(g_screenHeight = 200);
+        g_screenMode7 = 0;
+        AmigaHardware::setCopperList(*m_splashCopper, /*immediate*/true);
+    } else if (want) {
         /* ⭐ No forced repaint: decodeTeletext() compares the page against the bytes the bitmap
            was drawn from, and nothing else writes the bitmap, so whatever the page holds now is
            painted on the next decode and nothing that is already right is painted twice. */
@@ -1339,6 +1368,8 @@ int RevsScreen::applyMode()
 
 void RevsScreen::shutdown()
 {
+    delete m_splashCopper; m_splashCopper = 0;
+    delete m_splashBitmap; m_splashBitmap = 0;
     delete m_ttCopper;    m_ttCopper   = 0;
     delete m_ttBitmap;    m_ttBitmap   = 0;
     delete m_copper;      m_copper     = 0;
@@ -2422,7 +2453,10 @@ void RevsScreen::prepareFrame()
     /* ⭐ MODE 7 IS A DIFFERENT PASS ENTIRELY, and it must come first: the race decode below
        reads the BBC frame buffer $5A80-$7AFF, which out of a race holds nothing it should be
        drawing, while $7C00-$7FFF holds the teletext page instead of the dashboard overlay. */
-    if (tt_active()) { decodeTeletext(); return; }
+    if (tt_active()) {
+        if (tm_phase() != TM_TITLE) decodeTeletext();
+        return;
+    }
 #ifdef REVS_DECODE_SPLIT
     /* ⚠ AFTER the teletext test, and that placement is the measurement.  Bracketed BEFORE it,
        this row read 2.72 ms with calls=345 against 337 frames: the front-end frames at the top of

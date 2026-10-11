@@ -150,9 +150,12 @@ private:
        real BBC tears here too — the MOS writes screen RAM while the beam is scanning it.  A
        second 250-line 3-plane buffer would cost 30 KB of chip RAM to hide an artefact the
        original hardware shows. */
+    /* Startup-only 320x200, five-plane bitmap and fixed 32-colour list. */
+    Bitmap*     m_splashBitmap;
+    CopperList* m_splashCopper;
     Bitmap*     m_ttBitmap;
     CopperList* m_ttCopper;
-    unsigned char m_ttOnScreen;      /* which configuration the display is set up for */
+    unsigned char m_ttOnScreen;      /* 0: race, 1: teletext, 2: bitmap title */
     unsigned char m_ttFlashSeen;     /* the flash phase the current picture was drawn in */
     /* ⭐ Which rows decodeTeletext() last drew double-height (bit y = row y).  The one piece of
        cross-row state the row-by-row decode needs: a row that STOPS being double-height hands its

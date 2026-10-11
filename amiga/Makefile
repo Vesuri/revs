@@ -1966,3 +1966,9 @@ clean:
 	@$(RM) -r obj/ out/
 
 -include $(CXX_OBJS:.o=.d) $(CORE_C_OBJS:.o=.d) $(SUPPORT_C_OBJS:.o=.d)
+
+# Local startup artwork: five row-interleaved planes and a 32-entry RGB4 palette.
+CPPFLAGS += -Iobj
+obj/splash_data.h: $(REPO)/revs-32color.png $(REPO)/tools/gen_amiga_splash.py
+	python3 $(REPO)/tools/gen_amiga_splash.py $< $@
+obj/RevsScreen.o: obj/splash_data.h

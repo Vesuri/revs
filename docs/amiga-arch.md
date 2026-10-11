@@ -100,3 +100,27 @@ current, it is what makes a future upstream re-sync possible.
 
 Every hand-asm twin gets a `REVS_<NAME>_ASM` seam, a `make <NAME>_C=1` C-fallback, and a
 `make VERIFY=1 PROBES=1` in-process differential — the template is in `amiga/Makefile`.
+
+## Startup bitmap
+
+The Amiga replaces the initial teletext title presentation with the local
+`revs-32color.png` (320×200, opaque indexed PNG, indices 0–31). The circuit menu
+and subsequent front-end pages remain teletext; the shared menu state machine
+still controls the title dwell and any-key skip. The old BBC title array is excluded
+from the Amiga executable; host reference validation retains it.
+
+`tools/gen_amiga_splash.py` requires Pillow and produces `amiga/obj/splash_data.raw`
+(40,000 bytes: each row has five 40-byte planes, least-significant index bit first),
+a big-endian RGB4 `.pal`, and an embedding header. RGB channels round to the nearest
+4-bit value. These generated files and the source PNG remain local/untracked.
+The executable embeds both arrays and copies the planes into a dedicated 40 KB
+Chip RAM bitmap at initialization. Its fixed copper list sets five planes, modulo
+160, 32 colours and empty sprites. Display switches occur in the VBI, including
+the return to the 320×250 circuit menu; the title bitmap is never teletext-painted.
+
+Validated in FS-UAE with 512 KB Chip + 512 KB other RAM: title phase displays
+5 planes / 200 lines, then the normal timeout returns to 3 planes / 250 lines.
+All 64,000 indices from the displayed bitmap matched the source PNG; the copper
+contained the expected RGB4 palette and both 160-byte modulos. Executable byte
+checks confirmed the new planes and palette are embedded and the old 1 KB title
+array is absent. These checks inspect target buffers/lists, not raster capture.

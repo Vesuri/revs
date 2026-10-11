@@ -5,7 +5,9 @@
  */
 #include "trackmenu.h"
 #include "diag.h"
+#ifndef REVS_PLATFORM_AMIGA
 #include "titlescreen.h"
+#endif
 #include "track.h"
 #include "../cpu/cpu.h"          /* mem[] — the teletext page lives in it */
 
@@ -205,6 +207,8 @@ void tm_begin(unsigned options)
     s_spaceSeenUp = 0;
     s_allKeysSeenUp = 1;
 
+    /* The Amiga presents its embedded bitmap during TM_TITLE. */
+#ifndef REVS_PLATFORM_AMIGA
     /* REVSMEN 40: `*LOAD 5TRSCRN` — a straight 1 KB copy into MODE 7 screen RAM, which is
        exactly what the real machine displays (titlescreen.h has the provenance).  ⚠ Not through
        tt_vdu(): `*LOAD` is not a VDU stream, and routing it through the driver would interpret
@@ -219,6 +223,7 @@ void tm_begin(unsigned options)
     /* The copy went straight to mem[], not through tt_vdu(), so no per-row dirty bit was set —
        tell the decode the whole page is new (teletext.h). */
     tt_mark_all_dirty();
+#endif
 }
 
 void tm_tick(unsigned keys, unsigned fields)
