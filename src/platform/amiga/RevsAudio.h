@@ -53,7 +53,10 @@
  * only latches AUDxPTR/LEN at a loop wrap, so a waveform change needs the channel held off) is
  * then only reached when the NOISE waveform switches between white and periodic.  It matters:
  * the white buffer is 4095 words, so without a restart a switch away from it would keep hissing for
- * up to half a second.
+ * until that long buffer wraps. A restart mutes the channel, keeps the minimum period while
+ * DMA drains, then installs the new pointer, length, period and volume. The wait
+ * includes the residual old-period sample; writing AUDxPER does not expire it.
+ * See docs/bbc-hardware.md for the DMA capture regression.
  */
 
 /* Allocates the chip-RAM waveforms and takes Paula over.  Safe to call twice. */

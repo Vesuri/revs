@@ -1972,3 +1972,11 @@ CPPFLAGS += -Iobj
 obj/splash_data.h: $(REPO)/revs-32color.png $(REPO)/tools/gen_amiga_splash.py
 	python3 $(REPO)/tools/gen_amiga_splash.py $< $@
 obj/RevsScreen.o: obj/splash_data.h
+
+# Isolated target waveform-switch fixture; do not ship its injected sound commands.
+ifdef AUDIORESTARTTEST
+ifdef DIST
+$(error AUDIORESTARTTEST cannot be used with DIST)
+endif
+EXTRA_DEFINES += -DREVS_AUDIO_RESTART_TEST
+endif

@@ -8,6 +8,7 @@
 #include "RevsAudio.h"
 #include "framework/AmigaHardware.h"
 #include "../sound.h"
+#include "../../cpu/m68k_math.h"
 #include "../probe.h"    /* PROBE_ISR_SPLIT(): the ISR audio split — probe.h §ISRSPLIT */
 
 /* ---- Paula registers ---------------------------------------------------------
@@ -19,10 +20,9 @@ static const uint32_t kAudioBase[4] = { 0xDFF0A0u, 0xDFF0B0u, 0xDFF0C0u, 0xDFF0D
 #define AUD_PER(ch) (*(volatile uint16_t*)(kAudioBase[ch] + 6))
 #define AUD_VOL(ch) (*(volatile uint16_t*)(kAudioBase[ch] + 8))
 
-/* Paula's shortest legal period (~28.6 kHz).  Also what a restarting channel is dropped to
-   before its DMA-off window, so that "two sample periods" is ~1.1 rasterlines instead of
-   milliseconds — the Atari port measured that as the difference between a 48-line and a 7-line
-   wait (docs/sfx-events.md there, and its Paula DMA-restart section). */
+/* Paula's shortest legal period (~28.6 kHz). During a waveform switch it
+   bounds subsequent sample timers, but the current old-period sample must
+   still expire; apply() includes that residual in its DMA-off wait. */
 #define kPaulaMinPer 124u
 
 /* ---- waveforms in chip RAM ---------------------------------------------------
@@ -115,8 +115,11 @@ volatile uint16_t g_audioPaulaVol[4] = { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
 static uint16_t beam_line(void)
 {
     /* VPOSR/VHPOSR: bit 8 of VPOSR is the high bit of the line counter. */
-    uint16_t vpos = *vposrPointer;
-    uint16_t vhpos = *vhposrPointer;
+    uint16_t vpos, vhpos;
+    do {
+        vpos = *vposrPointer;
+        vhpos = *vhposrPointer;
+    } while (((vpos ^ *vposrPointer) & 1u) != 0);
     return (uint16_t)(((vpos & 1u) << 8) | (vhpos >> 8));
 }
 
@@ -135,26 +138,33 @@ static void apply(uint8_t pch, uint32_t ptr, uint16_t len, uint16_t per, uint16_
         if (vol != s_curVol[pch]) { AUD_VOL(pch) = vol; s_curVol[pch] = vol; }
         return;
     }
-    /* ⭐ Drop the period to Paula's minimum FIRST: AUDxPER takes effect immediately, so the
-       "two sample periods with the channel off" the hardware manual asks for becomes ~1.1
-       rasterlines instead of however long the OUTGOING note was.  Without this the white-noise
-       buffer's period would set the wait. */
+    /* AUDxPER changes the next timer reload, not the sample already in flight.
+       Keep the minimum period until DMA has really stopped: one old sample may
+       remain, followed by up to three minimum-period samples to reach idle.
+       A raster line is 227 Paula clocks. floor(old/227)+4 observed line changes
+       includes phase rounding and covers that bound even at a line boundary.
+       Mute during the drain so the outgoing crash noise cannot leak into the
+       new engine note. Pointer/length and the new period are installed afterward. */
     {
         const uint16_t mask = (uint16_t)(1u << pch);
-        uint16_t start, now;
+        const uint16_t waitLines = (uint16_t)(revs_divu16(s_curPer[pch], 227u) + 4u);
+        uint16_t last, left = waitLines;
+        AUD_VOL(pch) = 0;
         AUD_PER(pch) = kPaulaMinPer;
-        *dmaconPointer = mask;                       /* AUDxEN off (no SETCLR = clear) */
+        *dmaconPointer = mask;
+        last = beam_line();
+        while (left) {
+            const uint16_t now = beam_line();
+            /* Count changes rather than exiting at frame wrap. If a line is
+               missed, the wait grows; it never becomes too short. */
+            if (now != last) { last = now; left--; }
+        }
         AUD_PTR(pch) = ptr;
         AUD_LEN(pch) = len;
         AUD_PER(pch) = per;
         AUD_VOL(pch) = vol;
-        start = beam_line();
-        for (;;) {
-            now = beam_line();
-            if ((uint16_t)(now - start) >= 7u || now < start) break;   /* ~7 rasterlines */
-        }
-        *dmaconPointer = (uint16_t)(0x8000u | mask); /* AUDxEN on */
-        REVS_DIAG(g_audioWaitLines += 7);
+        *dmaconPointer = (uint16_t)(0x8000u | mask);
+        REVS_DIAG(g_audioWaitLines += waitLines);
         REVS_DIAG(g_audioRestarts++);
         s_curPtr[pch] = ptr; s_curLen[pch] = len; s_curPer[pch] = per; s_curVol[pch] = vol;
     }
@@ -259,10 +269,37 @@ void revs_audio_shutdown(void)
     s_ready = 0;
 }
 
+#ifdef REVS_AUDIO_RESTART_TEST
+/* Reachable MOS inputs: low-rev periodic engine, the game's pitch-6 crash
+   noise (duration 4), then the starter's low-rev engine after it expires.
+   Run in the interactive front end, which otherwise issues no sound commands. */
+extern "C" __attribute__((noinline)) void revs_audio_restart_marker(void)
+{
+    __asm__ volatile ("" ::: "memory");
+}
+static void restart_test(void)
+{
+    static unsigned field;
+    const uint8_t engine[8] = {0x10, 0, 0xf6, 0xff, 3, 0, 255, 0};
+    const uint8_t divider[8] = {0x11, 0, 0, 0xff, 123, 0, 255, 0};
+    const uint8_t crash[8] = {0x10, 0, 0xf6, 0xff, 6, 0, 4, 0};
+    field++;
+    if (field == 100 || field == 130) {
+        snd_sound(divider);
+        snd_sound(engine);
+    }
+    if (field == 110) snd_sound(crash);
+    if (field == 127) revs_audio_restart_marker();
+}
+#endif
+
 void revs_audio_vbi(void)
 {
     unsigned long gen;
     if (!s_ready) return;
+#ifdef REVS_AUDIO_RESTART_TEST
+    restart_test();
+#endif
 #ifdef REVS_PROBE
     g_audioTicks += 2;      /* a volatile 32-bit RMW every field: diagnostics builds only */
 #endif

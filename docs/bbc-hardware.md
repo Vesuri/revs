@@ -367,3 +367,45 @@ it runs off the VERTB, two per field (`RevsAudio.h`).
 nibbles and any *queued* (non-flush) sound.  Revs has never issued one — all five of its blocks are
 `$10..$13`, i.e. flush — so `g_sndSyncRequests`/`g_sndHoldRequests`/`g_sndQueued` exist to say if it
 ever does.  They must stay 0.
+
+## Amiga crash-to-starter waveform switch
+
+The low-rev engine uses periodic noise (MOS noise pitch 3); the crash uses white
+noise (pitch 6, duration 4). The Paula backend must restart DMA when switching
+between their waveform buffers. The former sequence selected period 124, disabled
+DMA, immediately restored the slower new period, and waited seven raster lines.
+Actual FS-UAE DMA traces showed both channels still fetching the crash buffer
+although the chip state and register-write shadows already described the engine.
+This explains a temporary noisy engine after pressing T following a crash.
+
+The restart now mutes the channel, sets period 124 and disables DMA, waits for
+`floor(old_period / 227) + 4` raster-line changes, then installs the new waveform
+and restarts. AUDxPER controls the next reload: the current old-period sample can
+remain, followed by up to three minimum-period samples before idle. The wait
+includes raster phase rounding and that tail. Beam reads check the high bit twice
+and counting continues across frame wrap. For the scheduler's maximum divider
+1024, period 14528 gives at most 68 line changes per switching channel. Copper
+presentation still runs first in the ISR; the scheduler and its two ticks are
+unchanged. The [Commodore hardware manual's audio state machine](https://www.amigarealm.com/computing/knowledge/hardref/ch5.htm)
+describes why briefly clearing the DMA enable does not necessarily stop playback.
+
+Reproduce with `make clean && make AUDIORESTARTTEST=1` in `amiga/`, then
+`EXTRA_ARGS="--warp_mode=1 --uae_chipset_hacks=8" GDBSCRIPT=audio_restart.gdb ./diag_run.sh 40`.
+The fixture supplies the game's low-rev engine, crash, expiry and starter MOS
+commands in the silent front end. The debugger captures six frames around the
+restart. From the repository root, run
+`python3 tools/check_audio_restart.py amiga/.run/audio-restart.bin amiga/.run/gdb-out.log`.
+The checker requires actual crash-buffer reads followed by engine-buffer reads
+on both channels; absent DMA records fail. `chipset_hacks=8` disables UAE's repair
+of short audio DMA waits, which would otherwise conceal the real-hardware bug.
+
+The original restart failed with 44/44 and 45/45 post-restart reads still in the
+wrong buffer; the corrected A500+ run had zero wrong reads. A deliberately
+one-line wait also failed. Both existing BBC sound fixtures passed (8,918 and
+8,083 ticks respectively); they validate the shared scheduler, not Paula DMA.
+
+An A1200/68040 capture also passed (44 post-restart reads per channel, zero wrong
+reads) with `--uae_cpu_memory_cycle_exact=true --uae_cpu_cycle_exact=true
+--uae_cachesize=0` added to the above options. Without cycle-exact tracing, this
+emulator configuration produced no audio DMA records and was rejected by the
+checker; a register shadow alone was not accepted as evidence.
