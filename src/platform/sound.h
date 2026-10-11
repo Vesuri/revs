@@ -141,11 +141,11 @@ static inline unsigned long snd_generation(void) { return g_sndGen; }
 extern uint8_t g_sndQuiet;
 static inline int snd_quiet(void) { return g_sndQuiet; }
 
-/* The noise generator's shift-rate divisor: 16, 32, 64, or tone 2's divider (noise mode 3, which
-   is the one Revs's engine uses).  Both a tone divider and this divisor count the same clock —
-   250 kHz — so one period conversion serves both, and the backend has no second constant to get
-   wrong.  ⚠ Deliberately no Hz helper here: 125000/divider is a 32-bit divide, and the 68000 has
-   none (AGENTS.md).  The Amiga backend converts a divider straight to a Paula period in 16 bits. */
+/* The noise generator's divider: 16, 32, 64, or tone 2's divider (mode 3,
+   used by the engine). The LFSR shifts at 125000/divider Hz, once per full
+   divided-clock cycle. Tone output toggles twice per cycle, so a backend
+   storing one sample per noise shift needs twice the tone-sample period.
+   The raw chip divider is returned here; Paula conversion belongs to the backend. */
 uint16_t snd_noise_divisor(const SndChip* c);
 
 #ifdef __cplusplus

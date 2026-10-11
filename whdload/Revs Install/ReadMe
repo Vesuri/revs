@@ -80,6 +80,7 @@
  - new 320x200, 32-colour startup picture
  - fixed brief noise when restarting the engine after a crash
  - fixed engine sound continuing after a stall
+ - corrected low-RPM engine and crash noise playback pitch
  - halved mouse steering sensitivity
  - fixed Tab/Q gear direction in mouse mode while accelerating or braking
 

@@ -384,7 +384,7 @@ and restarts. AUDxPER controls the next reload: the current old-period sample ca
 remain, followed by up to three minimum-period samples before idle. The wait
 includes raster phase rounding and that tail. Beam reads check the high bit twice
 and counting continues across frame wrap. For the scheduler's maximum divider
-1024, period 14528 gives at most 68 line changes per switching channel. Copper
+1024, noise period 29056 gives at most 132 line changes per switching channel. Copper
 presentation still runs first in the ISR; the scheduler and its two ticks are
 unchanged. The [Commodore hardware manual's audio state machine](https://www.amigarealm.com/computing/knowledge/hardref/ch5.htm)
 describes why briefly clearing the DMA enable does not necessarily stop playback.
@@ -433,3 +433,33 @@ and checks the completed update. The old A500+ build failed with chip attenuatio
 `15,15,15,15` but Paula volume shadows `0,0,20,20`; the corrected build passes with
 `0,0,0,0`. The A1200/68040 run passes the same check. These shadows record writes to Paula's write-only volume registers.
 The shared BBC sound fixtures also pass, but cannot detect a lost backend update.
+
+
+## Amiga low-rev engine pitch
+
+The BBC engine deliberately uses periodic noise at low revs, then adds a tone
+at note `$40` and replaces the periodic voice with another tone at `$5C`.
+The pulse waveform is a 15-stage loop. The SN76489 shifts that register once
+per full divided-clock cycle: `125000 / divider` shifts per second, while a tone
+output toggles twice per cycle. See the manufacturer's [noise clock table, table 3](https://map.grauw.nl/resources/sound/texas_instruments_sn76489an.pdf).
+The local jsbeeb `SoundChip.noiseChannel` likewise advances the LFSR only when
+`_doChannelStep` returns the rising edge.
+
+The old Paula backend played one noise sample per tone half-cycle, doubling
+noise playback speed. This put the low-rev periodic engine one octave too high
+and also sped up crash noise. `noise_period_for` now converts twice the raw
+divider; tone conversion and the shared MOS scheduler remain unchanged.
+
+`python3 tools/check_audio_pitch.py` compiles the actual period-conversion
+functions and compares their waveform frequency with generated jsbeeb samples
+at nine dividers, including all three fixed noise rates. The old conversion
+fails every periodic comparison by about 100%; the corrected conversion must
+match both tones and periodic noise within 0.3%, allowing integer Paula-period
+rounding. This tests playback rate, which register-only MOS fixtures do not.
+
+Target checks also pass: the A500+ crash-to-starter DMA capture reads the periodic
+buffer on both engine channels after the switch (22 reads each, none from the
+wrong waveform). `audio_stop.gdb` on A1200/68040 checks divider 170 reaches both
+noise channels as Paula period 4823, then checks that both channels stop. The
+previous period was 2411, giving approximately 98 Hz instead of the BBC's 49 Hz
+for this 15-sample pulse waveform.

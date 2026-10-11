@@ -31,7 +31,7 @@ static const uint32_t kAudioBase[4] = { 0xDFF0A0u, 0xDFF0B0u, 0xDFF0C0u, 0xDFF0D
 /* ⚠ SIZED, not maximal.  The chip's white-noise LFSR has a period of 32767 samples, but 32 KB of
    chip RAM is real on a 512 KB A500 whose PROGRAM already lives in chip RAM.  Revs's only
    white-noise sound is the $0B30 block, duration 4 = 0.2 s, and the fastest noise rate here plays
-   this buffer in 0.52 s — so the truncation point is never reached and there is no loop to hear.
+   this buffer in 1.05 s — so the truncation point is never reached and there is no loop to hear.
    (A word count, because Paula LEN counts words.) */
 static const unsigned kWhiteBytes    = 8190u;
 static const unsigned kPeriodicBytes = 30u;     /* two 15-sample periods */
@@ -65,6 +65,15 @@ static uint16_t period_for(uint16_t divider)
     if (per < kPaulaMinPer) per = kPaulaMinPer;
     if (per > 0xFFFFu) per = 0xFFFFu;
     return (uint16_t)per;
+}
+
+/* The LFSR advances once per full counter cycle, unlike the tone output which
+   toggles on each half-cycle. Its waveform samples therefore need twice the
+   tone sample period for the same divider. */
+static uint16_t noise_period_for(uint16_t divider)
+{
+    if (divider == 0) divider = 1024;
+    return period_for((uint16_t)(divider << 1));
 }
 
 /* ---- the chip's own noise generator, rendered once ---------------------------
@@ -212,7 +221,7 @@ static void program_paula(void)
             const int white = (c->noise & 4) != 0;
             const uint32_t nptr = (uint32_t)(white ? s_white : s_periodic);
             const uint16_t nlen = (uint16_t)((white ? kWhiteBytes : kPeriodicBytes) >> 1);
-            const uint16_t nper = period_for(snd_noise_divisor(c));
+            const uint16_t nper = noise_period_for(snd_noise_divisor(c));
             const uint16_t nvol = kVolume[c->vol[3] & 15];
             apply(PAULA_NOISE, nptr, nlen, nper, nvol);
             if (mirror) apply(PAULA_SQUEAL, nptr, nlen, nper, nvol);

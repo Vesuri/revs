@@ -10,9 +10,11 @@
  *
  * All four voices are 8-bit waveform loops in chip RAM, played at a period that makes Paula's
  * sample rate equal the rate the real chip's output flip-flop (or noise shift register) runs at.
- * Both are counted off the same 250 kHz clock, so ONE conversion serves all of them:
+ * Tone output toggles at 250 kHz / divider. The noise register shifts only on
+ * one edge of that divided clock, at 125 kHz / divider:
  *
- *     Paula period = 3546895 / 250000 * divider = 14.1875 * divider
+ *     tone sample period = 3546895 / 250000 * divider = 14.1875 * divider
+ *     noise sample period = the same conversion with twice the divider
  *
  * and it is computed as `divider*14 + divider*3/16` — exact to 0.005% and, deliberately, all in
  * 16 bits, because the 68000 has no 32-bit multiply or divide (AGENTS.md).
