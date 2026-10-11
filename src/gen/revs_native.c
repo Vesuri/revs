@@ -14663,28 +14663,39 @@ static void read_pedals_and_gears_core(void)
        $1685's `BIT $05F5` is read for its sign only (bit 7, the joystick flag).  The V it also
        sets — bit 6 of OPTION_FLAGS — is 6502 residue that leaks out on the no-key and latch-held
        returns and is dead at every caller (see the header above), so it is not reproduced. */
-    enum GearRequest { GEAR_NONE, GEAR_UP, GEAR_DOWN } request = GEAR_NONE;
+    enum GearRequest { GEAR_NONE, GEAR_DECREMENT, GEAR_INCREMENT } request = GEAR_NONE;
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1685 BMI — joystick */
         /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X.  The MOS's
            exit X/Y are read here and nowhere else (their leak through the no-key return is
            residue nothing reads). */
-        MosRegs b = mos_adval(0x00u);
-        if (b.x & 0x01u) {                             /* $1691 — the fire button */
-            if (pedal_mode != 0x01u) {
-                request = GEAR_UP;                     /* not braking: shift up */
-            } else {
-                /* $169D's CMP is a plain threshold test; its carry is residue past here. */
-                uint8_t hard = (pedal_amount >= 0xC8u);   /* $169D CMP #$C8 */
-                request = hard ? GEAR_DOWN : GEAR_UP;  /* $169F — hard brake: shift down */
+#ifdef REVS_PLATFORM_AMIGA
+        /* Mouse mode keeps the keyboard's explicit gear directions. The BBC fire
+           button chooses its direction from the pedals; folding Tab/Q into it
+           made acceleration reverse Tab's meaning. Match the keyboard path and
+           retain the common clutch/edge latch below. */
+        if (kbd_test_key_core(0x9Fu)) request = GEAR_DECREMENT; /* Tab: down */
+        else if (kbd_test_key_core(0xEFu)) request = GEAR_INCREMENT; /* Q: up */
+        else
+#endif
+        {
+            MosRegs b = mos_adval(0x00u);
+            if (b.x & 0x01u) {                             /* $1691 — the fire button */
+                if (pedal_mode != 0x01u) {
+                    request = GEAR_DECREMENT;                     /* no throttle: shift down */
+                } else {
+                    /* $169D's CMP is a plain threshold test; its carry is residue past here. */
+                    uint8_t hard = (pedal_amount >= 0xC8u);   /* $169D CMP #$C8 */
+                    request = hard ? GEAR_INCREMENT : GEAR_DECREMENT;  /* $169F — strong throttle: shift up */
+                }
             }
         }
     } else {
-        int up = kbd_test_key_core(0x9Fu);             /* $16A3 — gear up */
-        if (up) {
-            request = GEAR_UP;
+        int down = kbd_test_key_core(0x9Fu);           /* $16A3 — Tab: shift down */
+        if (down) {
+            request = GEAR_DECREMENT;
         } else {
-            int dn = kbd_test_key_core(0xEFu);         /* $16AA — gear down */
-            if (dn) request = GEAR_DOWN;
+            int up = kbd_test_key_core(0xEFu);         /* $16AA — Q: shift up */
+            if (up) request = GEAR_INCREMENT;
         }
     }
 
@@ -14693,8 +14704,8 @@ static void read_pedals_and_gears_core(void)
         return;
     }
 
-    delta = (request == GEAR_UP) ? 0xFFu               /* $16B7 — one gear up (adds -1) */
-                                 : 0x01u;              /* $16BB — one gear down (adds +1) */
+    delta = (request == GEAR_DECREMENT) ? 0xFFu               /* $16B7 — one gear down (adds -1) */
+                                 : 0x01u;              /* $16BB — one gear up (adds +1) */
     gear_change_flag = (uint8_t)(gear_change_flag - 1);  /* $16BD */
     /* $16C1 — latch still held from last frame?  The 6502 leaves the latch in X and the delta in
        A with its N/Z on the held return; on the continue path draw_gear_indicator overwrites them

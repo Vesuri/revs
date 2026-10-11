@@ -555,12 +555,10 @@ uint16_t RevsInput::axis(uint8_t channel) const
 
 uint8_t RevsInput::buttons() const
 {
-    /* X=0 reads the fire-button word; only bit 0 is ever looked at ($1691: TXA / AND #1).
-       ⭐ In analogue mode this button IS the whole gearbox, and the player does NOT choose
-       the direction: $1696 reads $3E/$3F and picks up or down itself.  That is the one
-       faithful button meaning, so it goes on the MIDDLE button — the two outer ones are
-       the pedals above.  The gear keys press it too, exactly as before. */
-    return (mouseButton(2) || keyDown(0xEF) || keyDown(0x9F)) ? 0x01u : 0x00u;
+    /* The middle button retains the BBC analogue gearbox's pedal-dependent
+       direction. Tab/Q are handled explicitly by read_pedals_and_gears_core so
+       acceleration cannot override the direction requested by a gear key. */
+    return mouseButton(2) ? 0x01u : 0x00u;
 }
 
 bool RevsInput::mouseButton(uint8_t which) const

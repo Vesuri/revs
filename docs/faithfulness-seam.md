@@ -33,6 +33,15 @@
 Amiga-only globals a twin writes belong in **that twin's own translation unit** (the writer's
 TU), also under `#ifdef REVS_PLATFORM_AMIGA`.
 
+### Mouse-mode gear keys
+
+The Amiga branch of `read_pedals_and_gears_core` polls Tab and Q before the
+analogue fire button, using the same directions and common clutch/edge latch as
+the keyboard branch. This is an intentional input extension: the BBC analogue
+mode has one pedal-dependent gear button, whereas the Amiga retains explicit
+keyboard shifts while steering with the mouse. `RevsInput::buttons()` now reports
+only the middle mouse button. Pedal demand is unchanged by either gear key.
+
 ## Why the rule points this way
 
 The validated tier is the only tier with a *proof*.  Every routine that leaves it loses its
