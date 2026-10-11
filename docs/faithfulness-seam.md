@@ -1,5 +1,9 @@
 # The faithfulness seam — which side of the line does this code go on?
 
+> The generic seam rule and the traps of a twin that looks right are also in AmigaXDev
+> `docs/reference/validation-harness.md` §12 and `docs/playbooks/new-port-playbook.md` §7; this
+> page is Revs' own seam: its tiers, twin style and written departures.
+
 > ⭐ **Postmortem finding #5.**  The Atari port's split between validated, faithful twins and
 > platform-specific lossy code was *good architecture arrived at late*: the rule for which side
 > a function lands on got clarified only after churn.  It is a call you make hundreds of times,

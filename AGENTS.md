@@ -4,6 +4,24 @@ Faithful BBC Micro to Amiga port of *Revs Plus Revs 4 Tracks* (1986).
 Read [README.md](README.md) for the project and [docs/README.md](docs/README.md)
 for the documentation index. This file contains standing rules only.
 
+## Shared environment and knowledge
+
+The Amiga toolchain, FS-UAE, Kickstarts, WHDLoad, Ghidra and volta come from AmigaXDev
+(`make setup` there); `amiga/env.sh` sources `~/.local/share/amiga/env.sh`. Generic lessons live
+in AmigaXDev and are edited there; this repo's docs keep what is specific to Revs.
+
+| AmigaXDev doc | For |
+|---|---|
+| `docs/environment.md` | shared tools, Kickstarts and variables |
+| `docs/playbooks/new-port-playbook.md` | port phases, static map and transpiler rules, release |
+| `docs/reference/measurement-method.md` | instruments, A/B, pricing, when to stop |
+| `docs/reference/validation-harness.md` | references, differentials, fixtures, sabotage, seam |
+| `docs/reference/m68k-optimisation.md` | 68000 cost model and code shape |
+| `docs/reference/amiga-hardware.md` | copper, sprites, dual playfield, interrupts, framework |
+| `docs/reference/headless-fsuae.md` | launcher, gdb stub, diag runs |
+| `docs/reference/port-toolchain.md` | flags, linking, audits, Ghidra, WHDLoad slave and release |
+| `docs/native-port-validation.md` | crash dumps, installer updates, release archive checks |
+
 ## Working conventions
 
 - Work on `main`, one logical change per commit. Preserve unrelated local changes.
@@ -82,22 +100,18 @@ the result. Root `make dist` builds the release package; see `docs/whdload.md`.
 
 ## Performance
 
-- Clean up the C before proposing assembly. Read the target instructions and measure
-  the whole affected path; source size and instruction count alone do not price it.
-- Quote milliseconds per frame from matched workloads. PAL displayed FPS is quantised
-  to `50/N`. Keep practice, race, reset and front-end windows distinct.
-- Read `amiga/.run/gdb-out.log`, verify it belongs to the current run, and check the
-  build flags, circuit, frozen window and counters. Never divide a live numerator
-  by frozen frame counts. Conditional breakpoints distort timing.
-- Measure both the work removed and the replacement cost. Do not attribute a residual
-  to an unmeasured component, or move a wholesale rate onto scattered writes.
-- Cross-run pictures can diverge because faster rendering changes the trajectory.
-  Use an in-process oracle for target-only optimisations.
-- The target is a 68000 A500. Reduce memory accesses; do not assume a cheaper memory
-  pool. Avoid 32-bit software multiply/divide helpers; use `src/cpu/m68k_math.h` and
-  retain the Amiga link audits.
-- ISR work has its own budget and can hide inside the phase it interrupted. Keep its
-  copper work first and its work bounded. Consult `docs/perf-method.md` and
-  `docs/m68k-optimisation.md` before changing a hot path.
-- Read the measured dead ends in `docs/open-work.md` before retrying an optimisation.
-  Require a changed premise and a new measurement, not a new spelling of the same loop.
+The method is AmigaXDev `docs/reference/measurement-method.md`; this harness's recipes and
+numbers are in `docs/perf-method.md` and `docs/m68k-optimisation.md`. Rules every change obeys:
+
+- Clean up the C before proposing assembly; price the whole affected path from the target
+  instructions and a measurement, never from source size or instruction count.
+- Quote ms per frame from matched workloads (displayed FPS is quantised to `50/N`); keep practice,
+  race, reset and front-end windows distinct. Read `amiga/.run/gdb-out.log`, check it belongs to
+  this run, and assert its build flags, circuit, frozen window and counters.
+- Use an in-process oracle for target-only optimisations; measure both the work removed and the
+  replacement cost.
+- The target is a 68000 A500: reduce memory accesses; no 32-bit software multiply/divide
+  (`src/cpu/m68k_math.h`, the Amiga link audits). ISR copper work runs first and the ISR's work
+  stays bounded.
+- Read the measured dead ends in `docs/open-work.md` before retrying an optimisation; require a
+  changed premise and a new measurement.

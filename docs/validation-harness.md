@@ -1,5 +1,11 @@
 # The validation harness — what it guarantees, and why
 
+> The generic validation method (levels of evidence, fixtures and the domain rule, results not
+> implementation details, sabotage, what a differential cannot see, determinism, coverage), merged
+> from this harness and its siblings, is maintained in AmigaXDev
+> `docs/reference/validation-harness.md`; add generic lessons there. This page is Revs' harness:
+> its twins, make targets, fixtures, lockstep and autopilot, cited from the Makefiles.
+
 > ⭐ **Postmortem finding #3 — "where I'd change the most".**  The nastiest bug class on the
 > Atari port was **passes `make validate` green, breaks at runtime**, and it bit three separate
 > times.  The conclusion was not "be more careful" but *make each failure mode structurally

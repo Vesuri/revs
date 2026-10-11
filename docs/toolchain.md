@@ -17,6 +17,11 @@ of Git. Read [reference provenance](reference-sources.md) before disassembly.
 | jsbeeb under `tools/jsbeeb/`, Node 24.15 or newer | BBC reference loop; Make recipes use Volta |
 | WHDLoad development files and archive tools | Release packaging; see [whdload.md](whdload.md) |
 
+The Amiga toolchain, FS-UAE, Kickstarts, WHDLoad, LHa, Ghidra, openjdk@21 and volta come from
+AmigaXDev (`make setup`, `make brew-extras`); paths and variables are in AmigaXDev
+`docs/environment.md`, and the generic build and Ghidra rules in
+`docs/reference/port-toolchain.md`.
+
 The local convention is a Ghidra installation under `tools/ghidra/` (which may be
 a symlink) and a per-repository project under `tools/ghidra-proj/`. The latter is
 an annotation database, not disposable build output. `tools/b2/` is an optional
