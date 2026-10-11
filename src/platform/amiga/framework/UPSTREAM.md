@@ -2,6 +2,10 @@
 
 Vendored from **dA JoRMaS / Template / C++** (commit-less local copy, 2026-06-08).
 
+Framework base: AmigaXDev commit 2e02af5, the canonical tree in `$AMIGA_FRAMEWORK`. Compare with
+it and take fixes from it with `python3 -m amigaxdev.framework diff Revs` (run from the directory
+above this repository).
+
 Classes included: `AmigaHardware`, `Bitmap`, `CopperList`, `Sprite`, `Palette`, `Util`.
 Support files: `SASCCompat.h`, `compat-include/`.
 

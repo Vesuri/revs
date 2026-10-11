@@ -50,6 +50,7 @@ programs that patch the engine, not interchangeable passive geometry blobs.
 Set `JAVA_HOME` to your JDK 21 installation. For the documented Homebrew layout:
 
 ```sh
+. amiga/env.sh
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$PATH"
 GH="tools/ghidra/ghidra_12.1_PUBLIC"
@@ -57,13 +58,15 @@ REVS_ROOT="$(pwd)"
 "$GH/support/analyzeHeadless" tools/ghidra-proj Revs \
   -import disasm/revs_runtime.bin \
   -processor "6502:LE:16:default" -loader BinaryLoader \
-  -scriptPath ghidra_scripts \
+  -scriptPath "ghidra_scripts;$AMIGA_GHIDRA_SCRIPTS" \
   -preScript MarkEntries.java \
   -postScript ApplyNames.java "$REVS_ROOT/disasm/symbols.csv" \
   -postScript ExportListing.java "$REVS_ROOT/disasm/listing.txt"
 make gen
 ```
 
+Run it from the repository root: `ghidra_scripts` holds the 6502 scripts, and
+`$AMIGA_GHIDRA_SCRIPTS` (set by `amiga/env.sh`) AmigaXDev's generic ones.
 Adjust `GH` to the installed directory containing `support/analyzeHeadless`.
 For an existing project, replace `-import disasm/revs_runtime.bin` and the loader
 options with `-process revs_runtime.bin`. Run `MarkEntries` before analysis when
@@ -80,8 +83,13 @@ and generates track data, hooks and the title page. Names come from
 |---|---|
 | `MarkEntries.java` | Seed `entrypoints.csv` and disassemble indirect entries |
 | `ApplyNames.java` | Apply the shared symbol map |
-| `ExportListing.java` | Export the listing used by the transpiler |
 | `DumpHwAccesses.java` | Report BBC hardware and vector accesses |
+
+AmigaXDev's `$AMIGA_GHIDRA_SCRIPTS`:
+
+| Script | Purpose |
+|---|---|
+| `ExportListing.java` | Export the listing used by the transpiler |
 | `DumpZeroPage.java` | Report zero-page references |
 | `DumpCallGraph.java` | Export the call graph |
 
