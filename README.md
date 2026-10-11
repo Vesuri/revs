@@ -35,7 +35,7 @@ full installation instructions.
 | S / A | Accelerate / brake |
 | Q / Tab | Change up / down; hold to disengage the clutch |
 | T | Starter motor |
-| Space | Fine steering |
+| Space | Amplify steering |
 | Shift + F1 / F2 | Select keyboard / mouse steering |
 | Shift + Help / Backspace | Pause / resume |
 | Ctrl + Q | Quit the game |

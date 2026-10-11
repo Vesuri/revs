@@ -60,7 +60,7 @@
  ---------
  The keys are the BBC Micro's: L and ; steer (or the cursor keys), S is the
  throttle and A the brake (or up and down), Q and Tab change gear, T is the
- starter and Space fine steering. SHIFT+F2 selects mouse steering, where the
+ starter and Space to amplify steering. SHIFT+F2 selects mouse steering, where the
  right mouse button accelerates, the left one brakes and the middle one changes
  gear. The other SHIFT+function key commands are as in the original manual,
  with the BBC's f0 on F10 and COPY (pause) on Help.

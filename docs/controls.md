@@ -41,7 +41,7 @@ and two BBC codes collided on that one key.
 |---|---|---|---|
 | Steer left | `L` | `$A9` | `L`, or ← |
 | Steer right | `+` (`;/+`) | `$A8` | `;`, or → |
-| Amplify steering (fine lock) | `SPACE` | `$9D` | `Space` |
+| Amplify steering | `SPACE` | `$9D` | `Space` |
 | Throttle | `S` | `$AE` | `S`, or ↑ |
 | Brake | `A` | `$BE` | `A`, or ↓ |
 | Change up / draw the clutch | `Q` | `$EF` | `Q` |
@@ -62,11 +62,21 @@ The BBC had no such overlap. Quitting wins, which is the harmless order.
 the same way the BBC selects a joystick: **SHIFT+F2**. Mouse sensitivity is half
 the original port setting: two mouse counts move the analogue reading one step.
 Fractional movement is retained between samples, so slow movement still responds;
-full steering lock remains available with twice the mouse travel. Right mouse
+the full analogue input range remains available with twice the mouse travel. Right mouse
 accelerates and left mouse brakes. **Q always shifts up and Tab always shifts
 down**, regardless of the pedal buttons. The middle mouse button retains the BBC
 analogue control: shift up under strong throttle, otherwise shift down. The gear
 keys take priority over the middle button; Tab wins if both gear keys are held.
+
+Mouse mode retains the BBC analogue steering curve. Without **Space**, the game
+quarters the steering demand; holding **Space** restores the larger range. This
+limits the steering indicator to roughly half its sweep at normal full mouse
+deflection on Silverstone. Several expansion circuits increase the analogue
+response in particular corners, so the available sweep can change around a lap.
+Keyboard steering accumulates lock while a direction is held, so its maximum
+range is not limited in the same way. The mouse sensitivity setting changes the
+travel needed to reach the analogue endpoints, not this game-level range.
+
 
 **Quitting the program is CTRL-Q** (user decision; the BBC had no quit, only BREAK). It is polled
 from every spin-wait, so it works on every page. Under WHDLoad on a 68010 or better the WHDLoad
