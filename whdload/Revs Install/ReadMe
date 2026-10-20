@@ -82,7 +82,7 @@
 
  History:
  --------
- version 0.92 (12.10.2026):
+ version 0.92 (21.10.2026):
  - new 320x200, 32-colour startup picture
  - fixed brief noise when restarting the engine after a crash
  - fixed engine sound continuing after a stall

@@ -21,5 +21,5 @@
 | (byte-comparing two builds is a standard check here — docs/headless-fsuae.md).
 	.section .rodata.version,"aR"
 	.balign 2
-	.asciz "$VER: Revs 0.92 (12.10.2026)"
+	.asciz "$VER: Revs 0.92 (21.10.2026)"
 	.balign 2
