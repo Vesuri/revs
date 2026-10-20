@@ -71,7 +71,10 @@ mouse buttons do not operate the pedals. Both pedal keys together mean neutral.
 Gear keys and the joystick primary button work as in analogue joystick mode.
 Each further press toggles joystick/paddle once; holding the keys does not repeat.
 The toggle preserves calibration. From keyboard or mouse mode, SHIFT+F2 always
-selects analogue joystick first.
+selects analogue joystick first. Paddle steering compensates the game's squared
+response, giving approximately linear steering versus paddle travel. Full-lock
+range, Space amplification and circuit-specific adjustments remain in effect.
+Joystick and mouse modes retain the original curve.
 
 The supported wiring follows Commodore's hardware manual: pin 5 = X, pin 9 = Y,
 pin 3 = primary button. Averages of four fields suppress jitter; a one-counter-tick
@@ -344,3 +347,21 @@ It does not model charging circuits or prove physical polarity. The target
 mouse-idle probe is `amiga/mousebtn.gdb`; a real-stick check should cover centre,
 both steering locks, both pedal endpoints and the primary gear button, then
 switch back to keyboard and mouse modes.
+
+### Paddle response compensation
+
+Only paddle channel 1 uses an inverse-square lookup after calibration. For the
+BBC's folded magnitude `m` (0–127), it selects the integer `q` whose square is
+nearest `127*m`. The original steering code then squares `q`, producing a
+linear target with the original full-lock endpoint. Neutral and both endpoints
+are unchanged; the one-counter dead band and four-field filtering still apply.
+The 128-byte table requires no square-root computation on the 68000.
+
+All circuit hooks continue to execute, including their grip-loss corrections.
+Their scale/square/double curves remain approximately linear at each fixed
+segment scale, with existing changes in maximum steering between segments.
+The Nürburgring's special magnitude-10 branch is not reached by this mapping:
+its first nonzero compensated magnitude is 11. Input precision and the game's
+integer steering arithmetic still produce small steps; this is compensation,
+not higher-resolution steering. `make input-test` checks all 256 encoded input
+values against the linear target and all circuit scale factors, plus mode isolation.

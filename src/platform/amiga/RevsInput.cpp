@@ -601,6 +601,31 @@ static uint16_t joystickAxis(uint8_t sample, uint8_t centre, bool reverse)
     return (uint16_t)((unsigned)value << 8);
 }
 
+/* Paddle-only inverse of the engine's squared analogue response. For folded
+   magnitude m in 0..127, choose q whose square is nearest 127*m. Thus q*q
+   follows a straight line with the same full-lock endpoint (127*127).
+   A 128-byte table avoids square roots/division on the 68000. Keep the BBC's
+   asymmetric fold: below centre its magnitude is 127-reading, above it is
+   reading-128. The circuit hooks still run, including their grip-loss effects. */
+static uint16_t paddleSteering(uint16_t axis)
+{
+    static const uint8_t inverseSquare[128] = {
+        0, 11, 16, 20, 23, 25, 28, 30, 32, 34, 36, 37, 39, 41, 42, 44,
+        45, 46, 48, 49, 50, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63,
+        64, 65, 66, 67, 68, 69, 69, 70, 71, 72, 73, 74, 75, 76, 76, 77,
+        78, 79, 80, 80, 81, 82, 83, 84, 84, 85, 86, 87, 87, 88, 89, 89,
+        90, 91, 92, 92, 93, 94, 94, 95, 96, 96, 97, 98, 98, 99, 100, 100,
+        101, 101, 102, 103, 103, 104, 105, 105, 106, 106, 107, 108, 108, 109, 109, 110,
+        110, 111, 112, 112, 113, 113, 114, 114, 115, 115, 116, 117, 117, 118, 118, 119,
+        119, 120, 120, 121, 121, 122, 122, 123, 123, 124, 124, 125, 125, 126, 126, 127,
+    };
+    const uint8_t reading = (uint8_t)(axis >> 8);
+    const bool positive = reading >= 128u;
+    const uint8_t magnitude = positive ? reading - 128u : 127u - reading;
+    const uint8_t curved = inverseSquare[magnitude];
+    return (uint16_t)((positive ? 128u + curved : 127u - curved) << 8);
+}
+
 uint16_t RevsInput::axis(uint8_t channel) const
 {
     if (m_inputMode == PADDLE && channel == 2) {
@@ -613,7 +638,10 @@ uint16_t RevsInput::axis(uint8_t channel) const
         const uint16_t centre = m_joystickCentre;
         if (!m_joystickReady) return 0x8000u;
         // Hardware-manual wiring: pin 5 / low byte = X; pin 9 / high byte = Y.
-        if (channel == 1) return joystickAxis((uint8_t)sample, (uint8_t)centre, false);
+        if (channel == 1) {
+            const uint16_t steering = joystickAxis((uint8_t)sample, (uint8_t)centre, false);
+            return m_inputMode == PADDLE ? paddleSteering(steering) : steering;
+        }
         if (channel == 2) return joystickAxis((uint8_t)(sample >> 8), (uint8_t)(centre >> 8), true);
         return 0x8000u;
     }

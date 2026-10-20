@@ -73,6 +73,39 @@ int main() {
  // Mouse -> F2 starts joystick even after leaving paddle for mouse.
  settled(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));
  settled(0x0024);assert(input.axis(2)==0xff00);key(RK_F2,false);
+ // Paddle compensates the engine curve; check the mathematical result rather
+ // than a copy of the lookup table. Nearest squared value has <=127 error.
+ for(unsigned v=0;v<256;v++) {
+  const unsigned result=paddleSteering((uint16_t)(v<<8))>>8;
+  const unsigned m=v>=128?v-128:127-v;
+  const unsigned q=result>=128?result-128:127-result;
+  const int error=(int)(q*q)-(int)(127*m);
+  assert(error>=-127 && error<=127);
+  assert(q!=10); // Nurburgring's isolated magnitude-10 branch cannot fire.
+  assert((result>=128)==(v>=128));
+  if(v) assert(result>=(paddleSteering((uint16_t)((v-1)<<8))>>8));
+  if(m==0 || m==127) assert(result==v);
+  // Expansion tracks: their floor(k*q/256), square, double curve remains
+  // linear within the inverse-square error and both floor errors.
+  // |q*q-127*m|<=127; |floor(z)^2-z^2|<2*z.
+  const unsigned scales[]={0xb5,0xf0,0xf8,0xbe,0xdc,0xc3,0xd7,0xcd,0xbc,0xd4,0xca};
+  for(unsigned k:scales) {
+   const unsigned a=k*q/256, aMax=k*127/256;
+   const double ideal=2.0*aMax*aMax*m/127.0;
+   const double delta=2.0*a*a-ideal;
+   const double t=k/256.0;
+   const double bound=2.0*(127*t*t + 2*t*q + 2*t*m);
+   assert(delta>=-bound && delta<=bound);
+  }
+ }
+ // Real mode selection applies compensation only to paddle steering.
+ settled(0x2828);key(RK_F1,true);assert(revs_key_down(0x8e));key(RK_F1,false);
+ key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
+ settled(0x283c);const uint16_t joystickMid=input.axis(1);
+ key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
+ assert(input.axis(1)==paddleSteering(joystickMid) && input.axis(1)>joystickMid);
+ key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
+ assert(input.axis(1)==joystickMid);
  // Check monotonicity, centre, direction, and output bounds for every counter value.
  unsigned checks=0;
  for(unsigned c=2;c<254;c++) for(unsigned v=0;v<256;v++) {

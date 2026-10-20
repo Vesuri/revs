@@ -44,7 +44,7 @@ full installation instructions.
 Hold **T**, **S** and **Q** together to start the engine in gear, then release
 **Q** to engage the clutch. Connect an analogue joystick to port 2, centre it,
 then press **Shift+F2**. Push forward to accelerate and pull back to brake.
-Press **Shift+F2** again for paddle mode: joystick X steers, **S/A** control
+Press **Shift+F2** again for paddle mode: joystick X gives linear steering, **S/A** control
 throttle/brake, and Y is ignored. Further presses toggle joystick/paddle; entering
 from keyboard or mouse always selects joystick first.
 With mouse steering, the right button accelerates,
