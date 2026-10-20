@@ -1,7 +1,3 @@
- AXIS-SWAP TEST BUILD: physical Y (pin 9) steers; physical X (pin 5)
- controls joystick pedals. Paddle mode also steers with physical Y.
- Centre both paddles before entering joystick mode from keyboard/mouse.
-
 
  THIS PACKAGE COMES WITH ABSOLUTELY NO WARRANTY OF ANY KIND, EITHER EXPRESS OR
  IMPLIED, STATUTORY OR OTHERWISE. THE ENTIRE RISK AS TO USE, RESULTS AND
