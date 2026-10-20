@@ -62,8 +62,9 @@ public:
     void sampleMouse();
 
 private:
-    void selectAnalogueSource(uint8_t raw) const;
-    mutable bool m_mouseMode;
+    void selectInputMode(uint8_t raw, bool freshPress) const;
+    enum InputMode { KEYBOARD, JOYSTICK, PADDLE, MOUSE };
+    mutable InputMode m_inputMode;
     mutable volatile bool m_joystickSelectHeld;
     mutable uint16_t m_joystickCentre;
     volatile uint16_t m_joystickSample;

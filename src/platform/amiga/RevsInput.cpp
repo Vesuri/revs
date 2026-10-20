@@ -377,7 +377,7 @@ static uint32_t keyboardHandler()
 bool RevsInput::initialize()
 {
     m_steerHalfSteps = 256;   /* dead centre, including the fractional bit */
-    m_mouseMode = false;
+    m_inputMode = KEYBOARD;
     m_joystickSelectHeld = false;
     m_joystickCentre = 0x8080u;
     m_joystickSample = 0x8080u;
@@ -459,7 +459,7 @@ bool RevsInput::keyDown(uint8_t x) const
     const uint8_t down0 = g_keyDown[k0];                /* ONE read: the CIA-A handler writes it */
     if (down0 || (k1 != RK_NONE && g_keyDown[k1])) {
         const uint8_t held = down0 ? k0 : k1;
-        if (x == 0x8Du) selectAnalogueSource(held);
+        if (x == 0x8Du || x == 0x8Eu) selectInputMode(held, g_keyLatch[held] != 0);
         g_keyLatch[held] = 0u;                          /* seen while held — the edge is spent */
         if (x == 0x9Du) REVS_DIAG(g_spaceAnswered++);
         return true;
@@ -476,7 +476,7 @@ bool RevsInput::keyDown(uint8_t x) const
             g_keyLatch[rk] = 0u;                        /* one tap, one answer */
             if ((uint16_t)(g_vbiCount - g_keyLatchAt[rk]) > KEY_LATCH_FIELDS)
                 continue;                               /* stale — not this page's press */
-            if (x == 0x8Du) selectAnalogueSource(rk);
+            if (x == 0x8Du || x == 0x8Eu) selectInputMode(rk, true);
             REVS_DIAG(g_keyLatchHits++);
             if (x == 0x9Du) REVS_DIAG(g_spaceAnswered++);
             return true;
@@ -565,14 +565,20 @@ void RevsInput::sampleMouse()
     REVS_DIAG(g_mouseBtnSeen |= b);
 }
 
-void RevsInput::selectAnalogueSource(uint8_t raw) const
+void RevsInput::selectInputMode(uint8_t raw, bool freshPress) const
 {
-    // The engine polls BBC f2 only after its SHIFT test (including a latched tap).
-    m_mouseMode = raw == RK_F3;
-    if (!m_mouseMode && !m_joystickSelectHeld && m_joystickReady) {
-        m_joystickCentre = m_joystickSample;
-        m_joystickSelectHeld = true;
+    // The engine polls these selectors only after SHIFT (including a latched tap).
+    if (raw == RK_F1) { m_inputMode = KEYBOARD; return; }
+    if (raw == RK_F3) { m_inputMode = MOUSE; return; }
+    if (m_joystickSelectHeld && !freshPress) return;
+    m_joystickSelectHeld = true;
+    if (m_inputMode == JOYSTICK) m_inputMode = PADDLE;
+    else if (m_inputMode == PADDLE) m_inputMode = JOYSTICK;
+    else {
+        m_inputMode = JOYSTICK;
+        if (m_joystickReady) m_joystickCentre = m_joystickSample;
     }
+    // Preserve calibration while toggling, so switching with a deflected stick is safe.
 }
 
 /* Inferred range: a centred linear potentiometer has approximately twice its centre resistance
@@ -597,7 +603,12 @@ static uint16_t joystickAxis(uint8_t sample, uint8_t centre, bool reverse)
 
 uint16_t RevsInput::axis(uint8_t channel) const
 {
-    if (!m_mouseMode) {
+    if (m_inputMode == PADDLE && channel == 2) {
+        const bool throttle = keyDown(0xAE), brake = keyDown(0xBE);
+        if (throttle == brake) return 0x8000u;
+        return throttle ? 0xFF00u : 0x0000u;
+    }
+    if (m_inputMode != MOUSE) {
         const uint16_t sample = m_joystickSample;
         const uint16_t centre = m_joystickCentre;
         if (!m_joystickReady) return 0x8000u;
@@ -635,7 +646,7 @@ uint8_t RevsInput::buttons() const
     /* The middle button retains the BBC analogue gearbox's pedal-dependent
        direction. Tab/Q are handled explicitly by read_pedals_and_gears_core so
        acceleration cannot override the direction requested by a gear key. */
-    return m_mouseMode ? (mouseButton(2) ? 0x01u : 0x00u) : m_joystickButtons;
+    return m_inputMode == MOUSE ? (mouseButton(2) ? 0x01u : 0x00u) : m_joystickButtons;
 }
 
 bool RevsInput::mouseButton(uint8_t which) const

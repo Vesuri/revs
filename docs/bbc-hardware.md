@@ -133,9 +133,10 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   paired with the action bytes at `$39D4`.  That decode also settles the BBC internal key-number
   layout: `(row = n>>4, col = n&15)`, row 7 = f0..f9, so -114 is f1 and -115 is f2.
 
-  **The Amiga port supports keyboard, analogue joystick and mouse**. Shift+F1
+  **The Amiga port supports keyboard, analogue joystick, paddle and mouse**. Shift+F1
   selects keyboard, Shift+F2 the physical proportional joystick in port 2, and
-  Shift+F3 the mouse. Both analogue sources retain the original ADC interface.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
+  Shift+F3 the mouse. Repeated Shift+F2 toggles joystick/paddle; paddle ignores Y
+  and takes pedals from the keyboard. Both analogue sources retain the original ADC interface.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
   steering" key, so the analogue response curve is real logic to be reproduced, not a range to be
   invented — read it out of the binary rather than tuning by feel.
 

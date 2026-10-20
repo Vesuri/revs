@@ -61,9 +61,17 @@ The BBC had no such overlap. Quitting wins, which is the harmless order.
 **Analogue joystick:** connect a proportional Amiga joystick to **port 2** (the
 usual joystick port), leave it centred, and press **SHIFT+F2**. Left/right steers;
 forward accelerates and back brakes. The primary button changes up under strong
-throttle, otherwise down. Q and Tab still select up/down explicitly. Re-select
-SHIFT+F2 with the stick centred to recalibrate. A digital joystick is not an
+throttle, otherwise down. Q and Tab still select up/down explicitly. To recalibrate, select keyboard or
+mouse mode, centre the stick, then press SHIFT+F2. A digital joystick is not an
 analogue controller and does not work in this mode.
+
+**Paddle mode:** press **SHIFT+F2** again to use joystick X for steering and
+**S/A** (or up/down) for throttle/brake. Y is ignored, even when deflected;
+mouse buttons do not operate the pedals. Both pedal keys together mean neutral.
+Gear keys and the joystick primary button work as in analogue joystick mode.
+Each further press toggles joystick/paddle once; holding the keys does not repeat.
+The toggle preserves calibration. From keyboard or mouse mode, SHIFT+F2 always
+selects analogue joystick first.
 
 The supported wiring follows Commodore's hardware manual: pin 5 = X, pin 9 = Y,
 pin 3 = primary button. Averages of four fields suppress jitter; a one-counter-tick
@@ -107,7 +115,7 @@ store there.
 |---|---|---|---|---|
 | Return to the pits and re-set the wings (**only while stationary**) | SHIFT+f0 | `$DF` | `$05F4` = `$C0` | SHIFT+**F10** |
 | Select KEYBOARD steering | SHIFT+f1 | `$8E` | `$05F5` = `$00` | SHIFT+**F1** |
-| Select analogue JOYSTICK steering | SHIFT+f2 | `$8D` | `$05F5` = `$80` | SHIFT+**F2** |
+| Select analogue JOYSTICK / toggle PADDLE steering | SHIFT+f2 | `$8D` | `$05F5` = `$80` | SHIFT+**F2** |
 | Select MOUSE steering (Amiga extension) | — | `$8D` | `$05F5` = `$80`, mouse source | SHIFT+**F3** |
 | Disengage Computer Assisted Steering | SHIFT+f3 | `$8C` | `$05F8` = `$00` | SHIFT+**F8** |
 | Volume down | SHIFT+f4 | `$EB` | `$05F6` = `$C0` | SHIFT+**F4** |
@@ -320,7 +328,8 @@ joystick readings, publishes their rounded mean as one atomic word, and caches
 mouse buttons before START discharges the capacitors. No waiting or division
 occurs in the interrupt. The first VBI starts a conversion; only the following
 VBI publishes a joystick reading. Calibration captures the averaged centre
-once per Shift+F2 press. The inferred symmetric range is limited by the 8-bit
+when Shift+F2 enters from keyboard or mouse mode; joystick/paddle toggles retain it.
+The inferred symmetric range is limited by the 8-bit
 counter endpoints; scaling uses 68000 DIVU in the main loop. The intended
 orientation is X increasing = right and Y decreasing = forward/throttle; this
 physical orientation is inferred until checked with a stick. The original per-track steering
@@ -328,7 +337,8 @@ curves and gear-button direction rules remain in the engine.
 
 `make input-test` compiles the production input implementation against host
 register and OS stand-ins. It covers serial key events, both fast and normal
-key paths, mode isolation, assistance bindings, centring, filtering, directions,
+key paths, joystick/paddle toggles (held keys and quick taps), keyboard pedals,
+mode isolation, assistance bindings, centring, filtering, directions,
 buttons, mouse discharge isolation and all 64,512 usable centre/sample pairs.
 It does not model charging circuits or prove physical polarity. The target
 mouse-idle probe is `amiga/mousebtn.gdb`; a real-stick check should cover centre,
