@@ -83,17 +83,20 @@
  History:
  --------
  version 0.92 (21.10.2026):
- - new 320x200, 32-colour startup picture
- - fixed brief noise when restarting the engine after a crash
+ - replaced the startup title with a 320x200, 32-colour picture
+ - moved menus, prompts and input fields up two text rows; standings retain
+   their full-height layout
+ - added physical analogue joystick support on port 2, selected with Shift+F2;
+   centre the stick before selecting it from keyboard or mouse mode
+ - added paddle mode: Shift+F2 toggles between joystick and paddle controls;
+   paddles use linear steering, S/A (or up/down) for pedals, and ignore Y
+ - moved mouse mode to Shift+F3 and halved mouse steering sensitivity
+ - moved steering assistance off/on to Shift+F8/Shift+F9; Shift+F6 is unused
+ - fixed Q/Tab changing gear in the wrong direction in mouse mode depending
+   on throttle or brake input
+ - fixed brief unwanted noise when restarting the engine after a crash
  - fixed engine sound continuing after a stall
- - corrected low-RPM engine and crash noise playback pitch
- - restored analogue joystick on Shift+F2; mouse is now Shift+F3
- - moved ordinary menus and prompts up two text rows; standings keep full height
- - paddle steering now compensates the original curve for a linear response
- - Shift+F2 toggles joystick/paddle; paddle uses keyboard pedals and ignores Y
- - moved steering assistance off/on to Shift+F8/Shift+F9
- - halved mouse steering sensitivity
- - fixed Tab/Q gear direction in mouse mode while accelerating or braking
+ - corrected low-RPM engine sound and crash-noise pitch
 
  version 0.91 (02.10.2026):
  - faster on 68000 Amigas, most noticeably when racing
