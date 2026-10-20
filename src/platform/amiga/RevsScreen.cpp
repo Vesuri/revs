@@ -679,6 +679,7 @@ void RevsScreen::initialize()
     /* ⚠ The MODE 7 painter blits (tt_blit_clear), and PlatformAmiga::run enables only copper,
        raster and sprite DMA — the blitter's is whatever the OS left, so say it. */
     AmigaHardware::setDMAChannels(DMAF_BLITTER, true);
+    m_ttTopLines = m_ttShownTopLines = 0;
     m_ttBitmap = Bitmap::allocate(kTtW, kTtH, kTtBP, /*interleaved*/true);
     m_ttCopper = CopperList::allocate(TT_LIST_LENGTH);
     if (!m_ttBitmap) REVS_DIAG(g_ttAllocFailed |= 1u);
@@ -821,9 +822,9 @@ void RevsScreen::setDisplayWindow(unsigned height)
     *diwstopPointer = (uint16_t)(((vstop & 0xFFu) << 8) | 0xC1);
 }
 
-/* The MODE 7 list is FIXED — built once, never rewritten.  Nothing about a teletext display
-   varies down the screen: one plane count, one set of pointers (single-buffered), one palette
-   of eight.  All the per-frame work is in the bitmap. */
+/* The MODE 7 geometry and palette are fixed down the screen. Its bitmap pointers
+   change only in VBI when switching between the lifted menu and full results viewport.
+   All per-cell work remains in the single-buffered bitmap. */
 void RevsScreen::buildTeletextCopper()
 {
     if (!m_ttCopper || !m_ttBitmap || !m_nullSprite) return;
@@ -1163,6 +1164,18 @@ void RevsScreen::decodeTeletext()
 #endif
     }
 
+    // All ordinary menus leave their first two rows blank. Results headings occupy
+    // those rows, so keep their full 25-row viewport. Decide from the completed
+    // picture, including backgrounds and double-height halves, not engine scratch state.
+    uint16_t topLines = 2u * TT_CELL_H;
+    for (unsigned i = 0; i < 2u * TT_COLS; i++) {
+        const uint32_t key = s_ttKey[i];
+        if (TT_KEY_BG(key) != TT_BLACK ||
+            (TT_KEY_FG(key) != TT_BLACK && !g_ttBlank[TT_KEY_GLYPH(key)])) {
+            topLines = 0;
+            break;
+        }
+    }
     m_ttRowDbl     = newDbl;
     REVS_DIAG(g_ttRowsDrawn  = decoded);
     REVS_DIAG(g_ttCellsDrawn = painted);
@@ -1173,6 +1186,7 @@ void RevsScreen::decodeTeletext()
 #ifdef REVS_TT_SPLIT
     s_ttBlitLines += tt_beam_lines() - tw;
 #endif
+    m_ttTopLines = topLines;  /* one atomic publication; VBI owns the copper/window */
 #ifdef REVS_TT_CHECK
     ttCheck();
 #endif
@@ -1326,7 +1340,8 @@ int RevsScreen::applyMode()
        assumption calcifies; the counter says whether there is anything to resolve. */
     if ((unsigned char)((mem[0x64] & 0x80u) ? 1u : 0u) != (want != 0)) REVS_DIAG(g_ttModeDisagree++);
 
-    if (want == m_ttOnScreen) return 0;
+    const uint16_t topLines = want == 1 ? m_ttTopLines : 0;
+    if (want == m_ttOnScreen && (want != 1 || topLines == m_ttShownTopLines)) return 0;
     /* ⚠ VALIDATE BEFORE LATCHING.  Latching m_ttOnScreen first and then bailing on a missing
        bitmap would record a switch that never happened and never retry it — the display would
        stay on the race list for the whole run with no counter moving.  Cost me a target run. */
@@ -1334,7 +1349,7 @@ int RevsScreen::applyMode()
     if (want == 2 && (!m_splashCopper || !m_splashBitmap)) return 0;
     m_ttOnScreen = want;
 
-    setDisplayWindow(want == 2 ? 200 : (want ? kTtH : kH));
+    setDisplayWindow(want == 2 ? 200 : (want ? kTtH - topLines : kH));
     if (want == 2) {
         REVS_DIAG(g_screenCopperAddr = (uint32_t)m_splashCopper->data());
         REVS_DIAG(g_screenCopperWords = SPLASH_LIST_LENGTH);
@@ -1345,15 +1360,19 @@ int RevsScreen::applyMode()
         g_screenMode7 = 0;
         AmigaHardware::setCopperList(*m_splashCopper, /*immediate*/true);
     } else if (want) {
+        // Scan out from row 2 for menus, including their original bottom prompt.
+        // Shorten the window by the same amount: DMA must never read past the bitmap.
+        m_ttCopper->showBitmap(IDX_TT_BPL, *m_ttBitmap, 1, 1, 0, topLines, kTtBP);
+        m_ttShownTopLines = topLines;
         /* ⭐ No forced repaint: decodeTeletext() compares the page against the bytes the bitmap
            was drawn from, and nothing else writes the bitmap, so whatever the page holds now is
            painted on the next decode and nothing that is already right is painted twice. */
         REVS_DIAG(g_screenCopperAddr  = (uint32_t)m_ttCopper->data());
         REVS_DIAG(g_screenCopperWords = TT_LIST_LENGTH);
-        REVS_DIAG(g_screenFrontAddr   = (uint32_t)m_ttBitmap->data);
-        REVS_DIAG(g_screenBytes       = (uint16_t)revs_mulu16(kTtH, kTtRowBytes));
+        REVS_DIAG(g_screenFrontAddr   = (uint32_t)m_ttBitmap->data + topLines * kTtRowBytes);
+        REVS_DIAG(g_screenBytes       = (uint16_t)revs_mulu16(kTtH - topLines, kTtRowBytes));
         REVS_DIAG(g_screenPlanes      = kTtBP);
-        REVS_DIAG(g_screenHeight      = kTtH);
+        REVS_DIAG(g_screenHeight      = kTtH - topLines);
         g_screenMode7       = 1;
         AmigaHardware::setCopperList(*m_ttCopper, /*immediate*/true);
     } else {

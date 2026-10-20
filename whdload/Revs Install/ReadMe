@@ -92,6 +92,7 @@
  - fixed engine sound continuing after a stall
  - corrected low-RPM engine and crash noise playback pitch
  - restored analogue joystick on Shift+F2; mouse is now Shift+F3
+ - moved ordinary menus and prompts up two text rows; standings keep full height
  - Shift+F2 toggles joystick/paddle; paddle uses keyboard pedals and ignores Y
  - moved steering assistance off/on to Shift+F8/Shift+F9
  - halved mouse steering sensitivity

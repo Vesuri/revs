@@ -94,7 +94,7 @@ private:
     void ttSelfTest();              /* ...and its synthetic double-height pages, once */
 #endif
     void buildTeletextCopper();     /* one-time: sprites, playfield, pointers, 8 colours */
-    void setDisplayWindow(unsigned height);  /* DIWSTRT/DIWSTOP for 208 or 250 lines */
+    void setDisplayWindow(unsigned height);  /* DIWSTRT/DIWSTOP for title, menus, results or gameplay */
     /* VBI: hand the display to whichever mode the machine is in now.  Returns non-zero if it
        switched, in which case nothing else this field should touch the other list. */
     int  applyMode();
@@ -158,6 +158,8 @@ private:
     CopperList* m_splashCopper;
     Bitmap*     m_ttBitmap;
     CopperList* m_ttCopper;
+    volatile uint16_t m_ttTopLines; /* published after decode: 20 for menus, 0 for full pages */
+    uint16_t m_ttShownTopLines;
     unsigned char m_ttOnScreen;      /* 0: race, 1: teletext, 2: bitmap title */
     unsigned char m_ttFlashSeen;     /* the flash phase the current picture was drawn in */
     /* ⭐ Which rows decodeTeletext() last drew double-height (bit y = row y).  The one piece of

@@ -101,6 +101,30 @@ current, it is what makes a future upstream re-sync possible.
 Every hand-asm twin gets a `REVS_<NAME>_ASM` seam, a `make <NAME>_C=1` C-fallback, and a
 `make VERIFY=1 PROBES=1` in-process differential — the template is in `amiga/Makefile`.
 
+## Menu vertical placement
+
+Ordinary Amiga teletext menus display source rows 2–24 at screen rows 0–22:
+a two-row (20-line) upward shift, including selection highlights, typed fields,
+and the final SPACE prompt. The logical 25-row page and its rendering remain
+unchanged. After rendering, the first two rows are checked for visible glyphs
+or nonblack backgrounds. Empty rows permit the shift; occupied rows retain the
+full 250-line display, protecting qualifying standings and the other results tables.
+
+The main loop publishes the offset after finishing the bitmap. During VBI,
+the display starts 2,400 bytes into the interleaved bitmap and uses a 230-line
+window, or returns to the original pointer and 250 lines for results. The
+window still starts at raster line 44. The shorter window prevents DMA from
+reading beyond the allocation; this change does not squeeze menus into 208 lines.
+The title and gameplay positions are unchanged.
+
+`amiga/menu_viewport.gdb` checks the 2,400-byte pointer offset, 230-line window,
+nonzero `TTCHECK` comparisons and the transition back to 208-line gameplay.
+Build clean with `PROBES=1 COMPETITION=1 TTCHECK=1`; the full-page oracle is
+too slow for the zero-length `TAPTEST` inputs on this workload. The target check
+passed with 27 full-page comparisons and zero mismatches. Replaying the actual
+menu scripts through the host teletext renderer also confirmed the two-row offset
+for ordinary menus and no offset for all four results-table variants.
+
 ## Startup bitmap
 
 The Amiga replaces the initial teletext title presentation with the local
