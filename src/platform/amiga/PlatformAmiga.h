@@ -23,7 +23,7 @@
 #include "platform.h"           // the abstract base (src/platform, on the build -I path)
 #include "platform_c.h"         // the extern "C" bridge decls
 #include "autorun.h"            // the scripted keyboard for unattended runs
-#include "RevsInput.h"          // real mouse + keyboard (Phase 5)
+#include "RevsInput.h"          // keyboard, mouse and proportional joystick
 #include "framework/Util.h"     // uint8_t, uint16_t, uint32_t
 
 // main.cpp instantiates PlatformClass(image) without knowing the concrete type; the
@@ -72,7 +72,7 @@ public:
     virtual unsigned simStepTenths() override;
     virtual unsigned simFields() override;
 
-    // Called from the VERTB ISR: accumulate the mouse counter (see RevsInput::sampleMouse).
+    // Called from the VERTB ISR: sample the controllers (see RevsInput::sampleMouse).
     void sampleMouse() { input.sampleMouse(); }
 
 private:
@@ -106,7 +106,7 @@ private:
 #ifdef REVS_AUTORUN_BUILD   // autorun.h — one predicate, not four flags per site
     AutoRun autoRun;
 #endif
-    // Real input: the CIA-A keyboard and the mouse, mapped onto the game's own two input
+    // Real input: the keyboard, mouse and joystick, mapped onto the game's own two input
     // paths (RevsInput.h).  ⚠ Under FPSCOUNT/PROBES the SCRIPT wins for the whole run, so
     // an unattended measurement is bit-identical across builds no matter what the keyboard
     // does; under STRAIGHT_TO_RACE it wins only until autoRun.done().

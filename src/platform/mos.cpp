@@ -164,8 +164,8 @@ static MosRegs osbyte(MosRegs r)
         break;
 
     /* 190 — read/write the uPD7002 conversion type (resolution).  Site $3879 with X=$20.
-       Returns X = previous value.  Purely a property of the ADC we are substituting a
-       mouse for, so there is nothing behind it to change. */
+       Returns X = previous value.  Purely a property of the BBC ADC: the platform supplies already-converted
+       joystick or mouse readings, so there is nothing behind it to change. */
     case 0xBE:
         r.x = 0x00;
         break;

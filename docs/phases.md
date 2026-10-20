@@ -36,7 +36,7 @@ Front-end presentation waits are separate. See [performance method](perf-method.
 
 ## Phase 5 Display input sound and tracks
 
-Complete. MODE 7 menus, race display, keyboard/mouse input, sound and circuit
+Complete. MODE 7 menus, race display, keyboard/joystick/mouse input, sound and circuit
 selection are implemented. Circuit selection applies the replayed engine patches;
 calling the original patch installer again would double-apply them.
 `tracks`, `track-run` and `viewdiff` test installation, execution and rendered

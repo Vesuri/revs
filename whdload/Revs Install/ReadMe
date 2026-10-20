@@ -60,9 +60,12 @@
  ---------
  The keys are the BBC Micro's: L and ; steer (or the cursor keys), S is the
  throttle and A the brake (or up and down), Q and Tab change gear, T is the
- starter and Space to amplify steering. SHIFT+F2 selects mouse steering, where the
- right mouse button accelerates, the left one brakes and the middle one changes
- gear. The other SHIFT+function key commands are as in the original manual,
+ starter and Space to amplify steering. SHIFT+F2 selects an analogue joystick
+ in port 2 (centre it before selecting).
+ Push forward to accelerate, pull back to brake; the primary button changes gear.
+ SHIFT+F3 selects mouse steering: right button accelerates, left brakes and
+ middle changes gear. SHIFT+F8/F9 turn steering assistance off/on; SHIFT+F6 is unused.
+ The other SHIFT+function key commands are as in the original manual,
  with the BBC's f0 on F10 and COPY (pause) on Help.
 
 
@@ -81,6 +84,8 @@
  - fixed brief noise when restarting the engine after a crash
  - fixed engine sound continuing after a stall
  - corrected low-RPM engine and crash noise playback pitch
+ - restored analogue joystick on Shift+F2; mouse is now Shift+F3
+ - moved steering assistance off/on to Shift+F8/Shift+F9
  - halved mouse steering sensitivity
  - fixed Tab/Q gear direction in mouse mode while accelerating or braking
 

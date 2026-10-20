@@ -1372,3 +1372,8 @@ sweep:
 	python3 tools/sweep_entrypoints.py --audit-smc $(if $(TRACE),--trace $(TRACE),) > disasm/sweep.txt
 	@echo "wrote disasm/sweep.txt"
 	@sed -n '1,5p' disasm/sweep.txt
+
+# Production Amiga key mapping and controller conversion, using mocked registers.
+.PHONY: input-test
+input-test:
+	python3 tools/test_amiga_input.py

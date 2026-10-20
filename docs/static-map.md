@@ -166,7 +166,7 @@ Treat the table as **[DERIVED, heuristic]** until a site is confirmed by a trace
 **Three consequences for the port, all of which change design:**
 
 1. **The steering is a MOS call, not a register.**  `OSBYTE 128` / `OSBYTE 190`, never
-   `$FEC0-$FEDF`.  The uPD7002 is never addressed directly, so the mouse-replaces-ADC seam
+   `$FEC0-$FEDF`.  The uPD7002 is never addressed directly, so the platform analogue-input seam
    (`docs/bbc-hardware.md`) sits in `Platform::mosCall`, and there is nothing for `bus_write` to
    intercept.
 2. **Sound is a MOS call too** — `OSWORD 8` defines an envelope, which means the SN76489 is driven

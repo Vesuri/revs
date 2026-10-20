@@ -58,8 +58,22 @@ on the same letters, because a player following the game's own instructions was 
 map did not carry. ⚠ → therefore has two jobs on the Amiga (steer right, and — with SHIFT — quit).
 The BBC had no such overlap. Quitting wins, which is the harmless order.
 
-**Steering with the mouse** replaces the BBC's uPD7002 analogue joystick (user decision). Select it
-the same way the BBC selects a joystick: **SHIFT+F2**. Mouse sensitivity is half
+**Analogue joystick:** connect a proportional Amiga joystick to **port 2** (the
+usual joystick port), leave it centred, and press **SHIFT+F2**. Left/right steers;
+forward accelerates and back brakes. The primary button changes up under strong
+throttle, otherwise down. Q and Tab still select up/down explicitly. Re-select
+SHIFT+F2 with the stick centred to recalibrate. A digital joystick is not an
+analogue controller and does not work in this mode.
+
+The supported wiring follows Commodore's hardware manual: pin 5 = X, pin 9 = Y,
+pin 3 = primary button. Averages of four fields suppress jitter; a one-counter-tick
+neutral band surrounds the captured centre. Scaling assumes linear potentiometers
+with approximately zero resistance at one end and twice the centre resistance at
+the other. Nonstandard wiring or restricted-travel adapters may need adjustment
+outside the game. Physical polarity and range still need a play-test with the
+actual stick; the automated checks use simulated registers.
+
+**Mouse steering:** select **SHIFT+F3**. Mouse sensitivity is half
 the original port setting: two mouse counts move the analogue reading one step.
 Fractional movement is retained between samples, so slow movement still responds;
 the full analogue input range remains available with twice the mouse travel. Right mouse
@@ -93,18 +107,20 @@ store there.
 |---|---|---|---|---|
 | Return to the pits and re-set the wings (**only while stationary**) | SHIFT+f0 | `$DF` | `$05F4` = `$C0` | SHIFT+**F10** |
 | Select KEYBOARD steering | SHIFT+f1 | `$8E` | `$05F5` = `$00` | SHIFT+**F1** |
-| Select JOYSTICK steering — **the mouse**, on the Amiga | SHIFT+f2 | `$8D` | `$05F5` = `$80` | SHIFT+**F2** |
-| Disengage Computer Assisted Steering | SHIFT+f3 | `$8C` | `$05F8` = `$00` | SHIFT+**F3** |
+| Select analogue JOYSTICK steering | SHIFT+f2 | `$8D` | `$05F5` = `$80` | SHIFT+**F2** |
+| Select MOUSE steering (Amiga extension) | — | `$8D` | `$05F5` = `$80`, mouse source | SHIFT+**F3** |
+| Disengage Computer Assisted Steering | SHIFT+f3 | `$8C` | `$05F8` = `$00` | SHIFT+**F8** |
 | Volume down | SHIFT+f4 | `$EB` | `$05F6` = `$C0` | SHIFT+**F4** |
 | Volume up | SHIFT+f5 | `$8B` | `$05F6` = `$40` | SHIFT+**F5** |
-| Engage Computer Assisted Steering | SHIFT+f6 | `$8A` | `$05F8` = `$80` | SHIFT+**F6** |
+| Engage Computer Assisted Steering | SHIFT+f6 | `$8A` | `$05F8` = `$80` | SHIFT+**F9** |
 | Retire from the race / leave a qualifying period | SHIFT+f7 | `$E9` | `$05F4` = `$20` | SHIFT+**F7** |
 | Freeze the game | SHIFT+COPY | `$96` | `$05F7` = `$80` | SHIFT+**Help** |
 | Unfreeze | `DELETE` (no SHIFT — the pause spin polls it directly at `$0F1E`) | `$A6` | `$05F7` = `$40` | **Backspace** |
 | **Quit the session and go back to the menu** | SHIFT+→ | `$86` | `$05F4` = `$80` | SHIFT+**→** |
 
 Index 2 of the table is a second `$8D` writing `$05F5` = `$C0`; the downward scan reaches index 3
-first, so it is unreachable.
+first, so it is unreachable. Amiga F2 and F3 both answer that live BBC f2 entry;
+the input layer chooses the physical source. Amiga Shift+F6 is now unassigned.
 
 ### How the four exits differ
 
@@ -289,3 +305,32 @@ only place the two vocabularies meet. A code the game asks about that the table 
 missing mapping and a wrong mapping look identical from the game's side, and one of them is
 otherwise silent forever. `amiga/keytest.gdb` drives the whole path (`g_keyDown` → `keyDown()` →
 `OSBYTE 129` → the game's own menu logic) on a headless target with no keyboard.
+
+## Analogue controller implementation and checks
+
+The local ADCD 2.1 Hardware Manual is the authority: `Hardware/Hard_8` nodes
+8-1-4-2 through 8-1-4-4 and `Hardware/Hard_E` node E-2-3-4, under
+`~/.local/share/amiga/adcd21/Reference/ROM_Kernel_Manuals`. These describe
+`POTGO=1`, reading `POT1DAT` on the next VBI before restarting, the pin/byte
+assignments, linear potentiometers (470 kΩ nominal, 528 kΩ maximum), and averaging.
+The equivalent online reference is [Proportional Controllers](https://amigadev.elowar.com/read/ADCD_2.1/Hardware_Manual_guide/node010D.html).
+
+`RevsInput::sampleMouse` now samples both devices. It retains four completed
+joystick readings, publishes their rounded mean as one atomic word, and caches
+mouse buttons before START discharges the capacitors. No waiting or division
+occurs in the interrupt. The first VBI starts a conversion; only the following
+VBI publishes a joystick reading. Calibration captures the averaged centre
+once per Shift+F2 press. The inferred symmetric range is limited by the 8-bit
+counter endpoints; scaling uses 68000 DIVU in the main loop. The intended
+orientation is X increasing = right and Y decreasing = forward/throttle; this
+physical orientation is inferred until checked with a stick. The original per-track steering
+curves and gear-button direction rules remain in the engine.
+
+`make input-test` compiles the production input implementation against host
+register and OS stand-ins. It covers serial key events, both fast and normal
+key paths, mode isolation, assistance bindings, centring, filtering, directions,
+buttons, mouse discharge isolation and all 64,512 usable centre/sample pairs.
+It does not model charging circuits or prove physical polarity. The target
+mouse-idle probe is `amiga/mousebtn.gdb`; a real-stick check should cover centre,
+both steering locks, both pedal endpoints and the primary gear button, then
+switch back to keyboard and mouse modes.

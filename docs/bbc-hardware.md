@@ -133,9 +133,9 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   paired with the action bytes at `$39D4`.  That decode also settles the BBC internal key-number
   layout: `(row = n>>4, col = n&15)`, row 7 = f0..f9, so -114 is f1 and -115 is f2.
 
-  **Decision: the Amiga port uses mouse + keyboard** (user, 2026-08-12).  The BBC's own
-  `SHIFT+f1` keyboard mode is the faithful precedent for digital steering; the mouse stands in for
-  the analogue axis.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
+  **The Amiga port supports keyboard, analogue joystick and mouse**. Shift+F1
+  selects keyboard, Shift+F2 the physical proportional joystick in port 2, and
+  Shift+F3 the mouse. Both analogue sources retain the original ADC interface.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
   steering" key, so the analogue response curve is real logic to be reproduced, not a range to be
   invented — read it out of the binary rather than tuning by feel.
 
@@ -157,8 +157,9 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   it, `$1696` picks up-vs-down itself from `$3E`/`$3F`; the player never chooses a direction), so
   that faithful meaning goes on the **middle** button and nothing is lost.  ⚠ Left/right/middle come
   from two different places — left is `CIAAPRA` bit 6, right and middle are `POTINP` bits 10 and 8 —
-  and the `POTINP` pair only report while the pot pins are **inputs**, hence the one-off `POTGO`
-  clear in `initialize()`.  ⚠⚠ **FS-UAE does not model that dependency**: removing the clear
+  and the `POTINP` pair only report while the pot pins are **inputs**, hence `POTGO`
+  writes keep all output-enable bits clear. Buttons are cached before each START
+  write so its discharge interval cannot look like a press.  ⚠⚠ **FS-UAE does not model that dependency**: removing the clear
   entirely still reads both buttons correctly (measured by sabotage), so this is a real-hardware-only
   requirement that no host run can verify.  `amiga/mousebtn.gdb` proves the released state reads
   released and says so in its own header.
@@ -309,7 +310,7 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 | Video ULA palette writes (incl. mid-frame) | copper `COLORxx` MOVEs at an end-of-previous-line WAIT |
 | ⚠ **User VIA T1 timer IRQ** (not System VIA vsync) — a raster-timed chain | `INTB_VERTB` for the frame boundary **plus copper MOVEs for the mid-frame band changes**. The one-to-one "vsync → VERTB" mapping does not hold; see the correction above |
 | ⚠ SN76489 **via the MOS sound scheduler** (`OSWORD 7`/`8`; the chip is never addressed) | `src/platform/sound.c` reproduces the SCHEDULER (validated: `make sound`), `RevsAudio.cpp` maps the chip state onto Paula — §Sound below |
-| ⚠ ADC steering **via `OSBYTE 128`**, never the `$FEC0` registers | **mouse + keyboard** (decided), serviced in `Platform::mosCall` — there is nothing for `bus.h` to intercept |
+| ⚠ ADC steering **via `OSBYTE 128`**, never the `$FEC0` registers | **joystick/mouse ADC** (keyboard is a separate path), serviced in `Platform::mosCall` — there is nothing for `bus.h` to intercept |
 | Keyboard via OSBYTE | CIA-A serial-port keyboard handler |
 | Disc-loaded engine + track data (the engine itself never calls the filing system) | the circuit data is in the exe (`src/gen/revs_tracks.c`); the ENGINE image is read off the player's `.ssd` at startup and its unpack replayed in C (`src/platform/engine_image.h`, `docs/whdload.md`) |
 | MOS `$C000-$FFFF` | `Platform::mosCall` for the calls Revs actually makes |

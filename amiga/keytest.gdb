@@ -45,7 +45,7 @@ set var g_keyDown[1] = 1
 runframes 40
 printf "=== '1' held:   0077=%02x 0078=%02x  unmapped=%lu\n", mem[0x77], mem[0x78], g_keyUnmapped
 
-# Release, then hold SHIFT + F2 (= BBC SHIFT + f2, code $8D) to select ANALOGUE (mouse) mode.
+# Release, then hold SHIFT + F2 (= BBC SHIFT + f2, code $8D) to select ANALOGUE JOYSTICK mode.
 # ⚠ Was F3 ($52) while the key map had the function keys one place off; BBC f2 is Amiga F2 ($51).
 set var g_keyDown[1] = 0
 set var g_keyDown[0x60] = 1

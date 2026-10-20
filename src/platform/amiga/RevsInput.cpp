@@ -8,6 +8,7 @@
 #include <hardware/cia.h>
 
 #include "RevsInput.h"
+#include "../../cpu/m68k_math.h"
 #include "framework/AmigaHardware.h"
 
 /* ---------------------------------------------------------------------------
@@ -125,11 +126,12 @@ static const KeyMap kKeys[] = {
        nibble = the value stored.                                                            */
     { 0xDF, RK_F10    },   /* -33   f0 -> $05F4 = $C0  return to the pits (session continues) */
     { 0x8E, RK_F1     },   /* -114  f1 -> $05F5 = $00  KEYBOARD steering                     */
-    { 0x8D, RK_F2     },   /* -115  f2 -> $05F5 = $80  JOYSTICK/analogue (the mouse) steering */
-    { 0x8C, RK_F3     },   /* -116  f3 -> $05F8 = $00  computer-assisted steering OFF        */
+    { 0x8D, RK_F2     },   /* f2 -> analogue engine path, physical joystick */
+    { 0x8D, RK_F3     },   /* f3 -> same engine path, mouse source */
+    { 0x8C, RK_F8     },   /* -116  f3 -> $05F8 = $00  computer-assisted steering OFF        */
     { 0xEB, RK_F4     },   /* -21   f4 -> $05F6 = $C0  volume down                           */
     { 0x8B, RK_F5     },   /* -117  f5 -> $05F6 = $40  volume up                             */
-    { 0x8A, RK_F6     },   /* -118  f6 -> $05F8 = $80  computer-assisted steering ON         */
+    { 0x8A, RK_F9     },   /* -118  f6 -> $05F8 = $80  computer-assisted steering ON         */
     { 0xE9, RK_F7     },   /* -23   f7 -> $05F4 = $20  (effect not yet named)                */
     { 0x96, RK_HELP   },   /* -106  COPY [9,6] -> Amiga Help: $05F7 = $80  PAUSE             */
                            /*       (DELETE, mapped above, is the key that RESUMES)          */
@@ -375,15 +377,24 @@ static uint32_t keyboardHandler()
 bool RevsInput::initialize()
 {
     m_steerHalfSteps = 256;   /* dead centre, including the fractional bit */
+    m_mouseMode = false;
+    m_joystickSelectHeld = false;
+    m_joystickCentre = 0x8080u;
+    m_joystickSample = 0x8080u;
+    m_joystickReady = false;
+    m_mouseButtons = 0;
+    m_joystickButtons = 0;
+    m_potStarted = false;
+    m_joystickHistoryIndex = 0;
     m_lastMouseX = (uint8_t)(*joy0datPointer & 0xFFu);
     /* Built HERE, before the engine runs, so keyDown() — seven polls a race frame — need not ask
        whether it exists.  pressBbcKey (the autorun harness) keeps the lazy check. */
     if (!s_rkBuilt) buildReverseMap();
     for (unsigned i = 0; i < 128; i++) { g_keyDown[i] = 0; g_keyLatch[i] = 0; }
 
-    /* ⚠ Make the pot pins INPUTS so POTINP reports the right and middle buttons.  Clearing
-       POTGO's four OUT* enables is the whole requirement; the START bit is for the paddle
-       counters, which nothing here uses.  Without this both buttons read as held. */
+    /* Make the pot pins inputs so POTINP reports the right and middle buttons.
+       POTGO's OUT* enables stay clear. sampleMouse starts the proportional counters
+       each field, after reading the previous conversion and the mouse buttons. */
     *potgoPointer = 0x0000u;
 
     s_ciaaBase = (struct Library*)OpenResource((CONST_STRPTR)CIAANAME);
@@ -430,6 +441,7 @@ void RevsInput::releaseAllKeys()
     /* The whole rawkey array, not just the mapped codes: this is "nothing is held", and
        leaving an unmapped rawkey set would be the same bug with a different key. */
     for (unsigned i = 0; i < 128; i++) { g_keyDown[i] = 0; g_keyLatch[i] = 0; }
+    m_joystickSelectHeld = false;
 }
 
 bool RevsInput::keyDown(uint8_t x) const
@@ -447,6 +459,7 @@ bool RevsInput::keyDown(uint8_t x) const
     const uint8_t down0 = g_keyDown[k0];                /* ONE read: the CIA-A handler writes it */
     if (down0 || (k1 != RK_NONE && g_keyDown[k1])) {
         const uint8_t held = down0 ? k0 : k1;
+        if (x == 0x8Du) selectAnalogueSource(held);
         g_keyLatch[held] = 0u;                          /* seen while held — the edge is spent */
         if (x == 0x9Du) REVS_DIAG(g_spaceAnswered++);
         return true;
@@ -463,6 +476,7 @@ bool RevsInput::keyDown(uint8_t x) const
             g_keyLatch[rk] = 0u;                        /* one tap, one answer */
             if ((uint16_t)(g_vbiCount - g_keyLatchAt[rk]) > KEY_LATCH_FIELDS)
                 continue;                               /* stale — not this page's press */
+            if (x == 0x8Du) selectAnalogueSource(rk);
             REVS_DIAG(g_keyLatchHits++);
             if (x == 0x9Du) REVS_DIAG(g_spaceAnswered++);
             return true;
@@ -523,12 +537,75 @@ void RevsInput::sampleMouse()
     const unsigned pot = *potinpPointer;
     const unsigned cia = *ciaapraPointer;
     unsigned char b = (unsigned char)(~(((cia >> 6) & 1u) | ((pot >> 9) & 2u) | ((pot >> 6) & 4u)) & 7u);
+    m_mouseButtons = b;
+    /* Standard proportional stick primary button: pin 3, JOY1DAT bit 9. */
+    m_joystickButtons = (*joy1datPointer & 0x0200u) ? 1u : 0u;
+    if (m_potStarted) {
+        const uint16_t raw = *pot1datPointer;
+        if (!m_joystickReady) {
+            for (unsigned i = 0; i < 4u; ++i) m_joystickHistory[i] = raw;
+        }
+        m_joystickHistory[m_joystickHistoryIndex] = raw;
+        m_joystickHistoryIndex = (uint8_t)((m_joystickHistoryIndex + 1u) & 3u);
+        unsigned x = 0, y = 0;
+        for (unsigned i = 0; i < 4u; ++i) {
+            x += m_joystickHistory[i] & 0xFFu;
+            y += m_joystickHistory[i] >> 8;
+        }
+        m_joystickSample = (uint16_t)(((y + 2u) >> 2) << 8 | ((x + 2u) >> 2));
+        m_joystickReady = true;
+    }
+    /* Read before START: the discharge interval temporarily pulls mouse pot
+       pins low too. Main-loop consumers use the cached buttons above. */
+    *potgoPointer = 0x0001u;
+    m_potStarted = true;
+    if (!g_keyDown[RK_F2] || !(g_keyDown[RK_LSHIFT] || g_keyDown[RK_RSHIFT]))
+        m_joystickSelectHeld = false;
     REVS_DIAG(g_mouseBtnMask  = b);
     REVS_DIAG(g_mouseBtnSeen |= b);
 }
 
+void RevsInput::selectAnalogueSource(uint8_t raw) const
+{
+    // The engine polls BBC f2 only after its SHIFT test (including a latched tap).
+    m_mouseMode = raw == RK_F3;
+    if (!m_mouseMode && !m_joystickSelectHeld && m_joystickReady) {
+        m_joystickCentre = m_joystickSample;
+        m_joystickSelectHeld = true;
+    }
+}
+
+/* Inferred range: a centred linear potentiometer has approximately twice its centre resistance
+   at the far end. One counter tick is the neutral dead band. All arithmetic fits
+   a 16-bit dividend; use DIVU explicitly on the 68000, never software division. */
+static uint16_t joystickAxis(uint8_t sample, uint8_t centre, bool reverse)
+{
+    if (centre < 2u || centre > 253u) return 0x8000u; // unusable calibration
+    int delta = (int)sample - (int)centre;
+    unsigned span = centre;
+    if (delta > 0 && span > 255u - centre) span = 255u - centre;
+    if (reverse) delta = -delta;
+    unsigned magnitude = (unsigned)(delta < 0 ? -delta : delta);
+    if (magnitude <= 1u) return 0x8000u;
+    unsigned scaled = revs_divu16((uint16_t)(((magnitude - 1u) << 7) + ((span - 1u) >> 1)),
+                                 (uint16_t)(span - 1u));
+    if (scaled > 128u) scaled = 128u;
+    int value = 128 + (delta < 0 ? -(int)scaled : (int)scaled);
+    if (value > 255) value = 255;
+    return (uint16_t)((unsigned)value << 8);
+}
+
 uint16_t RevsInput::axis(uint8_t channel) const
 {
+    if (!m_mouseMode) {
+        const uint16_t sample = m_joystickSample;
+        const uint16_t centre = m_joystickCentre;
+        if (!m_joystickReady) return 0x8000u;
+        // Hardware-manual wiring: pin 5 / low byte = X; pin 9 / high byte = Y.
+        if (channel == 1) return joystickAxis((uint8_t)sample, (uint8_t)centre, false);
+        if (channel == 2) return joystickAxis((uint8_t)(sample >> 8), (uint8_t)(centre >> 8), true);
+        return 0x8000u;
+    }
     if (channel == 1) {
         /* Channel 1 = steering.  $503F uses ONLY the high byte, biased so $80 is centre
            ($1587 -> $158E).  ⭐ Polarity is [DERIVED]: high byte >= $80 leaves adc_read's
@@ -558,19 +635,12 @@ uint8_t RevsInput::buttons() const
     /* The middle button retains the BBC analogue gearbox's pedal-dependent
        direction. Tab/Q are handled explicitly by read_pedals_and_gears_core so
        acceleration cannot override the direction requested by a gear key. */
-    return mouseButton(2) ? 0x01u : 0x00u;
+    return m_mouseMode ? (mouseButton(2) ? 0x01u : 0x00u) : m_joystickButtons;
 }
 
 bool RevsInput::mouseButton(uint8_t which) const
 {
-    /* Left is a CIA-A parallel-port bit; right and middle are the pot pins of port 0 read
-       back through POTINP — bit 10 (DATLY) is right, bit 8 (DATLX) is middle.  All three
-       are active LOW. */
-    if (which == 0) return (*ciaapraPointer & 0x40u) == 0u;
-    uint16_t p = *potinpPointer;
-    if (which == 1) return (p & 0x0400u) == 0u;
-    if (which == 2) return (p & 0x0100u) == 0u;
-    return false;
+    return which < 3u && (m_mouseButtons & (1u << which)) != 0u;
 }
 
 #ifdef REVS_TAPTEST

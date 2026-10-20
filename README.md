@@ -36,12 +36,15 @@ full installation instructions.
 | Q / Tab | Change up / down; hold to disengage the clutch |
 | T | Starter motor |
 | Space | Amplify steering |
-| Shift + F1 / F2 | Select keyboard / mouse steering |
+| Shift + F1 / F2 / F3 | Select keyboard / analogue joystick / mouse steering |
+| Shift + F8 / F9 | Steering assistance off / on |
 | Shift + Help / Backspace | Pause / resume |
 | Ctrl + Q | Quit the game |
 
 Hold **T**, **S** and **Q** together to start the engine in gear, then release
-**Q** to engage the clutch. With mouse steering, the right button accelerates,
+**Q** to engage the clutch. Connect an analogue joystick to port 2, centre it,
+then press **Shift+F2**. Push forward to accelerate and pull back to brake.
+With mouse steering, the right button accelerates,
 the left brakes and the middle changes gear. See [the controls guide](docs/controls.md)
 for pit stops, steering assistance and other commands.
 

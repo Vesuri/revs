@@ -173,8 +173,8 @@ static uint32_t vbiHandler()
     // are done, FIRST, in Revs::vbi() — the ordering and its beam measurement are written there.
     // The mouse counter is 8 bits and free-running, so it MUST be sampled every frame:
     // a missed frame loses the delta, and a delta taken across the wrap is a fast flick
-    // in the wrong direction.  Two register reads, above the game body so it cannot be
-    // starved by an overrunning one.
+    // in the wrong direction. The same bounded sampler reads the joystick pots
+    // and starts the next conversion before the game body.
     /* ⭐ What does the ISR itself cost?  Its time is charged to whatever phase was open when it
        preempted, so the phase table cannot answer it (probe.cpp §two sub-frame timers). */
     /* ⭐⭐ ISRSPLIT: the handler's own sub-brackets (probe.h §ISRSPLIT).  Compiles to nothing

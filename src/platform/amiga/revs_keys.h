@@ -32,7 +32,8 @@ int platform_key_down(uint8_t code);
 
 static inline int revs_key_down(uint8_t x)
 {
-    if (g_keyDirect && !g_screenMode7) {
+    /* Analogue selector also chooses the physical source and captures its centre. */
+    if (g_keyDirect && !g_screenMode7 && x != 0x8Du) {
         const uint8_t k0 = g_keyRawMap[x][0], k1 = g_keyRawMap[x][1];
         if (k0 != 0xFFu) {
             if (g_keyDown[k0])                  { g_keyLatch[k0] = 0u; return 1; }
