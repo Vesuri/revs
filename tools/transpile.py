@@ -1314,7 +1314,7 @@ VALIDATE_FUNCS = {
     # can be held together; $A6 must be in the set whenever the pause spin can run, or both models hang.
     0x0EE5,
     # $2692 check_car_pair — TWIN #163.  The per-frame overtaking / position-change pass, called
-    # twice a frame (driving loop $1181 and $264C) — walks car_order backwards from zp_scratch_index,
+    # twice a frame (driving loop $1181 and $264C) — walks car_order backwards from player_order_slot,
     # comparing each car against the one behind it via the signed ring gap car_gap returns.  Three
     # arms: FAR/in-order (C set) is a no-op; OUT-OF-ORDER close behind (N set, gap>=$F6) SWAPS the
     # pair, ticks the position-swap marker $62FE, and when the player is in the pair on the same lap

@@ -46,9 +46,11 @@ Do not claim faster AUTORUN keyboard scaffolding as a shipping improvement.
 
 ## Naming and source presentation
 
-Every routine in the generated corpus has a name (no `FUN_xxxx` is left). Remaining naming
-work is cell-level: fact-shaped scratch names and [PROVISIONAL] rows in `disasm/symbols.csv`.
-Verify a candidate against today's `symbols.csv` before adding it to `rename.md`.
+Every routine in the generated corpus has a name (no `FUN_xxxx` is left). The cell-level
+naming audit is complete; shared scratch bytes deliberately retain neutral names.
+See [the cell naming contracts](native-maintenance.md#cell-naming-contracts).
+Record a newly demonstrated naming contradiction in `rename.md`, with its address
+and a way to resolve it.
 
 Keep comments next to the code they describe and accurate when touching a routine;
 preserve reader audits and hardware contracts, and put measurement history in the

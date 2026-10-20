@@ -60,6 +60,55 @@ needs no hardware dispatch, while a genuinely variable destination still does.
 Do not move a cold fallback into a new call without measuring its effect on the
 surrounding loop's memory traffic.
 
+## Cell naming contracts
+
+`disasm/symbols.csv` owns cell names; a name describes a value only within its
+documented lifetime. A second reader is not evidence of a second tenancy.
+Conversely, arithmetic scratch and overlapping arrays must not acquire a global
+name from just one caller.
+
+The cell audit resolves the five remaining provisional cell rows and the
+misclassified `$0003` scratch byte:
+
+| Address | Name | Contract |
+| --- | --- | --- |
+| `$0003` | `player_order_slot` | Cached position of `player_car` in `car_order`, refreshed by `find_player_neighbours`; may be stale during swaps. |
+| `$0012` | `edge_cursor` | Output point cursor during a road-side walk, exclusive end index afterward. |
+| `$001F` | `horizon_extent` | Maximum road scan line, with stale-horizon and viewport caps; also incremented before crash repaint. |
+| `$0051` | `horizon_index` | Point supplying the maximum; folded into the first 40-point half only at the geometry tail. |
+| `$62FC` | `horizon_width_threshold` | Width threshold used to clip distant objects at the horizon. Silverstone halves the magnitude; expansion circuits use their own scale. |
+| `$7000` | `span_store_default_base` | Static operand placeholder, replaced with a surface-edge buffer address before road-span drawing. It is not a column table or the framebuffer base. |
+
+The runtime listing's 7,098 instruction byte sequences were checked against
+`revs_runtime.bin`. `$0003` has one direct writer, `$63AE`, and seven direct
+reads: `$1841`, `$18B4`, `$2655`, `$2692`, `$279C`, `$63B5`, `$66DF`.
+All consume the cached player order position. The indexed reset at `$1809`
+also clears it. The dashboard overlay and generated expansion hooks contain
+no reference to this cell. BBC competition drive-in checks on Silverstone
+and Brands (`--frames=120 --competition --drive --watch=0003`, track 5 and 1)
+recorded only `$63AE` writes after frame 40 (143 and 126), plus one reset clear
+each. These windows corroborate the writer audit; they do not establish
+coverage of every race branch.
+
+The remaining neutral scratch names are intentional, with distinct producers:
+
+| Cell | Examples of unrelated uses |
+| --- | --- |
+| `shared_counter_42` | Geometry point counter (`$2360/$23D6`), object slot (`$2A30/$2A39`), standings mode (`$65D6`). |
+| `shared_temp_76` | Sort index (`$0F69`), projection normalisation (`$22D0`), previous camera pitch (`$4534`). |
+| `shared_temp_77` | Saved section index (`$240E`), sign-origin component index (`$4CBE`), text field width (`$6304`). |
+| `shared_temp_7e` | Bearing lookup result (`$21DF/$2257`), object coordinate (`$20DB`), span endpoint (`$2B6F`). |
+| `shared_temp_84` | Step-delta component (`$1446`), projected height magnitude (`$22AE`), span delta (`$2B89`); also part of `point_delta_hi`. |
+| `shared_temp_85` | Step-delta component (`$1448`), car across-position (`$2947`), span column cursor (`$2C7B`); also part of `point_delta_hi`. |
+| `shared_temp_8c` | Road style (`$1A4C/$1A76`) and deferred object pixel mask (`$1D2F/$1D48`). |
+
+Keep the established scoped aliases and tenancy notes for `math_*`, `hypot_*`,
+`point_delta_*`, `point_dist_*` and the plot pointers. They describe specific
+producer/consumer windows, not exclusive ownership of those addresses.
+The remaining provisional routine descriptions are separate from cell naming;
+an old provisional name mentioned in a historical note is not an unresolved
+cell row.
+
 ## Verification
 
 - Comments and documentation: check references and formatting.

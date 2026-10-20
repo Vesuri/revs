@@ -2599,7 +2599,7 @@ static int test_finish_race(void)
         pre[0x006E] = (uint8_t)(xs() % 0x20u);               /* race_lap_total */
         /* ⚠ car_order must be a real PERMUTATION of the twenty slots, not twenty random slots.
            The pass ends with find_player_neighbours, which searches car_order[$13..0] for
-           player_car and parks the position it found in zp_scratch_index — and leaves $FF there
+           player_car and parks the position it found in player_order_slot — and leaves $FF there
            when the player is ABSENT.  check_car_pair's ring closes only on that cell, so a
            missing player hangs the NEXT pass, not this one (docs/validation-harness.md
            §EIGHTEENTH).  In the game the array is a permutation by construction. */
@@ -2610,7 +2610,7 @@ static int test_finish_race(void)
             pre[0x013C + i] = pre[0x013C + j];
             pre[0x013C + j] = tmp;
         }
-        pre[0x0003] = (uint8_t)(xs() % 20u);                 /* zp_scratch_index */
+        pre[0x0003] = (uint8_t)(xs() % 20u);                 /* player_order_slot */
         pre[0x2771] = 0xC9u;                                 /* the per-circuit SMC seam, unpatched */
         pre[0x62DF] = (uint8_t)(0x0Eu + (xs() % 0x10u));     /* loop_counter_hi, past the bound */
         pre[0x006A] = (uint8_t)(xs() % 0xF0u);               /* loop_counter, no carry */
@@ -3075,7 +3075,7 @@ static int force_shape_tables(uint8_t* pre);
    Three structural pins:
 
      - car_order is a permutation of the twenty slots, and car_behind is a position in 0..19.  The
-       walk steps car_index_inc from zp_scratch_index until it lands on car_behind, so any
+       walk steps car_index_inc from player_order_slot until it lands on car_behind, so any
        position in range terminates it; a car_behind of $FF would spin forever, and the game never
        produces one (find_player_neighbours writes a ring position).
      - car_heading ($0A/$0B) is the camera the twin marshals in ONCE instead of per car.  It is
@@ -3113,7 +3113,7 @@ static int test_draw_car_field(void)
                                      uint8_t tmp = ord[i]; ord[i] = ord[j]; ord[j] = tmp; }
           for (i = 0; i < 20; i++) pre[0x013Cu + i] = ord[i]; }
 
-        pre[0x0003u] = (uint8_t)(xs() % 20u);       /* zp_scratch_index — the walk's start */
+        pre[0x0003u] = (uint8_t)(xs() % 20u);       /* player_order_slot — the walk's start */
         pre[0x004Du] = (uint8_t)(xs() % 20u);       /* car_behind — and its stop */
 
         /* $1FE9 is plot_object's per-circuit SMC extent, reached through draw_track_object.
@@ -3183,7 +3183,7 @@ static int test_draw_car_field(void)
 
      - car_order is a PERMUTATION of the twenty slots and player_car is one of them.  That is what
        sort_cars_by_key produces, and it is what makes the routine terminate: find_player_neighbours
-       leaves the player's ring position in zp_scratch_index, and FUN_66df walks the ring forward
+       leaves the player's ring position in player_order_slot, and FUN_66df walks the ring forward
        from there until it reaches car_behind.  With player_car missing from car_order the slot is
        $FF and that walk never meets its stop.
      - place_car_world_coords' per-circuit SMC seam ($298D) is steered to the unhandled-opcode
@@ -3224,7 +3224,7 @@ static int test_move_and_draw_cars(void)
           for (i = 0; i < 20; i++) pre[0x013Cu + i] = ord[i]; }
         pre[0x006Fu] = (uint8_t)(xs() % 20u);       /* player_car */
 
-        pre[0x0003u] = (uint8_t)(xs() % 20u);       /* zp_scratch_index: check_car_pair's start
+        pre[0x0003u] = (uint8_t)(xs() % 20u);       /* player_order_slot: check_car_pair's start
                                                        position, which it walks BACKWARD — the
                                                        routine only overwrites it later, at $2652 */
         /* place_car_world_coords' per-circuit SMC seam.  Most cases steer it to the
@@ -4980,7 +4980,7 @@ static int test_check_car_pair(void)
 
         for (int i = 0; i < 20; i++) pre[0x013Cu + i] = (uint8_t)(xs() % 20u);  /* car_order: slots 0..19 */
         pre[0x006Fu] = (uint8_t)(xs() % 20u);             /* player_car */
-        pre[0x0003u] = (uint8_t)(xs() % 20u);             /* zp_scratch_index: the start position */
+        pre[0x0003u] = (uint8_t)(xs() % 20u);             /* player_order_slot: the start position */
 
         if (t % 7 == 0) pre[0x2771u] = 0x00u;             /* SMC seam: trap-and-return path */
         else            pre[0x2771u] = 0xC9u;             /*           CMP #imm — the compare runs */
@@ -5927,7 +5927,7 @@ static void geometry_pre(uint8_t* pre, int shape)
 }
 
 /* $253B-$2549 recomputed from the POST state, which is the only end-to-end proof that the
-   twin reached its tail: nothing but the tail writes horizon_half_width, and nothing writes
+   twin reached its tail: nothing but the tail writes horizon_width_threshold, and nothing writes
    the edge arrays after it reads them. */
 static int geometry_tail_ran(const uint8_t* post)
 {
@@ -5969,16 +5969,16 @@ static int test_view_producers(void)
             /* build_track_geometry's exit N/V/Z/C are byproducts, not results: the last thing it
                does is horizon_half_width_at, whose subtract/LSR leave them, and the caller at
                $1710 opens LDA/SEC/SBC reading none.  The real outputs are all in mem[] (the edge
-               arrays, horizon_extent/index, horizon_half_width) plus X/Y — those stay compared.
+               arrays, horizon_extent/index, horizon_width_threshold) plus X/Y — those stay compared.
                A is dead too: $170D's next routine, place_player_in_section, opens $4626 LDA $5E
-               (and A's value, the half width, is horizon_half_width in mem[], compared anyway). */
+               (and A's value, the half width, is horizon_width_threshold in mem[], compared anyway). */
             fail += diff_run("build_track_geometry", pre, c, build_track_geometry,
                              build_track_geometry__t6502, LIVE_X | LIVE_Y | LIVE_S, t, &printed);
             if (shape == GEO_SILVERSTONE && geometry_tail_ran((const uint8_t*)mem)) tailRan++;
         }
         if (tailRan == 0) {
             printf("[VACUOUS] build_track_geometry: not one of the %d Silverstone cases "
-                   "reached the horizon_half_width tail — the SMC arm exited first\n", legal);
+                   "reached the horizon_width_threshold tail — the SMC arm exited first\n", legal);
             fail++;
         }
             printf("%-32s %7d cases, %d mismatch (must be 0)  live=XY (A, flags dead)  "

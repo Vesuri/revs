@@ -1546,7 +1546,7 @@ void stage_nearby_car_at_core(uint8_t orderIndex)
    shim and still gets its read; the native caller enters at move_and_draw_cars_core. */
 void stage_nearby_car(void) { view_origin_marshal_in(); stage_nearby_car_at_core(cpu.X); }
 
-/* $2637 — result-only: no register argument (car_ahead, zp_scratch_index and track_direction all
+/* $2637 — result-only: no register argument (car_ahead, player_order_slot and track_direction all
    come out of mem[]) and the body's next call reloads every register. */
 void move_and_draw_cars(void)
 {
@@ -1566,7 +1566,7 @@ void draw_car_field(void)
 }
 
 /* $2692 check_car_pair — twin #163.  No meaningful entry registers (it loads its start position
-   from zp_scratch_index immediately) and every exit register/flag is dead (both callers reload X),
+   from player_order_slot immediately) and every exit register/flag is dead (both callers reload X),
    so the shim is a bare call — all state lives in mem[]. */
 void check_car_pair(void)
 {
@@ -1636,7 +1636,7 @@ void engine_sound_update(void)
 }
 
 /* $1805 — result-only: the routine takes no register argument (it reads session_is_race,
-   zp_scratch_index and the circuit's own cells out of mem[]) and leaves nothing live. */
+   player_order_slot and the circuit's own cells out of mem[]) and leaves nothing live. */
 void reset_driving_variables(void) { reset_driving_variables_core(); }
 
 /* $261F — result-only: no register argument, and both callers reload X immediately after.

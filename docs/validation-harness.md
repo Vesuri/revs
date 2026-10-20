@@ -814,9 +814,9 @@ shim. **A native DRIVER is the one shim whose closure is the whole engine; audit
 
 `retire_car` ($11BE) fixtured in one pass.  Its caller `finish_race` ($1163) did not: the first run
 never returned.  `sample` on the stuck process put it inside `check_car_pair`, whose walk closes only
-when `car_index_inc(pos)` comes back around to `zp_scratch_index` ($03) — with `fill_random` in the
+when `car_index_inc(pos)` comes back around to `player_order_slot` ($03) — with `fill_random` in the
 memory that index is usually **above 20**, so the ring never meets it and the routine spins forever.
-`check_car_pair`'s own fixture pins `zp_scratch_index` and the twenty `car_order` entries to real
+`check_car_pair`'s own fixture pins `player_order_slot` and the twenty `car_order` entries to real
 slots; a fixture for anything that *calls* it must do the same.  Generalised: **randomised memory is
 only safe for a leaf.  The moment a fixture drives a subsystem, every loop bound its callees read is
 an input, and an unpinned one is a hang, not a mismatch.**
@@ -827,7 +827,7 @@ xs() % 20` — fixed `finish_race`'s first pass and hung its second, and the sur
 native twin's trace printed nothing for the stuck case: the ORACLE runs first in `diff_run`, so the
 hang was in the transliteration, on memory the fixture itself had built.  The cause is that the pass
 *ends* with `find_player_neighbours`, which searches `car_order[$13..0]` for `player_car` and parks
-the position in `zp_scratch_index` — leaving **`$FF` there when the player is absent**.  Twenty
+the position in `player_order_slot` — leaving **`$FF` there when the player is absent**.  Twenty
 random slots usually omit the player, so the next pass's ring had no closing index.  The real
 precondition is not "each entry is a valid slot" but "the array is a PERMUTATION of the twenty
 slots", which is what it is in the game by construction; the fixture now shuffles `0..19`.  Once it

@@ -6239,14 +6239,14 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
        fall-through — the 6502 has it in A from the subtract and executes no LDA on those
        paths — and the hook's own A on the circuit arm. */
     if (mem[MEM_smc_half_width_call] == 0x20 && mem[MEM_smc_half_width_call + 3] == 0x4A) {           /* unpatched: Silverstone */
-        horizon_half_width = (uint8_t)(mag >> 1);               /* $2549 LSR A — half the width */
-        return horizon_half_width;
+        horizon_width_threshold = (uint8_t)(mag >> 1);               /* $2545 LSR A — Silverstone half-width */
+        return horizon_width_threshold;
     }
     if (mem[MEM_smc_half_width_call] == 0x20 && mem[MEM_smc_half_width_call + 3] == 0xEA) {          /* a circuit's own call + NOP */
         uint16_t target = (uint16_t)(mem[MEM_smc_half_width_call + 1] | (mem[MEM_smc_half_width_call + 2] << 8));
         if (target == 0x3450) {
-            horizon_half_width = mag;               /* the abs8 hook, then NOP (no halving) */
-            return horizon_half_width;
+            horizon_width_threshold = mag;               /* the abs8 hook, then NOP (no halving) */
+            return horizon_width_threshold;
         }
         if (target >= 0x5300 && target <= 0x5A25) {
             /* Circuit-hook seam: the hook reads A and its sign N, so re-establish the 6502
@@ -6266,8 +6266,8 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
             hr.x = sectionX;
             hr.y = (uint8_t)horizonPoint;
             revs_track_hook_regs(target, &hr);
-            horizon_half_width = hr.a;
-            return horizon_half_width;
+            horizon_width_threshold = hr.a;
+            return horizon_width_threshold;
         }
         platform_smc_unhandled(MEM_smc_half_width_call, target);
         return diff;
@@ -6281,7 +6281,7 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
    the two 40-point edge lists everything downstream reads: road_edge_start emits the nearest
    point of each side, one road_edge_walk per side climbs the section list into the distance,
    and the tail records where the road's horizon came out: its scan line (horizon_extent), its
-   point (horizon_index) and how wide the road still looks there (horizon_half_width).
+   point (horizon_index) and how wide the road still looks there (horizon_width_threshold).
 
    An 84-byte driver; what it owns is the four seeds both walks start from (the "no nearest
    point yet" pair and the 13-section subdivision floor) and the horizon record.  RAM only.
@@ -6386,7 +6386,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
         return ex;
     }
 
-    (void)horizon_half_width_at_core(horizonPoint, ex.x);   /* its result is horizon_half_width */
+    (void)horizon_half_width_at_core(horizonPoint, ex.x);   /* its result is horizon_width_threshold */
     GEO_PHASE(5);   /* reopen the enclosing phase: its remainder is the driver + the return */
     return ex;
 }
@@ -13220,7 +13220,7 @@ void plot_object_core(uint8_t slot)
     proj_width_shift = 0x00u;
     uint8_t ceiling  = 0x00u;                        /* LDX #0 — the default ceiling */
     {
-        uint8_t pw = proj_width, hw = horizon_half_width;
+        uint8_t pw = proj_width, hw = horizon_width_threshold;
         if (pw < hw) {                               /* CMP; BCS skips the narrow-object arm */
             uint8_t op = mem[MEM_smc_object_ceiling];
             if (op == 0xA6u)      ceiling = horizon_extent;   /* unpatched: LDX horizon_extent */
@@ -16172,7 +16172,7 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
    to delete the per-instruction interpreter around a walk that runs every frame.
    car_order holds the field in running order; each entry is a car index 0-19. */
 
-#define FPN_PLAYER_SLOT MEM_zp_scratch_index   /* zp_scratch_index ($0003); in this routine = the player's slot in car_order */
+#define FPN_PLAYER_SLOT MEM_player_order_slot   /* cached player position in car_order ($0003) */
 
 /* $507E car_index_dec — step a car_order index back one, wrapping 0 -> 19.
    Faithful to `DEX / BPL / LDX #$13` for any input byte: a result with bit 7 set
@@ -16538,7 +16538,7 @@ void reject_all_object_slots_core(void)
        drops the cycles (docs/perf-method.md §A BUSY-DELAY LOOP).
      - Otherwise: un-reject the car ahead's object slot, run the three motion passes (the per-car
        update engine, the overtaking pass, then re-reject every slot) and re-find the player's
-       neighbours; walk six ring positions outwards from zp_scratch_index in the direction the
+       neighbours; walk six ring positions outwards from player_order_slot in the direction the
        car is travelling, staging each for the view; draw the queue; and finally stage the car
        ahead itself.
 
@@ -16592,7 +16592,7 @@ void move_and_draw_cars_steps(unsigned steps)
     find_player_neighbours_core();                     /* $2652 */
 
     /* $2655-$2674: six ring positions, walked in the direction of travel. */
-    uint8_t pos = zp_scratch_index;                    /* $2655 LDX zp_scratch_index */
+    uint8_t pos = player_order_slot;                    /* $2655 LDX player_order_slot */
     for (int n = 5; n >= 0; n--) {                     /* $2657 LDY #$05 ... $2673 DEY / BPL */
         pos = (track_direction & 0x80u)                /* $2659 BIT track_direction / $265B BPL */
                   ? car_index_inc_core(pos)            /* $265D */
@@ -16621,7 +16621,7 @@ void move_and_draw_cars_core(void) { move_and_draw_cars_steps(1u); }
    The frame's other-car draw pass, and move_and_draw_cars' last call but one.  Three groups,
    in the order they are painted:
 
-     1. the ring walk.  Starting at the player's own car_order position (zp_scratch_index, left
+     1. the ring walk.  Starting at the player's own car_order position (player_order_slot, left
         there by find_player_neighbours) it steps forward with car_index_inc and draws each car
         it lands on, stopping when the cursor reaches car_behind.
      2. object slots $16, $15 and $14 — the three non-car objects, drawn by slot number.
@@ -16631,7 +16631,7 @@ void move_and_draw_cars_core(void) { move_and_draw_cars_steps(1u); }
    are painted far-to-near and the nearest one wins every overlap.  The car behind is nearest of
    all, which is why it is held back to the end instead of being drawn when the walk reaches it.
 
-   ⚠ $66E1's `BPL $66E6` skips the first draw whenever zp_scratch_index is positive — and a
+   ⚠ $66E1's `BPL $66E6` skips the first draw whenever player_order_slot is positive — and a
    car_order position is 0..19, so it always is.  The fall-through draw at $66E3 is therefore
    reachable only from the loop's own BNE, never on entry.  Kept as written: "the cursor is
    never negative" is a claim about find_player_neighbours, not about this routine.
@@ -16649,7 +16649,7 @@ void draw_car_field_core(void)
 {
     /* Every bearing draw_track_object measures is against the camera heading, and nothing in
        this pass moves it — so it is marshalled in once, on the shim, not per car. */
-    uint8_t pos  = zp_scratch_index;                        /* $66DF LDX zp_scratch_index */
+    uint8_t pos  = player_order_slot;                        /* $66DF LDX player_order_slot */
     int     draw = (pos & 0x80u) != 0;                      /* $66E1 BPL — see the header */
 
     for (;;) {
@@ -16963,7 +16963,7 @@ void reset_driving_variables_core(void)
            session_is_race, so the practice arm is the one where it is clear. */
     uint8_t retreatDepth = 0x01u;                      /* $1838 LDA #$01 — the race depth */
     if (!(session_is_race & 0x80u)) {
-        car_order_swap_core(practice_start_slot, zp_scratch_index);
+        car_order_swap_core(practice_start_slot, player_order_slot);
         find_player_neighbours_core();                 /* $1846 — the order just changed */
         retreatDepth = practice_field_spread;          /* $1849 */
     }
@@ -17002,7 +17002,7 @@ void reset_driving_variables_core(void)
         print_message_upper_row_core(0x2Bu);           /* $18AA — the two race-start lines */
         print_message_lower_row_core(0x2Cu);           /* $18AF */
         /* $18B4 — the player's grid slot as a 1-based BCD number */
-        pass_count_bcd = position_to_bcd_core(zp_scratch_index).a;
+        pass_count_bcd = position_to_bcd_core(player_order_slot).a;
     } else {
         uint8_t ambY = print_message_pair_core(0x28u); /* $1892 — both status rows */
         clear_race_clock_core(0x01u);                  /* $1897 */
@@ -17200,7 +17200,7 @@ StageNearbyCar stage_nearby_car_core(RingGap g, uint8_t slot)
 
 /* $2692  check_car_pair — the overtaking pass
    Called twice a frame (the driving loop's $1181, and move_and_draw_cars' $264C).  Walks the
-   running order once round from zp_scratch_index and compares each car with the one an order
+   running order once round from player_order_slot and compares each car with the one an order
    position down (car_index_dec), by how far that neighbour is ahead round the lap (ring_gap,
    with the two in-section offsets as the finer term):
 
@@ -17229,7 +17229,7 @@ StageNearbyCar stage_nearby_car_core(RingGap g, uint8_t slot)
    ⚠ One BCD site: the pass-count add ($26DD SED ... $26E5 CLD); every other sum is binary. */
 void check_car_pair_core(void)
 {
-    uint8_t pos = zp_scratch_index;                          /* $2692 LDX $03 */
+    uint8_t pos = player_order_slot;                          /* $2692 LDX $03 */
 
     for (;;) {
         const uint8_t here      = mem[MEM_car_order + pos];
@@ -17326,7 +17326,7 @@ void check_car_pair_core(void)
             mem[MEM_car_race_flags + flagsSlot] = flags;
 
         pos = car_index_inc_core(pos);                       /* $2797 */
-        if (pos == zp_scratch_index) return;                 /* $279C */
+        if (pos == player_order_slot) return;                 /* $279C */
     }
 }
 
@@ -20470,7 +20470,7 @@ void hook_advance_gen_place_nurburg(HookRegs *r) { hook_advance_gen_place_at(r, 
 /* $53F0 (Brands Hatch) / $53E8 (Oulton) / $53C8 (Snetterton) / $5555 (the Nurburgring) —
    the horizon half-width scale.  Installed over `JSR abs8 / LSR A` at $2542 inside
    build_track_geometry (make track-patch: $2543 $50->$F0/$E8/$C8, $2544 $34->$53, $2545 $4A->$EA
-   — the LSR becomes a NOP), which is where horizon_half_width is computed from the difference
+   — the LSR becomes a NOP), which is where horizon_width_threshold is computed from the difference
    edge_x_hi[horizon] - edge_x_hi[horizon + 40].
 
    ⚠ It replaces the engine's `|d| / 2` with `d * $CD / 256` — and drops the absolute value with
