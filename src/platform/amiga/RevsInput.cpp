@@ -612,9 +612,9 @@ uint16_t RevsInput::axis(uint8_t channel) const
         const uint16_t sample = m_joystickSample;
         const uint16_t centre = m_joystickCentre;
         if (!m_joystickReady) return 0x8000u;
-        // Hardware-manual wiring: pin 5 / low byte = X; pin 9 / high byte = Y.
-        if (channel == 1) return joystickAxis((uint8_t)sample, (uint8_t)centre, false);
-        if (channel == 2) return joystickAxis((uint8_t)(sample >> 8), (uint8_t)(centre >> 8), true);
+        // Diagnostic axis swap: pin 9 / high byte steers; pin 5 / low byte controls pedals.
+        if (channel == 1) return joystickAxis((uint8_t)(sample >> 8), (uint8_t)(centre >> 8), false);
+        if (channel == 2) return joystickAxis((uint8_t)sample, (uint8_t)centre, true);
         return 0x8000u;
     }
     if (channel == 1) {

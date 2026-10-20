@@ -1,3 +1,7 @@
+> Diagnostic axis-swap build: physical Y (pin 9) now steers, and physical X
+> (pin 5) controls joystick pedals. Paddle mode uses physical Y for steering
+> and keyboard pedals. This temporary swap is for checking the real paddles.
+
 # Controls — the BBC original and their Amiga counterparts
 
 **Sources, in order of authority:**

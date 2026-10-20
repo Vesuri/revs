@@ -10,7 +10,8 @@ static void key(uint8_t raw, bool down) {
  uint8_t code=raw | (down ? 0 : 0x80);
  testSdr=~(uint8_t)((code<<1)|(code>>7)); keyboardHandler();
 }
-static void sample(uint16_t pots=0x2828) { testPot1=pots; ++g_vbiCount; input.sampleMouse(); }
+static void sample(uint16_t pots=0x2828) { // Diagnostic build swaps the physical axes; fixtures remain steering/pedal ordered.
+ testPot1=(uint16_t)((pots << 8) | (pots >> 8)); ++g_vbiCount; input.sampleMouse(); }
 static void settled(uint16_t p) { for(int i=0;i<4;i++) sample(p); }
 int main() {
  assert(input.initialize()); assert(!testPotGo); assert(!g_keyMapOverflow);
