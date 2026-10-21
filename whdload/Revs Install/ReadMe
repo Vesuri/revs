@@ -58,18 +58,25 @@
 
  Controls:
  ---------
- The keys are the BBC Micro's: L and ; steer (or the cursor keys), S is the
- throttle and A the brake (or up and down), Q and Tab change gear, T is the
- starter and Space to amplify steering. SHIFT+F2 selects an analogue joystick
- in port 2 (centre it before selecting).
- Push forward to accelerate, pull back to brake; the primary button changes gear.
- Press SHIFT+F2 again for paddle mode: X steers, S/A control pedals, Y is ignored.
- Further presses toggle joystick/paddle, preserving calibration. From keyboard
- or mouse mode, SHIFT+F2 selects joystick first and captures its centre.
- SHIFT+F3 selects mouse steering: right button accelerates, left brakes and
- middle changes gear. SHIFT+F8/F9 turn steering assistance off/on; SHIFT+F6 is unused.
- The other SHIFT+function key commands are as in the original manual,
- with the BBC's f0 on F10 and COPY (pause) on Help.
+ Controls follow the original manual except for these Amiga additions and
+ key mappings:
+
+ - Cursor left/right also steer; up/down also operate throttle/brake.
+ - SHIFT+F2 selects an analogue joystick in port 2. Centre it before selecting
+   from keyboard or mouse mode; this captures its centre. Push forward to
+   accelerate and pull back to brake.
+ - Press SHIFT+F2 again to toggle joystick/paddle mode, preserving calibration.
+   Paddle mode uses linear steering on X, ignores Y, and takes throttle/brake
+   from S/A or up/down. From keyboard or mouse mode, SHIFT+F2 always selects
+   joystick first.
+ - SHIFT+F3 selects mouse steering. Right mouse button accelerates, left brakes,
+   and middle changes gear using the original joystick-button rule (up under
+   strong throttle, otherwise down). S/A or up/down also operate the pedals.
+ - Q/Tab select gear up/down in joystick, paddle and mouse modes too,
+   regardless of throttle or brake input.
+ - SHIFT+F8/F9 turn steering assistance off/on; SHIFT+F6 is unused.
+ - The BBC's f0 is F10, COPY is Help (SHIFT+Help pauses), and DELETE is
+   Backspace (resumes).
 
 
  Quitting:
