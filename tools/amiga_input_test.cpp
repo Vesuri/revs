@@ -11,25 +11,25 @@ static void key(uint8_t raw, bool down) {
  testSdr=~(uint8_t)((code<<1)|(code>>7)); keyboardHandler();
 }
 static void sample(uint16_t pots=0x2828) { testPot1=pots; ++g_vbiCount; input.sampleMouse(); }
-static void settled(uint16_t p) { for(int i=0;i<4;i++) sample(p); }
 int main() {
  assert(input.initialize()); assert(!testPotGo); assert(!g_keyMapOverflow);
  assert(input.axis(1)==0x8000); sample(); assert(testPotGo==1); sample();
  key(RK_LSHIFT,true);key(RK_F2,true);
  assert(revs_key_down(0x8d)); assert(input.axis(1)==0x8000 && input.axis(2)==0x8000);
- sample(0x2850);assert(input.axis(1)>0x8000 && input.axis(1)<0xff00);assert(input.axis(2)==0x8000);
+ sample(0x2838);assert(input.axis(1)>0x8000 && input.axis(1)<0xff00);assert(input.axis(2)==0x8000);
+ sample(0x2850);assert(input.axis(1)==0xff00); // each reading is used as read, unfiltered
  // Holding selector must not re-centre as the stick moves.
- settled(0x0050);assert(revs_key_down(0x8d));assert(input.axis(1)==0xff00 && input.axis(2)==0xff00);
- settled(0x5000);assert(input.axis(1)==0 && input.axis(2)==0);
+ sample(0x0050);assert(revs_key_down(0x8d));assert(input.axis(1)==0xff00 && input.axis(2)==0xff00);
+ sample(0x5000);assert(input.axis(1)==0 && input.axis(2)==0);
  testJoy1=0x0200;sample();assert(input.buttons()==1);testJoy1=0;sample();assert(!input.buttons());
 
  // Paddle toggle: retain X calibration, ignore every Y value and mouse buttons.
  // Release/repress without a VBI must still count as a new press.
  key(RK_F2,false);key(RK_F2,true);assert(revs_key_down(0x8d));
- settled(0x0050);assert(input.axis(1)==0xff00 && input.axis(2)==0x8000);
+ sample(0x0050);assert(input.axis(1)==0xff00 && input.axis(2)==0x8000);
  assert(revs_key_down(0x8d));assert(input.axis(2)==0x8000); // held: no repeated toggle
  input.pressBbcKey(0xae,true);assert(input.axis(2)==0xff00);
- settled(0x5000);assert(input.axis(1)==0 && input.axis(2)==0xff00);
+ sample(0x5000);assert(input.axis(1)==0 && input.axis(2)==0xff00);
  input.pressBbcKey(0xbe,true);assert(input.axis(2)==0x8000); // both pedals: neutral
  input.pressBbcKey(0xae,false);assert(input.axis(2)==0);
  input.pressBbcKey(0xbe,false);testPotInp=0xfbff;testPra=0xbf;sample();
@@ -38,7 +38,7 @@ int main() {
  input.pressBbcKey(0x9f,true);assert(revs_key_down(0x9f));input.pressBbcKey(0x9f,false);
  input.pressBbcKey(0xef,true);assert(revs_key_down(0xef));input.pressBbcKey(0xef,false);
  key(RK_F2,false);key(RK_F2,true);assert(revs_key_down(0x8d));
- settled(0x0050);assert(input.axis(1)==0xff00 && input.axis(2)==0xff00); // joystick again
+ sample(0x0050);assert(input.axis(1)==0xff00 && input.axis(2)==0xff00); // joystick again
  input.pressBbcKey(0xbe,true);assert(input.axis(2)==0xff00);input.pressBbcKey(0xbe,false);
  key(RK_F2,false);sample();key(RK_F3,true);assert(revs_key_down(0x8d));assert(!revs_key_down(0x8c));
  assert(input.axis(1)==0x8000 && input.axis(2)==0x8000);
@@ -50,17 +50,17 @@ int main() {
  key(RK_F3,false);key(RK_F8,true);assert(revs_key_down(0x8c));assert(!revs_key_down(0x8a));key(RK_F8,false);
  key(RK_F9,true);assert(revs_key_down(0x8a));key(RK_F9,false);key(RK_F6,true);assert(!revs_key_down(0x8a));key(RK_F6,false);
  // Re-select captures a new centre; right shift also works.
- key(RK_LSHIFT,false);key(RK_RSHIFT,true);settled(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));
- assert(input.axis(1)==0x8000 && input.axis(2)==0x8000);settled(0x0024);assert(input.axis(1)==0xff00 && input.axis(2)==0xff00);
+ key(RK_LSHIFT,false);key(RK_RSHIFT,true);sample(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));
+ assert(input.axis(1)==0x8000 && input.axis(2)==0x8000);sample(0x0024);assert(input.axis(1)==0xff00 && input.axis(2)==0xff00);
  // The ordinary keyboard selector and both new assistance bindings remain separate.
  key(RK_F2,false);key(RK_F1,true);assert(revs_key_down(0x8e));assert(!revs_key_down(0x8d));key(RK_F1,false);
  // Keyboard -> F2 always enters joystick, even when the last source was paddle.
- settled(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
- settled(0x0024);assert(input.axis(2)==0xff00);
+ sample(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
+ sample(0x0024);assert(input.axis(2)==0xff00);
  key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);assert(input.axis(2)==0x8000);
  key(RK_F1,true);assert(revs_key_down(0x8e));key(RK_F1,false);
- settled(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
- settled(0x0024);assert(input.axis(2)==0xff00);
+ sample(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
+ sample(0x0024);assert(input.axis(2)==0xff00);
  // Latched F2 taps toggle exactly once, including two taps between VBI samples.
  g_screenMode7=1;key(RK_F2,true);key(RK_F2,false);assert(revs_key_down(0x8d));
  assert(input.axis(2)==0x8000);assert(!revs_key_down(0x8d));
@@ -71,8 +71,8 @@ int main() {
  g_screenMode7=1;key(RK_F3,true);key(RK_F3,false);assert(revs_key_down(0x8d));
  assert(input.axis(1)==0x8100);assert(!revs_key_down(0x8d));g_screenMode7=0;
  // Mouse -> F2 starts joystick even after leaving paddle for mouse.
- settled(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));
- settled(0x0024);assert(input.axis(2)==0xff00);key(RK_F2,false);
+ sample(0x1212);key(RK_F2,true);assert(revs_key_down(0x8d));
+ sample(0x0024);assert(input.axis(2)==0xff00);key(RK_F2,false);
  // Paddle compensates the engine curve; check the mathematical result rather
  // than a copy of the lookup table. Nearest squared value has <=127 error.
  for(unsigned v=0;v<256;v++) {
@@ -99,9 +99,9 @@ int main() {
   }
  }
  // Real mode selection applies compensation only to paddle steering.
- settled(0x2828);key(RK_F1,true);assert(revs_key_down(0x8e));key(RK_F1,false);
+ sample(0x2828);key(RK_F1,true);assert(revs_key_down(0x8e));key(RK_F1,false);
  key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
- settled(0x283c);const uint16_t joystickMid=input.axis(1);
+ sample(0x283c);const uint16_t joystickMid=input.axis(1);
  key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);
  assert(input.axis(1)==paddleSteering(joystickMid) && input.axis(1)>joystickMid);
  key(RK_F2,true);assert(revs_key_down(0x8d));key(RK_F2,false);

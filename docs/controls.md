@@ -77,7 +77,7 @@ range, Space amplification and circuit-specific adjustments remain in effect.
 Joystick and mouse modes retain the original curve.
 
 The supported wiring follows Commodore's hardware manual: pin 5 = X, pin 9 = Y,
-pin 3 = primary button. Averages of four fields suppress jitter; a one-counter-tick
+pin 3 = primary button. Each field's reading is used unfiltered; a one-counter-tick
 neutral band surrounds the captured centre. Scaling assumes linear potentiometers
 with approximately zero resistance at one end and twice the centre resistance at
 the other. Nonstandard wiring or restricted-travel adapters may need adjustment
@@ -323,14 +323,16 @@ The local ADCD 2.1 Hardware Manual is the authority: `Hardware/Hard_8` nodes
 8-1-4-2 through 8-1-4-4 and `Hardware/Hard_E` node E-2-3-4, under
 `~/.local/share/amiga/adcd21/Reference/ROM_Kernel_Manuals`. These describe
 `POTGO=1`, reading `POT1DAT` on the next VBI before restarting, the pin/byte
-assignments, linear potentiometers (470 kΩ nominal, 528 kΩ maximum), and averaging.
+assignments, and linear potentiometers (470 kΩ nominal, 528 kΩ maximum). The manual's
+advice to average several readings is about jitter in the controller's potentiometers,
+not the Amiga, so the port leaves that to the controller.
 The equivalent online reference is [Proportional Controllers](https://amigadev.elowar.com/read/ADCD_2.1/Hardware_Manual_guide/node010D.html).
 
-`RevsInput::sampleMouse` now samples both devices. It retains four completed
-joystick readings, publishes their rounded mean as one atomic word, and caches
+`RevsInput::sampleMouse` now samples both devices. It publishes each completed
+joystick reading as one atomic word, unfiltered, and caches
 mouse buttons before START discharges the capacitors. No waiting or division
 occurs in the interrupt. The first VBI starts a conversion; only the following
-VBI publishes a joystick reading. Calibration captures the averaged centre
+VBI publishes a joystick reading. Calibration captures the current reading as centre
 when Shift+F2 enters from keyboard or mouse mode; joystick/paddle toggles retain it.
 The inferred symmetric range is limited by the 8-bit
 counter endpoints; scaling uses 68000 DIVU in the main loop. The intended
@@ -341,7 +343,7 @@ curves and gear-button direction rules remain in the engine.
 `make input-test` compiles the production input implementation against host
 register and OS stand-ins. It covers serial key events, both fast and normal
 key paths, joystick/paddle toggles (held keys and quick taps), keyboard pedals,
-mode isolation, assistance bindings, centring, filtering, directions,
+mode isolation, assistance bindings, centring, unfiltered readings, directions,
 buttons, mouse discharge isolation and all 64,512 usable centre/sample pairs.
 It does not model charging circuits or prove physical polarity. The target
 mouse-idle probe is `amiga/mousebtn.gdb`; a real-stick check should cover centre,
@@ -354,7 +356,7 @@ Only paddle channel 1 uses an inverse-square lookup after calibration. For the
 BBC's folded magnitude `m` (0–127), it selects the integer `q` whose square is
 nearest `127*m`. The original steering code then squares `q`, producing a
 linear target with the original full-lock endpoint. Neutral and both endpoints
-are unchanged; the one-counter dead band and four-field filtering still apply.
+are unchanged; the one-counter dead band still applies.
 The 128-byte table requires no square-root computation on the 68000.
 
 All circuit hooks continue to execute, including their grip-loss corrections.

@@ -71,8 +71,6 @@ private:
     volatile bool m_joystickReady;
     volatile uint8_t m_mouseButtons, m_joystickButtons;
     bool m_potStarted;
-    uint16_t m_joystickHistory[4];
-    uint8_t m_joystickHistoryIndex;
     volatile uint16_t m_steerHalfSteps; /* 0..510 half-ADC steps, 256 = centre */
     uint8_t m_lastMouseX;
 };

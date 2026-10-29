@@ -385,7 +385,6 @@ bool RevsInput::initialize()
     m_mouseButtons = 0;
     m_joystickButtons = 0;
     m_potStarted = false;
-    m_joystickHistoryIndex = 0;
     m_lastMouseX = (uint8_t)(*joy0datPointer & 0xFFu);
     /* Built HERE, before the engine runs, so keyDown() — seven polls a race frame — need not ask
        whether it exists.  pressBbcKey (the autorun harness) keeps the lazy check. */
@@ -541,18 +540,7 @@ void RevsInput::sampleMouse()
     /* Standard proportional stick primary button: pin 3, JOY1DAT bit 9. */
     m_joystickButtons = (*joy1datPointer & 0x0200u) ? 1u : 0u;
     if (m_potStarted) {
-        const uint16_t raw = *pot1datPointer;
-        if (!m_joystickReady) {
-            for (unsigned i = 0; i < 4u; ++i) m_joystickHistory[i] = raw;
-        }
-        m_joystickHistory[m_joystickHistoryIndex] = raw;
-        m_joystickHistoryIndex = (uint8_t)((m_joystickHistoryIndex + 1u) & 3u);
-        unsigned x = 0, y = 0;
-        for (unsigned i = 0; i < 4u; ++i) {
-            x += m_joystickHistory[i] & 0xFFu;
-            y += m_joystickHistory[i] >> 8;
-        }
-        m_joystickSample = (uint16_t)(((y + 2u) >> 2) << 8 | ((x + 2u) >> 2));
+        m_joystickSample = *pot1datPointer;
         m_joystickReady = true;
     }
     /* Read before START: the discharge interval temporarily pulls mouse pot
