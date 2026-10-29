@@ -40,6 +40,23 @@ def setup_args(name):
     return out.stdout.splitlines()
 
 
+def cache_policy(report):
+    """The slave's cache contract on a 68020+: the instruction cache always, the data cache too
+    where WHDLoad runs the MMU (RevsSlave.s _bootdos).  None when it holds, else the reason."""
+    regs = dict(kv.split('=', 1) for line in report.splitlines() for kv in line.split() if '=' in kv)
+    if 'CACR' not in regs:
+        return None                                    # 68000/010: no caches
+    cacr, tc = int(regs['CACR'], 16), int(regs.get('TC', '0'), 16)
+    is040 = 'URP' in regs                              # 68040/060 register set
+    ic, dc = (cacr & 0x8000, cacr & 0x80000000) if is040 else (cacr & 1, cacr & 0x100)
+    mmu = tc & 0x8000 if is040 else tc & 0x80000000
+    if not ic:
+        return f'instruction cache off (CACR={regs["CACR"]})'
+    if mmu and not dc:
+        return f'WHDLoad uses the MMU but the data cache is off (CACR={regs["CACR"]} TC={regs["TC"]})'
+    return None
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--mode', choices=('run', 'quit', 'nodisc'), default='run')
@@ -114,6 +131,8 @@ def main():
         if line.startswith('setcpu=') or ' TC=' in line or line.startswith('CACR') or ' CACR=' in line:
             print('  ' + line.strip())
 
+    if (bad := cache_policy(report)):
+        raise SystemExit('FAIL: cache setup: ' + bad)
     if args.mode == 'run':
         dumps = b''.join((game / n).read_bytes() for n in ('.whdl_dump', '.whdl_expmem') if (game / n).exists())
         image = (ROOT / 'disasm/revs_runtime.bin').read_bytes()

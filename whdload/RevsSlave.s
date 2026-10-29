@@ -50,8 +50,8 @@ NUMDRIVES	= 1		;NOT 0: only 3.1 survives a driveless boot, 1.2/1.3 crash
 WPDRIVES	= %0000		;all emulated drives write protected
 BLACKSCREEN			;1.3's boot colours all black -- no CLI flash before the game
 BOOTDOS				;_bootdos below runs as a real CLI process
-CACHECHIP			;68020+: instruction cache only, chip+fast, with or without an MMU (CACHE
-				;caches nothing without one); no data cache, as the blitter writes chip RAM
+CACHE				;68020+: ExpMem copyback, BaseMem uncached; _bootdos falls back to
+				;CACHECHIP's instruction cache where WHDLoad has no MMU (docs/whdload.md)
 HDINIT				;mount slv_CurrentDir as DH0: -- BOOTDOS requires it
 SEGTRACKER			;so a WHDLoad crash report names our hunk + offset
 STACKSIZE	= 4096		;V33's initial CLI default is 4000 bytes
@@ -94,7 +94,30 @@ _args_end
 ; _bootdos — called by kick13.s as a CLI process, with dos.library up
 ;============================================================================
 
-_bootdos	lea	(_dosname,pc),a1
+; CACHE marks BaseMem noncacheable, which needs WHDLoad's MMU (68040/060, a 68030 with the MMU
+; option); without it WHDLoad switches every cache off (CACR 0).  Then set CACHECHIP's value and
+; keep the instruction cache.  A 68000/010 has no CACR, so skip the check there.
+_bootdos	clr.l	-(a7)			;TAG_DONE
+		clr.l	-(a7)			;data to fill
+		pea	WHDLTAG_ATTNFLAGS_GET
+		move.l	a7,a0
+		move.l	(_resload,pc),a2
+		jsr	(resload_Control,a2)
+		move.w	(6,a7),d0		;D0 = AttnFlags
+		lea	(12,a7),a7
+		btst	#1,d0			;AFB_68020: set on every 68020 or better
+		beq.s	.cached
+		move.l	(4),a6
+		lea	(_getcacr,pc),a5
+		jsr	(_LVOSupervisor,a6)
+		and.w	#$8001,d0		;IC (68040/060) or EI (68020/030)
+		bne.s	.cached
+		move.l	#WCPUF_Base_WT|WCPUF_Exp_CB|WCPUF_Slave_CB|WCPUF_IC|WCPUF_BC|WCPUF_SS|WCPUF_SB,d0
+		move.l	#WCPUF_All,d1
+		move.l	(_resload,pc),a2
+		jsr	(resload_SetCPU,a2)
+
+.cached		lea	(_dosname,pc),a1
 		move.l	(4),a6
 		jsr	(_LVOOldOpenLibrary,a6)
 		move.l	d0,a6			;A6 = dosbase
@@ -139,5 +162,8 @@ _bootdos	lea	(_dosname,pc),a1
 		pea	TDREASON_OSEMUFAIL
 		move.l	(_resload,pc),a2
 		jmp	(resload_Abort,a2)
+
+_getcacr	dc.w	$4e7a,$0002		;movec cacr,d0 (68020+; assembled as 68000)
+		rte
 
 	END

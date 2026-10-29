@@ -118,21 +118,29 @@ and the game owns the VERTB vector — on a 68000 the run simply never ends (mea
 19.2 does. The default `run` and `nodisc` modes therefore fail under the shared 20.1 until that is
 resolved (`docs/open-work.md`, Release); `--fast-kb=2048` passes.
 
-### CPU caches (`CACHECHIP`)
+### CPU caches (`CACHE`, falling back to `CACHECHIP`)
 
-WHDLoad's register dump after a `run` (2026-10-29, WHDLoad 20.1, the `CACHE` and `CACHECHIP` slaves):
+`CACHE` caches ExpMem copyback and leaves BaseMem uncached, but only through WHDLoad's MMU
+tables; without them WHDLoad turns every cache off. WHDLoad uses the MMU by default only on a
+68040/060 (on a 68030 with its `MMU` option), and a slave cannot ask whether it does. So the slave
+requests `CACHE`, and `_bootdos` reads `CACR` on a 68020 or better: with the instruction cache off it
+sets `CACHECHIP`'s value (instruction cache only, BaseMem write-through). Secret Weapons of the
+Luftwaffe's slave does the same; Revs also skips the check on a 68000/010, which has no `CACR`.
 
-| Machine | `CACHE` | `CACHECHIP` |
-|---|---|---|
-| `a1200-fast` (68EC020, no MMU) | `CACR=0`: no cache | `CACR=1`: instruction cache |
-| `a1200-030`, WHDLoad without `MMU` | `CACR=2000`, `TC=0`: no cache | `CACR=2011`: instruction cache |
-| `a1200-030`, WHDLoad `MMU` | `CACR=2111`: instruction + data | — |
-| `a1200-040` (WHDLoad uses its MMU) | `CACR=80008000`, `TC=8000`: instruction + data | `CACR=8000`: instruction cache |
+WHDLoad's register dump after a `run` (2026-10-29, WHDLoad 20.1); all pass:
 
-All runs pass. `CACHE` caches ExpMem copyback only through WHDLoad's MMU tables; without them
-WHDLoad turns every cache off. WHDLoad uses the MMU by default only on a 68040/060, and a slave
-cannot ask whether it does (`WHDLTAG_ATTNFLAGS_GET` reports only the CPU), so the slave keeps
-`CACHECHIP`.
+| Machine | `CACHECHIP` | `CACHE` | the slave |
+|---|---|---|---|
+| A500 68000/68010 | — | — | no `CACR` |
+| `a1200-fast` (68EC020) | `1`: instruction | `0`: none | `1`: instruction |
+| `a1200-030`, WHDLoad without `MMU` | `2011`: instruction | `2000`: none | `2011`: instruction |
+| `a1200-030`, WHDLoad `MMU` | — | `2111`: both | `2111`: both |
+| `a1200-040` | `8000`: instruction | `80008000`: both | `80008000`: both |
+| `a1200-060` | — | — | `A0808000`: both |
+
+`test_whdload.py` fails a run whose dump breaks that contract (no instruction cache, or the MMU in
+use without the data cache). Sabotage: the `CACHECHIP` slave fails on the 040 and on the 030 with
+`MMU`, plain `CACHE` on the 68EC020. `quit` passes on the 040, the 030 and a 68000.
 
 ## The Install script (`tools/test_installer.py`)
 
