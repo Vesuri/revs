@@ -44,6 +44,15 @@ The remaining ISR work is largely real work or work per painted frame. Keep the
 two sound ticks distinct; the intermediate chip state is part of the contract.
 Do not claim faster AUTORUN keyboard scaffolding as a shipping improvement.
 
+## Release
+
+- **WHDLoad 20 on a 2 MB A500:** under WHDLoad 20.0 and 20.1 the slave stops with
+  "Can't allocate ExpMem" on 1 MB chip + 1 MB fast, which 19.2 runs (`test_whdload.py
+  --mode=nodisc --whdload=<19.2 binary>`, 2026-10-29); 1 MB chip + 2 MB fast passes
+  (`--fast-kb=2048`). The release notes promise a 2 MB machine. Find what 20.x allocates
+  beyond the slave's 400 KB + 512 KB + 256 KB request, then shrink the request or change the
+  stated minimum ([whdload.md](whdload.md#memory)).
+
 ## Naming and source presentation
 
 Every routine in the generated corpus has a name (no `FUN_xxxx` is left). The cell-level

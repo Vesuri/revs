@@ -53,7 +53,7 @@ if [ "${FSUAE_SILENT:-0}" = 1 ]; then SOUND=0; fi
 
 AMIGA_MODEL="$MODEL" KICKSTART="$ROM" CHIP_KB=1024 FAST_KB=8192
 fsuae_options
-fsuae_stop_previous
+fsuae_prepare
 fsuae_exec \
   --hard_drive_0="$DH0" --hard_drive_1="$DH1" \
   --joystick_port_0=none --joystick_port_1=none \

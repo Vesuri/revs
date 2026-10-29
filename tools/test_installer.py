@@ -27,16 +27,12 @@ import subprocess
 import tempfile
 import time
 
+import _amigaxdev  # noqa: F401  (puts AmigaXDev's amigaxdev package on the path)
+from amigaxdev.env import path  # the shared ~/.local/share/amiga inputs, with env.sh overrides
+
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / 'whdload' / 'Revs Install'
-AMIGA = Path.home() / '.local/share/amiga'
-KICKSTARTS = AMIGA / 'Kickstarts'
-# Shared Amiga inputs from ~/.local/share/amiga; each has an environment override (docs/whdload.md).
-WHDLOAD = Path(os.environ.get('WHDLOAD_BIN', AMIGA / 'WHDLoad/C/WHDLoad'))
-WORKBENCH_ADF = Path(os.environ.get('WORKBENCH_ADF', AMIGA / 'Workbenchv2.04rev37.67Workbench.adf'))
-INSTALLER43 = Path(os.environ.get('INSTALLER43', AMIGA / 'Installer43/Installer'))
-# An A1200 ROM, not $KICKSTART: amiga/env.sh exports that as the A600's and would change the machine.
-KICKSTART_A1200 = Path(os.environ.get('KICKSTART_A1200', KICKSTARTS / 'kick40068.A1200'))
+FSUAE = os.environ.get('FSUAE') or path('FSUAE_ARM')
 
 # name: (seed, ssd-keep answer, drawer-delete answer, expect ssd asked, expect file asked,
 #        expect installed image ('old' | 'new'), expect the old drawer's marker file kept)
@@ -144,7 +140,7 @@ def run(name, args):
     with (base / 'emulator.log').open('w') as log:
         # An A1200, as Vette's and Slicks' Installer tests: the script is not what a 68000 is
         # needed to test, and Installer's run/copy work on a 7 MHz machine outlasts the ceiling.
-        emu = subprocess.Popen(['fs-uae', '--amiga_model=A1200', '--chip_memory=2048',
+        emu = subprocess.Popen([FSUAE, '--amiga_model=A1200', '--chip_memory=2048',
             '--fast_memory=0', '--kickstart_file=' + str(args.host_rom),
             '--hard_drive_0=' + str(boot), '--hard_drive_0_priority=10',
             '--hard_drive_1=' + str(src), '--hard_drive_2=' + str(work),
@@ -202,10 +198,10 @@ def main():
     p.add_argument('--only', choices=sorted(SCENARIOS))
     p.add_argument('--exe', type=Path, default=ROOT / 'amiga/out/Revs.exe')
     p.add_argument('--slave', type=Path, default=ROOT / 'whdload/Revs.slave')
-    p.add_argument('--installer', type=Path, default=INSTALLER43)
-    p.add_argument('--whdload', type=Path, default=WHDLOAD)
-    p.add_argument('--host-rom', type=Path, default=KICKSTART_A1200)
-    p.add_argument('--workbench', type=Path, default=WORKBENCH_ADF)
+    p.add_argument('--installer', type=Path, default=Path(path('INSTALLER43')))
+    p.add_argument('--whdload', type=Path, default=Path(path('WHDLOAD_BINARY')))
+    p.add_argument('--host-rom', type=Path, default=Path(path('KICKSTART_A1200')))
+    p.add_argument('--workbench', type=Path, default=Path(path('WORKBENCH_ADF')))
     p.add_argument('--screenshot', action='store_true', help='on a hang, capture the host screen to <fixture>/screen.png')
     p.add_argument('--trace', action='store_true', help='log checkpoints through the script to DH2:trace')
     p.add_argument('--seconds', type=int, default=240, help='host ceiling per scenario')

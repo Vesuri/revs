@@ -68,24 +68,39 @@ verified in release core dumps with the unchanged slave memory request; see
 
 ## Shared Amiga inputs
 
-ROMs, the Workbench disk, WHDLoad and the Installer are local inputs read from the shared
-`~/.local/share/amiga` (installed by AmigaXDev), never from this repository. Each has an
-environment override:
+ROMs, the Workbench disk, WHDLoad, the Installer, LHa and FS-UAE come from the shared
+`~/.local/share/amiga` that AmigaXDev installs, never from this repository. `amiga/env.sh` sources
+its `env.sh`, and the Python tools read the same defaults through `amigaxdev.env`
+(`tools/_amigaxdev.py` finds the package); AmigaXDev `docs/environment.md` lists every variable.
+The ones Revs uses:
 
-| Variable | Default | Used by |
+| Variable | Default (under `~/.local/share/amiga`) | Used by |
 |---|---|---|
-| `KICKSTART` | `~/.local/share/amiga/Kickstarts/kick40063.A600` (KS 3.1) | `amiga/env.sh`, `run.sh`, `debug.sh`, `diag_run.sh`; `test_whdload.py` host ROM |
-| `KICKSTART_A1200` | `~/.local/share/amiga/Kickstarts/kick40068.A1200` | `test_installer.py` host ROM (not `KICKSTART`, which `env.sh` exports as the A600's) |
-| `WORKBENCH_ADF` | `~/.local/share/amiga/Workbenchv2.04rev37.67Workbench.adf` | both tests |
-| `INSTALLER43` | `~/.local/share/amiga/Installer43/Installer` | `test_installer.py` |
-| `WHDLOAD_BIN` | `~/.local/share/amiga/WHDLoad/C/WHDLoad` | both tests (`WHDLOAD` is the makefile's SDK directory; `amiga/env.sh` sets it to WHDLoad 19.2) |
+| `FSUAE` | `$FSUAE_ARM`, `fs-uae-arm/fs-uae` (native arm64, gdb stub) | every run script and both tests; `FSUAE=fs-uae` runs the x86_64 build |
+| `KICKSTART` | `Kickstarts/kick40063.A600` (KS 3.1) | `run.sh`, `debug.sh`, `diag_run.sh`; `test_whdload.py` host ROM |
+| `KICKSTART_A1200` | `Kickstarts/kick40068.A1200` | `test_installer.py` host ROM, and the A1200 `--setup` presets |
+| `KICK13`, `RTB` | `Kickstarts/kick34005.A500` and its `.RTB` | `test_whdload.py` (`--rom13`, `--rtb`) |
+| `WORKBENCH_ADF` | `Workbenchv2.04rev37.67Workbench.adf` | both tests |
+| `INSTALLER43` | `Installer43/Installer` | `test_installer.py` |
+| `WHDLOAD` | `WHDLoad` (20.1: `Include/`, KickEmu sources, `C/WHDLoad`) | `whdload/makefile` |
+| `WHDLOAD_BINARY` | `WHDLoad/C/WHDLoad` | both tests |
+| `LHA` | `lha-compressor/src/lha` | `tools/package_whdload.py` |
 | `FSEMU_SCREENSHOTS_DIR` | the repo's untracked `tmp/screenshots` | `run.sh` |
 
-`test_whdload.py` also takes the 1.3 image and its relocation file from
-`~/.local/share/amiga/Kickstarts/kick34005.A500{,.RTB}` (`--rom13`, `--rtb`). Every default can
-also be overridden by the script's command-line option.
+Every default can also be overridden by the script's command-line option. The vendored
+`whdload/whdload/kick13.s` and `kickfs.s` are WHDLoad 20.1's, with only the NDK's `lvo/*_lib.i`
+include names changed.
+
+FS-UAE: the arm64 and x86_64 builds give the same race frame cost on the same build
+(`phase4_prof.gdb`, `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1`, two runs each: 95/95 ms arm64,
+95/96 ms x86_64, 2026-10-29); the arm64 build covers 40–70% more emulated time per host second.
+Still compare a measurement only with others from the same binary.
 
 ## The WHDLoad tests (`tools/test_whdload.py`, WHDLoad 19.2, 2 MB A500, 2026-09-30)
+
+`--setup NAME` runs a shared `AMIGA_SETUP` machine (`a1200-fast`, `a1200-030`, `a1200-040`, ...) instead
+of the A500, `--whdload-options` adds WHDLoad options (e.g. `MMU`), and every run prints the
+`setcpu`, `CACR` and `TC` lines of WHDLoad's register dump.
 
 | Mode | CPU | Result |
 |---|---|---|
@@ -98,6 +113,26 @@ also be overridden by the script's command-line option.
 and the game owns the VERTB vector — on a 68000 the run simply never ends (measured: no dump in
 400 s). ⚠ And without `FILELOG`: logging every one of LoadSeg's small reads on a 68000 outlasted a
 150 s ceiling before the game started.
+
+⚠ **WHDLoad 20.x does not start the slave on that 1 MB + 1 MB A500** ("Can't allocate ExpMem");
+19.2 does. The default `run` and `nodisc` modes therefore fail under the shared 20.1 until that is
+resolved (`docs/open-work.md`, Release); `--fast-kb=2048` passes.
+
+### CPU caches (`CACHECHIP`)
+
+WHDLoad's register dump after a `run` (2026-10-29, WHDLoad 20.1, the `CACHE` and `CACHECHIP` slaves):
+
+| Machine | `CACHE` | `CACHECHIP` |
+|---|---|---|
+| `a1200-fast` (68EC020, no MMU) | `CACR=0`: no cache | `CACR=1`: instruction cache |
+| `a1200-030`, WHDLoad without `MMU` | `CACR=2000`, `TC=0`: no cache | `CACR=2011`: instruction cache |
+| `a1200-030`, WHDLoad `MMU` | `CACR=2111`: instruction + data | — |
+| `a1200-040` (WHDLoad uses its MMU) | `CACR=80008000`, `TC=8000`: instruction + data | `CACR=8000`: instruction cache |
+
+All runs pass. `CACHE` caches ExpMem copyback only through WHDLoad's MMU tables; without them
+WHDLoad turns every cache off. WHDLoad uses the MMU by default only on a 68040/060, and a slave
+cannot ask whether it does (`WHDLTAG_ATTNFLAGS_GET` reports only the CPU), so the slave keeps
+`CACHECHIP`.
 
 ## The Install script (`tools/test_installer.py`)
 

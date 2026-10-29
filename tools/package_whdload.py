@@ -20,6 +20,9 @@ import subprocess
 import sys
 import tempfile
 
+import _amigaxdev  # noqa: F401  (puts AmigaXDev's amigaxdev package on the path)
+from amigaxdev.env import path  # the shared ~/.local/share/amiga inputs, with env.sh overrides
+
 ROOT = Path(__file__).resolve().parents[1]
 PKG = 'Revs Install'
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -76,7 +79,7 @@ def main():
             raise SystemExit(f'refusing to package: {name} contains {hits} blocks of REVS2')
     print(f'audit: no member contains any of REVS2\'s {len(blocks)} 256-byte blocks')
 
-    lha = shutil.which(os.environ.get('LHA', str(Path.home() / '.local/share/amiga/lha-compressor/src/lha')))
+    lha = shutil.which(path('LHA'))
     if not lha:
         raise SystemExit('native LHa compressor not found; set LHA=/path/to/lha (lhasa is extract-only)')
     out = ROOT / 'dist'

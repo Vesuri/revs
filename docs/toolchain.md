@@ -121,7 +121,8 @@ make
 ```
 
 `env.sh` sources the shared environment that AmigaXDev installs (`~/.local/share/amiga/env.sh`:
-the toolchain under `~/.local`, FS-UAE, Kickstarts). `KICKSTART` overrides its default ROM,
+the toolchain under `~/.local`, FS-UAE, Kickstarts). The scripts run the native arm64 FS-UAE
+(`FSUAE`, default `$FSUAE_ARM`; `FSUAE=fs-uae` for the x86_64 build). `KICKSTART` overrides its default ROM,
 `~/.local/share/amiga/Kickstarts/kick40063.A600` (KS 3.1); the other shared Amiga inputs and
 their variables are listed in [whdload.md](whdload.md#shared-amiga-inputs). `run.sh` screenshots
 go to the untracked `tmp/screenshots` unless `FSEMU_SCREENSHOTS_DIR` is set. Clean before

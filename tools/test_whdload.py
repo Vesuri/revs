@@ -26,14 +26,18 @@ import subprocess
 import tempfile
 import time
 
+import _amigaxdev  # noqa: F401  (puts AmigaXDev's amigaxdev package on the path)
+from amigaxdev.env import path  # the shared ~/.local/share/amiga inputs, with env.sh overrides
+
 ROOT = Path(__file__).resolve().parents[1]
-AMIGA = Path.home() / '.local/share/amiga'
-KICKSTARTS = AMIGA / 'Kickstarts'
-# Shared Amiga inputs from ~/.local/share/amiga; each has an environment override (docs/whdload.md).
-WHDLOAD = Path(os.environ.get('WHDLOAD_BIN', AMIGA / 'WHDLoad/C/WHDLoad'))
-WORKBENCH_ADF = Path(os.environ.get('WORKBENCH_ADF', AMIGA / 'Workbenchv2.04rev37.67Workbench.adf'))
-# The host machine's KS 3.1; amiga/env.sh exports the same default.
-KICKSTART = Path(os.environ.get('KICKSTART', KICKSTARTS / 'kick40063.A600'))
+FSUAE = os.environ.get('FSUAE') or path('FSUAE_ARM')
+
+
+def setup_args(name):
+    """FS-UAE options of a shared AMIGA_SETUP preset, straight from fsuae_common.sh."""
+    out = subprocess.run(['bash', '-c', '. "$1" && AMIGA_SETUP="$2" fsuae_setup && printf "%s\\n" "${FSUAE_SETUP_ARGS[@]}"',
+                          'setup', path('FSUAE_COMMON'), name], check=True, capture_output=True, text=True)
+    return out.stdout.splitlines()
 
 
 def main():
@@ -42,12 +46,15 @@ def main():
     p.add_argument('--exe', type=Path, default=ROOT / 'amiga/out/Revs.exe')
     p.add_argument('--slave', type=Path, default=ROOT / 'whdload/Revs.slave')
     p.add_argument('--disc', type=Path, default=ROOT / 'revs.ssd')
-    p.add_argument('--whdload', type=Path, default=WHDLOAD)
-    p.add_argument('--rom13', type=Path, default=KICKSTARTS / 'kick34005.A500')
-    p.add_argument('--rtb', type=Path, default=KICKSTARTS / 'kick34005.A500.RTB')
-    p.add_argument('--host-rom', type=Path, default=KICKSTART)
-    p.add_argument('--workbench', type=Path, default=WORKBENCH_ADF)
+    p.add_argument('--whdload', type=Path, default=Path(path('WHDLOAD_BINARY')))
+    p.add_argument('--rom13', type=Path, default=Path(path('KICK13')))
+    p.add_argument('--rtb', type=Path, default=Path(path('RTB')))
+    p.add_argument('--host-rom', type=Path, default=Path(path('KICKSTART')))
+    p.add_argument('--workbench', type=Path, default=Path(path('WORKBENCH_ADF')))
     p.add_argument('--cpu', default=None, help='default: 68010 for run (WHDLoad\'s TIMEOUT needs a movable VBR), else 68000')
+    p.add_argument('--fast-kb', type=int, default=1024, help='fast memory of the default A500')
+    p.add_argument('--setup', help='a shared AMIGA_SETUP machine instead, e.g. a1200-030 or a1200-040')
+    p.add_argument('--whdload-options', default='', help='extra WHDLoad options, e.g. MMU')
     p.add_argument('--ticks', type=int, default=1500, help='WHDLoad timeout in PAL fields (run mode)')
     p.add_argument('--seconds', type=int, default=400, help='host safety ceiling')
     args = p.parse_args()
@@ -70,15 +77,16 @@ def main():
     (boot / 's/startup-sequence').write_text(
         'DF0:C/Assign C: DF0:C\nDF0:C/Assign LIBS: DF0:Libs\n'
         'DF0:C/Assign DEVS: DH0:devs\nStack 16384\nFailAt 999\n'
-        f'CD DH1:\nWHDLoad Revs.slave PRELOAD SPLASHDELAY=0 NOREQ COREDUMP {timeout}>DH0:result\n'
+        f'CD DH1:\nWHDLoad Revs.slave PRELOAD SPLASHDELAY=0 NOREQ COREDUMP {timeout}{args.whdload_options} >DH0:result\n'
         'If WARN\nEcho failed >DH0:failed\nElse\nEcho passed >DH0:passed\nEndIf\n')
 
     with (base / 'emulator.log').open('w') as log:
         cpu = args.cpu or ('68010' if args.mode == 'run' else '68000')
-        print('CPU:', cpu, flush=True)
-        emu = subprocess.Popen(['fs-uae', '--amiga_model=A500', '--cpu=' + cpu,
-            '--chip_memory=1024', '--fast_memory=1024',
-            '--kickstart_file=' + str(args.host_rom),
+        machine = setup_args(args.setup) if args.setup else [
+            '--amiga_model=A500', '--cpu=' + cpu, '--chip_memory=1024', f'--fast_memory={args.fast_kb}',
+            '--kickstart_file=' + str(args.host_rom)]
+        print('Machine:', args.setup or 'A500 ' + cpu, flush=True)
+        emu = subprocess.Popen([FSUAE] + machine + [
             '--hard_drive_0=' + str(boot), '--hard_drive_0_priority=10', '--hard_drive_1=' + str(game),
             '--floppy_drive_0=' + str(args.workbench), '--audio_driver=dummy',
             '--joystick_port_0=mouse', '--joystick_port_1=nothing', '--warp_mode=1', '--fullscreen=0',
@@ -102,6 +110,9 @@ def main():
         raise SystemExit(f'FAIL: no WHDLoad core dump ({base})\n{output}')
     first = next((l for l in report.splitlines() if l.strip()), '')
     print('WHDLoad:', first.strip())
+    for line in report.splitlines():
+        if line.startswith('setcpu=') or ' TC=' in line or line.startswith('CACR') or ' CACR=' in line:
+            print('  ' + line.strip())
 
     if args.mode == 'run':
         dumps = b''.join((game / n).read_bytes() for n in ('.whdl_dump', '.whdl_expmem') if (game / n).exists())

@@ -5,6 +5,6 @@
 #   . amiga/env.sh
 # or from the amiga/ directory:
 #   . env.sh
-# WHDLoad 19.2: the version the slave builds against (whdload/) and the tests run.
-export WHDLOAD="${WHDLOAD:-$HOME/.local/share/amiga/WHDLoad}"
 . "${AMIGA_ENV:-$HOME/.local/share/amiga/env.sh}"
+# The native arm64 FS-UAE with the gdb stub; FSUAE=fs-uae picks the x86_64 build on PATH.
+export FSUAE="${FSUAE:-$FSUAE_ARM}"
