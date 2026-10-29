@@ -50,7 +50,8 @@ NUMDRIVES	= 1		;NOT 0: only 3.1 survives a driveless boot, 1.2/1.3 crash
 WPDRIVES	= %0000		;all emulated drives write protected
 BLACKSCREEN			;1.3's boot colours all black -- no CLI flash before the game
 BOOTDOS				;_bootdos below runs as a real CLI process
-CACHECHIP			;instruction cache on (chip write-through) for accelerated machines
+CACHECHIP			;68020+: instruction cache only, chip+fast, with or without an MMU (CACHE
+				;caches nothing without one); no data cache, as the blitter writes chip RAM
 HDINIT				;mount slv_CurrentDir as DH0: -- BOOTDOS requires it
 SEGTRACKER			;so a WHDLoad crash report names our hunk + offset
 STACKSIZE	= 4096		;V33's initial CLI default is 4000 bytes
